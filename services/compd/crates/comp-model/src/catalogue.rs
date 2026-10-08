@@ -47,8 +47,9 @@ pub const DIRECT_VERBS: &[&str] = &[
     "comp.windows.list",
 ];
 
-/// The 22 owner-control verbs (windows, workspaces and native worlds/hardware).
+/// The 23 owner-control verbs (outputs, windows, workspaces and native worlds/hardware).
 pub const WINDOW_VERBS: &[&str] = &[
+    "comp.output.scale",
     "comp.hardware.snapshot",
     "comp.hardware.wait",
     "comp.world.list",
@@ -118,12 +119,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_surface_is_42_verbs_and_11_topics() {
+    fn the_surface_is_43_verbs_and_11_topics() {
         assert_eq!(DIRECT_VERBS.len(), 15);
-        assert_eq!(WINDOW_VERBS.len(), 22);
+        assert_eq!(WINDOW_VERBS.len(), 23);
         assert_eq!(INPUT_VERBS.len(), 5);
         let verbs = all_verbs().collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(verbs.len(), 42, "no verb is in two families");
+        assert_eq!(verbs.len(), 43, "no verb is in two families");
         assert!(verbs.iter().all(|verb| verb.starts_with("comp.")));
         assert!(READ_VERBS.iter().all(|verb| DIRECT_VERBS.contains(verb)));
         assert_eq!(TOPIC_SUFFIXES.len(), 11);

@@ -135,6 +135,7 @@ fn refresh_output_generations(lp: &mut Loop) {
     for output in lp.inner.host_space().state.outputs() {
         let generation = lp.inner.comp.output_generation(&output.name());
         let data = output.user_data();
+        data.insert_if_missing(|| comp_model::output_scale::OutputIdentity(uuid::Uuid::new_v4()));
         data.insert_if_missing(|| {
             comp_model::capture::OutputGeneration(
                 std::sync::atomic::AtomicU64::new(generation),
@@ -202,6 +203,7 @@ fn window_op(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
         return Some(locked);
     }
     match op {
+        WindowOp::OutputScale(spec) => Some(output_scale(lp, spec)),
         WindowOp::HardwareSnapshot => None, // engine supplies its incarnation
         WindowOp::WorldList => Some(crate::worlds::list(lp)),
         WindowOp::WorldCreate => Some(crate::worlds::create(lp)),
@@ -324,6 +326,84 @@ fn window_op(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
         WindowOp::StatsReset { target } => Some(stats_reset(lp, target.as_ref())),
         // Every WindowOp is served; no catch-all, so a new
         // variant fails to compile here instead of answering busy silently.
+    }
+}
+
+/// Scale only; the actual output and existing placement/frame owners apply it.
+fn output_scale(lp: &mut Loop, spec: &comp_model::output_scale::ScaleSpec) -> ControlReply {
+    refresh_output_generations(lp);
+    let outputs: Vec<_> = lp.inner.host_space().state.outputs()
+        .filter(|output| output.name() == spec.output).cloned().collect();
+    if outputs.len() != 1 {
+        return ControlReply::refused("output_unavailable", serde_json::json!({"output":spec.output}));
+    }
+    let output = &outputs[0];
+    let instance = output.user_data().get::<comp_model::output_scale::OutputIdentity>()
+        .expect("output identity refreshed").0;
+    let generation = lp.inner.comp.output_generation(&output.name());
+    let available = matches!(lp.inner.status_session, world::state::state::StatusSession::Active)
+        && output.current_mode().is_some_and(|mode| mode.size.w > 0 && mode.size.h > 0)
+        && lp.inner.host_space().state.output_geometry(output).is_some();
+    let changed = match apply_output_scale(output, spec, instance, generation, available) {
+        Ok(changed) => changed,
+        Err(reply) => return reply,
+    };
+    if changed {
+        smithay::desktop::layer_map_for_output(output).arrange();
+        lp.state.fractional.output_changed();
+        world::camera::pin::pin(&mut lp.inner);
+        refresh_usable(lp);
+        crate::input::retarget_pointer(lp);
+        lp.inner.comp.causes.note("outputs", "comp.output.scale");
+        lp.state.schedule_redraw(RedrawReason::Output);
+    }
+    ControlReply::Body(serde_json::json!({"output":output.name(),"instance":instance,
+        "generation":lp.inner.comp.output_generation(&output.name()),
+        "scale":output.current_scale().fractional_scale(),"changed":changed}))
+}
+
+fn apply_output_scale(
+    output: &smithay::output::Output,
+    spec: &comp_model::output_scale::ScaleSpec,
+    instance: uuid::Uuid,
+    generation: u64,
+    available: bool,
+) -> Result<bool, ControlReply> {
+    let changed = comp_model::output_scale::admit(spec, instance, generation, available, output.current_scale().fractional_scale())?;
+    if changed {
+        // None preserves the KMS/nested owner's mode, transform and position.
+        output.change_current_state(None, None, Some(smithay::output::Scale::Fractional(spec.scale)), None);
+    }
+    Ok(changed)
+}
+
+#[cfg(test)]
+mod output_scale_tests {
+    use super::*;
+    use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
+    use smithay::utils::Transform;
+    #[test]
+    fn actual_output_mutation_preserves_mode_and_refusals_are_inert() {
+        let output = Output::new("DP-1".into(), PhysicalProperties {
+            size: (0, 0).into(), subpixel: Subpixel::Unknown,
+            make: "fixture".into(), model: "fixture".into(),
+        });
+        let mode = Mode { size: (1600, 1000).into(), refresh: 75_000 };
+        output.change_current_state(Some(mode), Some(Transform::Rot180), Some(Scale::Integer(1)), Some((40, 20).into()));
+        let instance = uuid::Uuid::new_v4();
+        let spec = comp_model::output_scale::ScaleSpec { output: output.name(), instance, generation: 3, scale: 1.25 };
+        assert!(apply_output_scale(&output, &spec, instance, 3, true).unwrap());
+        assert_eq!(output.current_scale().fractional_scale(), 1.25);
+        assert_eq!(output.current_mode(), Some(mode));
+        assert_eq!(output.current_transform(), Transform::Rot180);
+        assert_eq!(output.current_location(), (40, 20).into());
+        let mut change = spec.clone(); change.scale = 2.0;
+        for (identity, generation, available) in [(uuid::Uuid::new_v4(), 3, true), (instance, 4, true), (instance, 3, false)] {
+            assert!(apply_output_scale(&output, &change, identity, generation, available).is_err());
+            assert_eq!(output.current_scale().fractional_scale(), 1.25);
+            assert_eq!(output.current_mode(), Some(mode));
+        }
+        assert!(!apply_output_scale(&output, &spec, instance, 3, true).unwrap());
     }
 }
 

@@ -146,6 +146,8 @@ pub struct InfoSnapshot {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OutputSnapshot {
     pub name: String,
+    pub instance: String,
+    pub generation: u64,
     pub default: bool,
     pub x: i32,
     pub y: i32,
@@ -837,6 +839,8 @@ impl OutputSnapshot {
         match path {
             [] => serialise_selected(self),
             ["name"] => serialise_selected(&self.name),
+            ["instance"] => serialise_selected(&self.instance),
+            ["generation"] => serialise_selected(&self.generation),
             ["default"] => serialise_selected(&self.default),
             ["x"] => serialise_selected(&self.x),
             ["y"] => serialise_selected(&self.y),
@@ -853,7 +857,7 @@ impl OutputSnapshot {
     fn node_kind(&self, path: &[&str]) -> Option<SnapshotNodeKind> {
         match path {
             [] | ["usable"] => Some(SnapshotNodeKind::Object),
-            ["name" | "default" | "x" | "y" | "width" | "height" | "scale" | "refresh_mhz"] => {
+            ["name" | "instance" | "generation" | "default" | "x" | "y" | "width" | "height" | "scale" | "refresh_mhz"] => {
                 Some(SnapshotNodeKind::Leaf)
             }
             ["usable", tail @ ..] => self.usable.node_kind(tail),
@@ -1367,6 +1371,16 @@ pub static DESCRIPTORS: &[DescribeEntry] = &[
         &[L("outputs"), O, L("default")],
         Bool,
         "Whether this is the default output"
+    ),
+    descriptor!(
+        &[L("outputs"), O, L("instance")],
+        String,
+        "Actual output allocation UUID; changes on replacement or compositor restart"
+    ),
+    descriptor!(
+        &[L("outputs"), O, L("generation")],
+        Number,
+        "Current topology generation; required with instance by comp.output.scale"
     ),
     descriptor!(
         &[L("outputs"), O, L("x")],

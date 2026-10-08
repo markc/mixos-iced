@@ -1368,7 +1368,7 @@ checked separately by the layering gate.
 | [settings](https://github.com/markc/mixos/blob/main/libs/settings/Cargo.toml) | settings | lib | core | public | 0.3.5 |
 | [strict](https://github.com/markc/mixos/blob/main/libs/strict/Cargo.toml) | strict | lib | core | none | 0.1.1 |
 | [toolkit](https://github.com/markc/mixos/blob/main/libs/toolkit/Cargo.toml) | toolkit | lib | desktop | public | 0.2.11 |
-| [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | public | 0.1.18 |
+| [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | public | 0.1.20 |
 | [comp-model](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-model/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [comp-service](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-service/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [decor](https://github.com/markc/mixos/blob/main/services/compd/crates/decor/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
@@ -2051,6 +2051,48 @@ this contract does not add per-world settings, persistence, navigation UI,
 multi-seat session separation or a new VT. The VT-native self-contained session
 requirements remain unchanged. Nested readback proves compositor behaviour,
 not hardware scanout or host VT isolation.
+
+---
+
+<!-- page: https://mixos.dev/spec/compd/output-scale/ (source: https://mixos.dev/spec/compd/output-scale.md) -->
+
+# Live output scale — compd 0.1.20
+
+`comp.output.scale {output, instance, generation, scale}` is a finite native
+ABP request. Read the exact name, allocation UUID and positive topology
+generation from `comp.props.get {path:"outputs"}` immediately before admission.
+Scale is a finite JSON number in 0.5..4.0. Extra or missing fields are refused.
+The reply contains `output`, `instance`, `generation`, actual `scale` and
+`changed`. A no-op preserves the generation and schedules no redraw.
+
+An old allocation or topology fence returns `stale_output`. Missing/ambiguous
+outputs, missing modes/geometry or a paused session return `output_unavailable`.
+A session lock refuses the mutation. Generation exhaustion refuses a change.
+Refusals never mutate output scale. The UUID belongs to the actual Smithay
+Output allocation: same-name replacement and compositor restart cannot reuse it.
+
+The owner changes only Smithay Output scale, preserving its physical mode,
+transform and location. Existing geometry owners refresh each world's usable
+areas and maximised/fullscreen/tiled placements; ordinary windows keep logical
+state. Existing frame owners aggregate the sharpest scale across outputs,
+publish actual fractional-scale events and decided configure sizes, and redraw
+output damage. Explicit scale changes bypass the animation debounce once on
+the next actual frame, preserving its aggregation and deduplication.
+
+This contract does not change modes, add/remove connectors, select a KMS CRTC
+or switch VTs. Those remain native lifecycle responsibilities. Nested native
+Wayland protocol/buffer evidence does not prove physical KMS or hotplug.
+
+`tests/desktop/settings_output_scale_lib.mix` extends the real simultaneous
+application fixture with an opt-in 1.25 transition and restoration, retained
+product state, same PID/window generation, actual captured Ced buffer boundary,
+fresh actual fractional protocol events, actual retained Quoin button callbacks
+under fractional scale, and strict stale/invalid/no-op checks. The observer
+draws at logical size, so the fixture does not claim its physical buffer ratio.
+Native inputs run through the existing seat and citizen; no control relay is
+introduced. Rust owner/parser
+guards and the fixture require compilation and native execution before release
+acceptance; source inspection or Mix lint is insufficient.
 
 ---
 

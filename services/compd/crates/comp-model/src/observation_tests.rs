@@ -433,6 +433,8 @@ fn every_topic_uses_the_registered_service_and_an_unprefixed_command() {
         ObservationRecord::OutputChanged {
             output: "o_nested".into(),
             row: OutputSnapshot {
+                instance: uuid::Uuid::nil().to_string(),
+                generation: 1,
                 name: "nested".into(),
                 default: true,
                 x: 0,
@@ -593,6 +595,8 @@ fn props_changed_carries_path_and_cause_headers_and_a_timestamp() {
 #[test]
 fn every_topic_body_carries_its_event_seq() {
     let row = OutputSnapshot {
+        instance: uuid::Uuid::nil().to_string(),
+        generation: 1,
         name: "DP-1".into(),
         default: true,
         x: 0,

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.20
+
+- Add finite native `comp.output.scale`, fenced by the actual output instance
+  and current topology generation. Preserve mode/transform/location ownership;
+  refresh owning world placements, work areas, fractional clients and damage.
+- Publish additive read-only output `instance` and `generation` inspector facts.
+- Add retained real-app fractional output transition acceptance source. Native
+  execution and physical mode/hotplug acceptance remain separate requirements.
+
 ## 0.1.18
 
 - Add bounded `comp.hardware.snapshot` and incarnation-fenced

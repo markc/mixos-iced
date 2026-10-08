@@ -303,6 +303,16 @@ fn diff_output_row(
                     PropValue::U32(new.refresh_mhz),
                 ),
                 (
+                    "instance",
+                    PropValue::String(old.instance.clone()),
+                    PropValue::String(new.instance.clone()),
+                ),
+                (
+                    "generation",
+                    PropValue::U64(old.generation),
+                    PropValue::U64(new.generation),
+                ),
+                (
                     "usable.x",
                     PropValue::F32(old.usable.x),
                     PropValue::F32(new.usable.x),

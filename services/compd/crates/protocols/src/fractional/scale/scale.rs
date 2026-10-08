@@ -44,6 +44,15 @@ pub struct Fractional {
 }
 
 impl Fractional {
+    /// A discrete actual output scale change must publish on its first frame,
+    /// even on an otherwise idle desktop. The frame owner still aggregates all
+    /// outputs and deduplicates real per-surface protocol events.
+    pub fn output_changed(&mut self) {
+        self.armed = true;
+        self.cycle = None;
+        self.last_emit_at = None;
+    }
+
     pub fn set_config(&mut self, cfg: FractionalScaleConfig) {
         self.cfg = cfg;
     }

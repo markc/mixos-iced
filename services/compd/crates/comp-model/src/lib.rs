@@ -22,6 +22,7 @@
 //! ledger for the presentation leaves).
 
 pub mod capture;
+pub mod output_scale;
 pub mod catalogue;
 pub mod diff;
 pub mod observation;

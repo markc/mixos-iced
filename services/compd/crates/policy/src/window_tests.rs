@@ -16,6 +16,8 @@ fn default_output() -> DefaultOutput {
 
 fn outputs() -> BTreeMap<String, OutputSnapshot> {
     let row = |name: &str, x: i32| OutputSnapshot {
+        instance: "test-output".into(),
+        generation: 1,
         name: name.into(),
         default: x == 0,
         x,
@@ -1285,4 +1287,16 @@ fn world_activation_and_creation_obey_session_lock_but_listing_does_not_mutate()
     };
     assert!(super::locked_refusal(&activate, true).is_some());
     assert!(super::locked_refusal(&activate, false).is_none());
+}
+
+#[test]
+fn output_scale_uses_finite_native_mutation_and_session_lock_gate() {
+    let args = json!({"output":"DP-1","instance":"00000000-0000-0000-0000-000000000001","generation":1,"scale":1.25});
+    let op = comp_model::request::parse_window_verb("comp.output.scale", &args).unwrap();
+    let comp_model::request::WindowVerb::Op(op) = op else { panic!("scale must remain finite"); };
+    assert!(matches!(&op, WindowOp::OutputScale(_)));
+    assert!(super::locked_refusal(&op, true).is_some());
+    assert!(super::locked_refusal(&op, false).is_none());
+    assert!(matches!(comp_model::request::classify("comp.output.scale", &args, false), Ok(comp_model::request::Request::Window(_))));
+    assert!(comp_model::request::classify("comp.output.scale", &args, true).is_err());
 }

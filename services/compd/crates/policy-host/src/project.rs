@@ -343,6 +343,9 @@ pub(crate) fn project_outputs(
         rows.insert(
             key,
             OutputSnapshot {
+                instance: output.user_data().get::<comp_model::output_scale::OutputIdentity>()
+                    .map_or_else(String::new, |identity| identity.0.to_string()),
+                generation: lp.inner.comp.output_generation(&name),
                 default: default.as_ref() == Some(output),
                 x: geometry.loc.x,
                 y: geometry.loc.y,

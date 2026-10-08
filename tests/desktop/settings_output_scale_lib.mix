@@ -1,0 +1,107 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Opt-in real-app phase. Caller owns the existing native bus/session/children.
+$h=require("settings_host_lib.mix")
+$f=require("settings_fixture_lib.mix")
+$n=require("nested_host_lib.mix")
+$pixels=require("capture_lib.mix")
+fn check($condition,$message)
+  if not $condition then raise("OUTPUT_SCALE",$message) end
+end
+fn call($c,$verb,$body)
+  return $h.call($c.mix,$c.bus,$c.root,$c.service,$verb,$body)
+end
+fn rpc($c,$verb,$body)
+  $reply=call($c,$verb,$body)
+  check($reply.rc == 0,$verb .. ": " .. json_encode($reply))
+  return $reply.result
+end
+fn output($c)
+  $rows=rpc($c,"comp.props.get",{path:"outputs"})
+  check(len(keys($rows)) == 1,"Scale fixture needs exactly one owned output")
+  $row=$rows[keys($rows)[0]]
+  check($row.instance != nil and $row.generation > 0,"Actual output fence missing")
+  return $row
+end
+fn target($row,$scale)
+  return {output:$row.name,instance:$row.instance,generation:$row.generation,scale:$scale}
+end
+fn retained($app,$tab,$before)
+  check(process_alive($app.pid),"Existing Ced owner exited")
+  $after=$f.rpc($app.context,"ced.state",{tab:$tab,text:true})
+  check($after.buffer == $before.buffer and $after.rev == $before.rev and
+    $after.text == $before.text and deep_eq($after.selection,$before.selection),"Scale changed genuine Ced document/caret")
+  return $after
+end
+fn phase($c,$session,$bin,$ced,$tab,$background,$observer)
+  $initial=output($c)
+  check($initial.scale == 1,"Fixture starts at actual output scale 1")
+  $before=$f.rpc($ced.context,"ced.state",{tab:$tab,text:true})
+  $receipts=[]
+  for each $scale in [1.25,1.0]
+    $old=output($c)
+    $scale_offset=len(read_file($observer.log))
+    $reply=rpc($c,"comp.output.scale",target($old,$scale))
+    $now=output($c)
+    check($reply.changed and $reply.generation > $old.generation and $now.generation == $reply.generation and
+      $now.instance == $initial.instance and $now.scale == $scale,"Actual output scale/generation did not change")
+    check($now.refresh_mhz == $initial.refresh_mhz and abs($now.width*$scale-$initial.width) <= 1 and
+      abs($now.height*$scale-$initial.height) <= 1,"Scale changed physical mode/refresh instead of logical geometry")
+    $stale=call($c,"comp.output.scale",target($old,2.0))
+    check($stale.rc >= 10 and $stale.result.error == "stale_output","Old output fence changed scale")
+    for each $bad in [merge(target($now,2),{instance:"00000000-0000-0000-0000-000000000001"}),
+      merge(target($now,2),{output:"missing-output"}),target($now,0),target($now,"1.25"),merge(target($now,2),{extra:true})]
+      check(call($c,"comp.output.scale",$bad).rc >= 10,"Malformed/unavailable output accepted")
+    end
+    $noop=rpc($c,"comp.output.scale",target($now,$scale))
+    check(not $noop.changed and $noop.generation == $now.generation,"No-op advanced output generation")
+    check(output($c).scale == $scale,"Refusal mutated actual scale")
+    rpc($c,"comp.window.maximize",$background)
+    rpc($c,"comp.window.focus",$background)
+    rpc($c,"comp.window.focus",$observer.window)
+    rpc($c,"comp.window.focus",$ced.window)
+    -- A new distinct committed width excludes retained old geometry. This is
+    -- actual Ced buffer/palette evidence, not a claimed physical buffer ratio.
+    $width=if $scale == 1.25 then 500 else 504 end
+    rpc($c,"comp.window.place",merge($ced.window,{x:0,y:0,width:$width,height:400}))
+    $window=rpc($c,"comp.window.wait",{match:$ced.window,until:"size",width:$width,height:400,timeout_ms:5000}).window
+    check($window.pid == $ced.pid and $window.generation == $ced.window.generation,"Scale replaced real app/window")
+    -- Real retained Quoin control callback proves native pointer/button
+    -- delivery while fractional scale is active, through the existing citizen.
+    $shell=merge($c,{service:"shell"})
+    $layout=rpc($shell,"shell.scene.layout",{scene:"all-apps-control"})
+    check($layout.visible and $layout.nodes.go != nil,"Retained real Quoin button unavailable")
+    $events=$c.root .. "/controls-events.jsonl"
+    $click_offset=len(read_file($events))
+    $go=$layout.nodes.go
+    rpc($c,"comp.input.pointer.move",{seat:"human",x:$layout.surface.x+$go.x+$go.w/2,y:$layout.surface.y+$go.y+$go.h/2})
+    rpc($c,"comp.input.pointer.button",{seat:"human",button:"left",action:"click"})
+    $path=$c.root .. "/output-scale-" .. to_string($scale) .. ".ppm"
+    run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:10,env:$n.client_env($session,{})})
+    $image=$pixels.ppm($path)
+    $protocol=lines(trim(slice(read_file($observer.log),$scale_offset)))
+    check(process_alive($observer.pid) and contains($protocol,"preferred_scale " .. to_string($scale*120)),
+      "Existing actual fractional-scale protocol client did not receive fresh preferred scale")
+    $clicks=trim(slice(read_file($events),$click_offset))
+    check($clicks != "","No fresh actual Quoin callback after scale-transition native input")
+    $click=json_parse(lines($clicks)[0])
+    check($click.scene == "all-apps-control" and $click.node == "go" and $click.kind == "click",
+      "Fractional input reached another control")
+    check($image.w == $initial.width and $image.h == $initial.height,"Physical capture extent changed")
+    $inside=$pixels.pixel($image,($width-3)*$scale,300*$scale)
+    $outside=$pixels.pixel($image,($width+3)*$scale,300*$scale)
+    check($outside[0] >= 250 and $outside[1] <= 3 and $outside[2] >= 250 and
+      not deep_eq($inside,$outside),"Actual Ced configure/buffer boundary absent at output scale")
+    $state=retained($ced,$tab,$before)
+    -- Native routed input receipt names the existing owner. This receipt is
+    -- delivery at the compositor seat, not proof of Ced handling the key.
+    $input=rpc($c,"comp.input.key",{seat:"human",window:$ced.window,key:"Shift_L",action:"tap"})
+    retained($ced,$tab,$before)
+    $receipts=concat($receipts,[{output:$now,reply:$reply,stale:$stale,window:$window,
+      ced:$state,input_routing:$input,quoin_click:$click,fractional_protocol:$protocol,capture:$path,inside:$inside,outside:$outside}])
+  end
+  write_file($c.root .. "/output-scale.json",json_encode({kind:"actual scale and real existing Ced state/buffer boundary",
+    protocol_observer:{pid:$observer.pid,window:$observer.window,log:$observer.log,binary_sha256:hash_file($bin .. "/testkit-ssd-client","sha256")},
+    physical_kms:false,physical_hotplug:false,physical_buffer_ratio:false,receipts:$receipts}))
+  return $receipts
+end
