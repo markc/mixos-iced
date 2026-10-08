@@ -359,7 +359,13 @@ async fn worker(
     presentation: Presentation,
 ) -> Faults {
     let faults = Faults::default();
-    let options = SupervisedClient::connect_options(&service, &url)
+    let options = match ::bus::client_helpers::local_supervised_options(&service, &url) {
+        Ok(options) => options,
+        Err(error) => {
+            let _ = ready.send(Err(StartError::Unreachable(error.to_string())));
+            return faults;
+        }
+    }
         .fatal_on_registration_rejection(true)
         .bounded_incoming(INCOMING_BOUND);
     let client = if settings {

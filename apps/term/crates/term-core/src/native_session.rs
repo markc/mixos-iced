@@ -4,7 +4,7 @@
 use crate::session_fd::{LaunchFd, fresh_key};
 use ::bus::native_client::session::{Deadline, ExpectedScope, GrantResult, Hello, SessionFailure};
 use ::bus::native_client::{
-    BrokerAccount, NodedClient, UnixConnectOptions, UnixConnectOutcome, VerifiedConnection,
+    NodedClient, UnixConnectOptions, UnixConnectOutcome, VerifiedConnection,
 };
 use ::bus::native_session::*;
 use ed25519_dalek::SigningKey;
@@ -404,29 +404,9 @@ impl Supervisor {
         // or the ownership of an attacker-selected socket. No numeric default.
         let account_name =
             std::env::var("MIXOS_BROKER_ACCOUNT").unwrap_or_else(|_| "mixos-noded".into());
-        let name = std::ffi::CString::new(account_name).map_err(|_| "invalid broker account")?;
-        let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
-        let mut result = std::ptr::null_mut();
-        let mut buffer = vec![0u8; 65536];
-        // SAFETY: getpwnam_r writes only the supplied storage; copied UID/GID
-        // outlive the scratch buffer, and no libc static storage is retained.
-        let rc = unsafe {
-            libc::getpwnam_r(
-                name.as_ptr(),
-                entry.as_mut_ptr(),
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-                &mut result,
-            )
-        };
-        if rc != 0 || result.is_null() {
-            return Err("configured broker account unavailable".into());
-        }
-        let entry = unsafe { entry.assume_init() };
-        let mut options = ::bus::client_helpers::unix_connect_options(BrokerAccount {
-            uid: entry.pw_uid,
-            gid: entry.pw_gid,
-        })
+        let account = ::bus::client_helpers::broker_account_named(&account_name)
+            .map_err(|e| e.to_string())?;
+        let mut options = ::bus::client_helpers::unix_connect_options(account)
         .map_err(|e| e.to_string())?;
         options.require_native_session = true;
         // Opt in to the bounded verified lane. An unbounded one would let a

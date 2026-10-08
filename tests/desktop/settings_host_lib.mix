@@ -6,7 +6,7 @@ fn bus_env($broker,$directory)
   return {MIXOS_NODED_URL:$broker.url,COSMIX_NODED_URL:$broker.url,
     MIXOS_NODE_CONFIG:$broker.conf,COSMIX_NODE_CONFIG:$broker.conf,
     MIXOS_RUN:$directory .. "/run",MIXOS_ETC:$directory .. "/etc",MIXOS_VAR:$directory .. "/var",
-    HOME:$directory .. "/home",MIXOS_BROKER_ACCOUNT:env("MIXOS_BROKER_ACCOUNT")}
+    HOME:$directory .. "/home",MIXOS_BROKER_ACCOUNT:$broker.account}
 end
 fn call($mix,$broker,$directory,$service,$verb,$body)
   $script = '$body = ' .. json_encode(json_encode($body)) .. "\nsend " .. json_encode($service) ..
