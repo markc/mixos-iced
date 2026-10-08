@@ -208,7 +208,26 @@ impl Decoded {
             fingerprint: (command.body.len() <= MAX_SNAPSHOT_BYTES)
                 .then(|| *blake3::hash(command.body.as_bytes()).as_bytes()),
             observation: command.header("settings_observation").filter(|value| value.len() <= 16 * 1024)
-                .and_then(|value| serde_json::from_str::<crate::clock::Commit>(value).ok()),
+                .and_then(|value| serde_json::from_str::<crate::clock::Commit>(value).ok())
+                .map(|mut observation| {
+                    if !local_authority_clock(command) {
+                        // Preserve valid operation/control identity; a local
+                        // app republishing it cannot make remote clocks local.
+                        observation.validation_started = None;
+                        observation.commit_started = None;
+                        observation.accepted = None;
+                    }
+                    observation
+                }),
         })
     }
+}
+
+fn local_authority_clock(command: &IncomingCommand) -> bool {
+    if command.header("broker_origin") != Some("local") { return false; }
+    let mut envelope = bus::wire::BusMessage::new();
+    envelope.headers = command.headers.clone();
+    matches!(bus::native_session::read_principal(&envelope), Ok(Some(principal))
+        if matches!(principal.assurance, bus::native_session::Assurance::LocalUnix
+            | bus::native_session::Assurance::SessionBound))
 }

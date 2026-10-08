@@ -19,7 +19,15 @@ struct Owner {
     value:Value,
     window:Option<(u64,u64)>,
     frame_window:Option<u64>,
+    frame_owner:Option<u64>,
     operation:Option<settings::clock::Commit>,
+}
+
+struct Association {
+    registration: String,
+    window: (u64,u64),
+    retired: bool,
+    last_request: Option<u64>,
 }
 
 pub(crate) struct Participants {
@@ -28,6 +36,7 @@ pub(crate) struct Participants {
     registrations:BTreeMap<String,String>,
     owners:BTreeMap<String,Owner>,
     latest:BTreeMap<String,PresentationNotice>,
+    associations:BTreeMap<(String,u64),Association>,
     last:Value,
 }
 
@@ -35,12 +44,14 @@ impl Default for Participants {
     fn default()->Self {
         let clock = settings::clock::now().map(|stamp|Clock {host_id:"local-native-broker".into(), boot_id:stamp.boot_id, clock_id:stamp.clock_id});
         let registry = participants::Registry::new(128, clock.clone().unwrap_or(Clock {host_id:"unavailable".into(),boot_id:"unavailable".into(),clock_id:0}));
-        Self {registry,clock,registrations:BTreeMap::new(),owners:BTreeMap::new(),latest:BTreeMap::new(),last:Value::Null}
+        Self {registry,clock,registrations:BTreeMap::new(),owners:BTreeMap::new(),latest:BTreeMap::new(),associations:BTreeMap::new(),last:Value::Null}
     }
 }
 
 impl Participants {
     pub fn registrations(&mut self, registrations:BTreeMap<String,String>) {
+        self.associations.retain(|(service,_), association|
+            registrations.get(service) == Some(&association.registration));
         for (key, owner) in &self.owners {
             if registrations.get(&owner.scope.service) != Some(&owner.registration) {
                 let _ = self.registry.retire(owner.token);
@@ -71,7 +82,7 @@ impl Participants {
         if snapshot.live_generation != Some(generation) {return;}
         let scope = Scope {service:service.clone(),process_instance:pid,session_generation:generation,surface,
             surface_incarnation:window.map_or(surface,|(_,incarnation)|incarnation)};
-        let replacing = self.owners.get(&key).is_none_or(|owner| owner.registration != registration || owner.scope != scope || owner.window != window);
+        let replacing = self.owners.get(&key).is_none_or(|owner| owner.registration != registration || owner.scope != scope || owner.window != window || owner.frame_owner != snapshot.owner);
         if !self.owners.contains_key(&key) && self.owners.len() >= 128 {
             let retired = self.owners.iter().find_map(|(key,owner)| {
                 self.registry.observe(owner.token,false).ok()
@@ -101,11 +112,16 @@ impl Participants {
         // Install acceptance before the new copied receipt so a coalesced ACK
         // plus presentation event compares against the previous receipt only.
         let _ = self.registry.visibility(token,visibility);
+        let frame_owner = snapshot.owner;
         if snapshot.window.is_some() {let _ = self.registry.report_frames(token,snapshot);}
-        self.owners.insert(key, Owner {registration,scope,token,value,window,frame_window,operation});
+        self.owners.insert(key, Owner {registration,scope,token,value,window,frame_window,frame_owner,operation});
     }
     pub fn sync(&mut self, windows:&[Window], inactive:bool, local_service:Option<&str>, local_value:Value,
         local_frames:Vec<(String,u64,frames::Snapshot,bool)>, deadline_elapsed:bool)->Value {
+        let alive:BTreeSet<_> = windows.iter().map(|window|(window.id,window.incarnation)).collect();
+        for association in self.associations.values_mut() {
+            if !alive.contains(&association.window) {association.retired = true;}
+        }
         let latest:Vec<_> = self.latest.values().cloned().collect();
         for mut notice in latest {
             if Some(notice.service.as_str()) == local_service {continue;}
@@ -117,6 +133,27 @@ impl Participants {
             // association; do not select an arbitrary matching PID.
             if matches.len() != 1 {continue;}
             let window = matches[0];
+            let Some(frame_owner) = snapshot.owner else {continue;};
+            let key = (notice.service.clone(),frame_owner);
+            if !self.associations.contains_key(&key) {
+                // Tombstones remain until registration retirement. Exhaustion
+                // is explicit unavailability, never eviction which revives an
+                // old owner callback after a same-PID window replacement.
+                for ((service,_),old) in &mut self.associations {
+                    if service == &notice.service {old.retired = true;}
+                }
+                if self.associations.len() >= 128 {continue;}
+                self.associations.insert(key.clone(),Association {
+                    registration:notice.registration.clone(),window:(window.id,window.incarnation),
+                    retired:false,last_request:None,
+                });
+            }
+            let association = self.associations.get_mut(&key).expect("admitted frame owner");
+            if association.retired || association.registration != notice.registration
+                || association.window != (window.id,window.incarnation) {continue;}
+            if let Some(request) = snapshot.last_presented.and_then(|frame|frame.request_id) {
+                association.last_request = Some(association.last_request.map_or(request,|old|old.max(request)));
+            }
             let visibility = if inactive {Visibility::InactiveSession} else {window.visibility};
             notice.value["observer_provenance"]=notice.provenance;
             self.install(notice.service.clone(),notice.service,notice.registration,notice.value,snapshot,
@@ -134,9 +171,11 @@ impl Participants {
                 }
             }
         }
-        let alive:BTreeSet<_> = windows.iter().map(|window|(window.id,window.incarnation)).collect();
         let mut rows = Vec::new();
         for (key, owner) in &self.owners {
+            if owner.frame_owner.is_some_and(|frame_owner|
+                self.associations.get(&(owner.scope.service.clone(),frame_owner))
+                    .is_some_and(|association|association.retired)) {let _ = self.registry.retire(owner.token);}
             if owner.window.is_some_and(|window|!alive.contains(&window)) {let _ = self.registry.retire(owner.token);}
             if owner.window.is_none() && !local_keys.contains(key) {let _ = self.registry.retire(owner.token);}
             let Ok(observed) = self.registry.observe(owner.token,deadline_elapsed) else {continue;};
@@ -147,6 +186,7 @@ impl Participants {
                 "registration_incarnation":owner.registration,"connection_generation":owner.scope.session_generation,
                 "native_window":owner.window.map(|(id,generation)|json!({"id":id,"generation":generation})),
                 "frame_window":owner.frame_window,"surface_incarnation":owner.scope.surface_incarnation,
+                "frame_owner":owner.frame_owner,
                 "provenance":owner.value["observer_provenance"],
                 "state":state,"phase":phase,"context":owner.value["settings"]["context"],
                 "current":observed.accepted,"applied":observed.applied,"resources":owner.value["settings"]["resources"],
@@ -160,4 +200,93 @@ impl Participants {
         next
     }
     pub fn snapshot(&self)->Value {self.last.clone()}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use application::iced::window::Id;
+
+    fn notice(handle:&frames::Handle, sequence:u64)->PresentationNotice {
+        let identity=json!({"incarnation":"authority","revision":1,"design_revision":1,"source_digest":"source"});
+        PresentationNotice {service:"term".into(),registration:"registered".into(),sequence,generation:1,
+            provenance:json!({"origin":"local","peer_pid":7}),
+            value:json!({"pid":7,"connection_generation":1,
+                "settings":{"context":"app:term","current":identity,"applied":identity},
+                "settings_observation":{"authority":{"operation_id":"changed","identity":identity,
+                    "changed":true,"validation_started":null,"commit_started":null,"accepted":null}},
+                "installed_frame_stamp":{"activation_epoch":1,"local_revision":0},
+                "native_frames":frames::snapshot_json(&handle.snapshot())})}
+    }
+    fn window(id:u64)->Window {
+        Window {id,incarnation:id,pid:7,visibility:Visibility::Visible}
+    }
+    fn sync(participants:&mut Participants, windows:&[Window])->Value {
+        participants.sync(windows,false,None,Value::Null,Vec::new(),false)
+    }
+    fn present(handle:&frames::Handle, window:Id, request:u64) {
+        handle.binding(frames::FrameStamp {activation_epoch:1,local_revision:0}).captured().observe(
+            window,Some(request),frames::FrameOutcome::Presented {clock_id:None,seconds:0,nanoseconds:0,
+                refresh_ns:0,output_sequence:request,flags:0});
+    }
+    #[test]
+    fn retired_receipt_and_late_callback_cannot_certify_same_pid_replacement() {
+        let mut participants=Participants::default();
+        participants.registrations(BTreeMap::from([("term".into(),"registered".into())]));
+        let old=frames::Handle::new(); old.set_live_generation(Some(1));
+        let old_window=Id::unique(); present(&old,old_window,1);
+        participants.notice(notice(&old,1));
+        assert_eq!(sync(&mut participants,&[window(10)])["participants"][0]["state"],"presented",
+            "legitimate first presentation is not discarded");
+        assert_eq!(sync(&mut participants,&[])["participants"][0]["state"],"closed");
+        let retained=sync(&mut participants,&[window(11)]);
+        assert_eq!(retained["participants"][0]["state"],"closed");
+        assert_eq!(retained["participants"][0]["native_window"]["id"],10);
+        present(&old,old_window,2); participants.notice(notice(&old,2));
+        assert_eq!(sync(&mut participants,&[window(11)])["participants"][0]["state"],"closed",
+            "even a newer callback from the retired Handle cannot rebind");
+        assert_eq!(participants.associations[&("term".into(),old.snapshot().owner.unwrap())].last_request,Some(1),
+            "retirement retains the original request baseline instead of moving it with a late callback");
+        let fresh=frames::Handle::new(); fresh.set_live_generation(Some(1));
+        participants.notice(notice(&fresh,3));
+        let pending=sync(&mut participants,&[window(11)]);
+        assert_eq!(pending["participants"][0]["state"],"awaiting_presentation");
+        assert!(pending["participants"][0]["presentation"].is_null());
+        present(&fresh,Id::unique(),1); participants.notice(notice(&fresh,4));
+        let presented=sync(&mut participants,&[window(11)]);
+        assert_eq!(presented["participants"][0]["state"],"presented");
+        assert_eq!(presented["participants"][0]["native_window"]["id"],11);
+    }
+    #[test]
+    fn pending_owner_is_associated_before_its_first_callback() {
+        let mut participants=Participants::default();
+        participants.registrations(BTreeMap::from([("term".into(),"registered".into())]));
+        let handle=frames::Handle::new(); handle.set_live_generation(Some(1));
+        participants.notice(notice(&handle,1));
+        assert!(sync(&mut participants,&[window(10)])["participants"][0]["presentation"].is_null());
+        sync(&mut participants,&[]);
+        present(&handle,Id::unique(),1); participants.notice(notice(&handle,2));
+        assert_eq!(sync(&mut participants,&[window(11)])["participants"][0]["state"],"closed");
+        assert!(participants.associations.values().all(|association|association.retired));
+        participants.registrations(BTreeMap::new());
+        assert!(participants.associations.is_empty(),"broker retirement bounds tombstone lifetime");
+    }
+    #[test]
+    fn association_capacity_never_evicts_a_retired_owner_or_retains_false_current_proof() {
+        let mut participants=Participants::default();
+        participants.registrations(BTreeMap::from([("term".into(),"registered".into())]));
+        let first=frames::Handle::new(); first.set_live_generation(Some(1));
+        participants.notice(notice(&first,1)); sync(&mut participants,&[window(10)]);
+        for sequence in 2..=128 {
+            let owner=frames::Handle::new(); owner.set_live_generation(Some(1));
+            participants.notice(notice(&owner,sequence)); sync(&mut participants,&[window(10)]);
+        }
+        assert_eq!(participants.associations.len(),128);
+        let excess=frames::Handle::new(); excess.set_live_generation(Some(1));
+        participants.notice(notice(&excess,129));
+        assert_eq!(sync(&mut participants,&[window(10)])["participants"][0]["state"],"closed");
+        assert_eq!(participants.associations.len(),128);
+        present(&first,Id::unique(),1); participants.notice(notice(&first,130));
+        assert_eq!(sync(&mut participants,&[window(11)])["participants"][0]["state"],"closed");
+    }
 }

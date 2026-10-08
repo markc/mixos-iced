@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.26
+
+- Mint immutable bounded frame Handle ownership before its first callback so
+  copied receipt history cannot rebind to a replacement native window.
+
 ## 0.1.25
 
 - Publish actual frame-owner observation changes through the existing native

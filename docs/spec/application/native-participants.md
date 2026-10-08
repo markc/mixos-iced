@@ -17,6 +17,23 @@ generation. Same-name replacement retires old observation ownership even if
 the name list never changed. Registry history and pending notice maps are
 bounded; retired callbacks cannot regain admission after tombstone eviction.
 
+Each actual FrameHandle mints an immutable `owner` identity before its first
+callback. The authenticated registration/PID and this identity admit one native
+window incarnation. Retirement keeps its last request baseline and rejects the
+old owner even when a later callback has a greater request number. A same-PID
+replacement needs a fresh actual Handle association; copied old pixels cannot
+be rebound by a new sole-PID match. A pending first callback remains unavailable
+for presentation. Associations are bounded to 128 and remain tombstones until
+registration retirement; exhaustion refuses new association instead of evicting
+history and reviving old callbacks. Participant rows expose `frame_owner`.
+
+Presentation topic reconciliation is serial and coalesces desired registry
+state. Sent subscriptions, including ones whose reply was lost, remain owned
+until an unsubscribe acknowledgement. A new registry event cannot cancel a
+pending removal. The possible subscription set is bounded to 128 and reset on
+actual broker generation retirement; an old acknowledgement cannot remove a
+new generation's subscription.
+
 Quoin scene records use the compositor's actual per-scene FrameHandles. Queued
 pixel stamps live on graphics Backings and survive ring moves. A replacement or
 released Backing clears its metadata. A generation change preserves historical
@@ -71,6 +88,11 @@ and schema are unchanged. New durable changed operations may carry original
 acceptance timing; no-op, old replay, lookup and restart do not invent it.
 Latency requires matching operation identity, installed stamp and actual frame
 receipt, plus authenticated local source and equal boot/clock identities.
+Original settings delivery must itself carry local broker origin and a valid
+local Unix/session-bound principal. Remote operation identity remains valid
+control evidence, but its comparable timing fields are cleared before a local
+application can republish them. Matching JSON boot/clock fields alone cannot
+make a remote authority acceptance time local.
 Unavailable timing is null. Hidden, inactive and closed rows never supply new
 presentation samples. Quantiles must use real monotonic samples and report
 sample count, environment and estimator; sequential observation bounds are

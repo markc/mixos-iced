@@ -1,5 +1,10 @@
 # settings contract changes
 
+## 0.3.8
+
+- Preserve remote changed-operation identity while removing comparable timing
+  unless the original settings delivery has authenticated local provenance.
+
 ## 0.3.7
 
 Carry optional typed authority observation in the protected native snapshot

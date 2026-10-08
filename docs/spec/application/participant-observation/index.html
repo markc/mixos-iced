@@ -4,16 +4,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="The existing scene-host registry subscriber owns application.participants.v1. Its app.describe extension participants and retained…">
+    <meta name="description" content="Status: additive source checkpoint; native acceptance pending.">
     <!-- Favicons from share/brand: the SVG follows the visitor's light/dark preference. -->
     <link rel="icon" href="/favicon.ico?v=c34fdc68c4" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/web/favicon.svg?v=51993ccf9f">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-light.png?v=b7dd291dfa" media="(prefers-color-scheme: light)">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-dark.png?v=e6873d12a3" media="(prefers-color-scheme: dark)">
     <link rel="apple-touch-icon" sizes="180x180" href="/web/brand/apple-touch-icon.png?v=d578c3d9bb">
-    <title>Native participant observations — MixOS</title>
-    <link rel="canonical" href="https://mixos.dev/spec/application/native-participants/">
-    <link rel="alternate" type="text/markdown" href="/spec/application/native-participants.md" title="Markdown source">
+    <title>Native participant observation — MixOS</title>
+    <link rel="canonical" href="https://mixos.dev/spec/application/participant-observation/">
+    <link rel="alternate" type="text/markdown" href="/spec/application/participant-observation.md" title="Markdown source">
     <meta name="mixos-build" content="87a61ef09456">
     <link rel="preload" href="/web/fonts/icons.woff2?v=3a1086a40a" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="/web/fonts/sans.woff2?v=22f05185ef" as="font" type="font/woff2" crossorigin>
@@ -239,97 +239,49 @@
 <main id="content" tabindex="-1">
     <div id="doc-view" class="content-section">
         <article id="content-doc" class="prose" data-pagefind-body>
-<h1 id="native-participant-observations">Native participant observations</h1>
-<p>The existing scene-host registry subscriber owns <code>application.participants.v1</code>.
-Its <code>app.describe</code> extension <code>participants</code> and retained
-<code>&lt;service&gt;.participants.changed</code> topic contain the same copied owner record.
-Observing a record does not request a redraw, install settings or set authority.</p>
-<p>External application records arrive on owner-protected
-<code>&lt;application-service&gt;.presentation.changed</code>, contract
-<code>application.presentation.v1</code>. The local broker supplies the registration
-incarnation and native Unix principal. The receiver requires explicit local
-origin, the current registration incarnation and payload PID equal to the
-actual Unix peer PID. It joins exactly one actual native window with that PID;
-ambiguous multi-window associations are unavailable. The native window ID and
-generation are separate from the producer's frame window and connection
-generation. Same-name replacement retires old observation ownership even if
-the name list never changed. Registry history and pending notice maps are
-bounded; retired callbacks cannot regain admission after tombstone eviction.</p>
-<p>Each actual FrameHandle mints an immutable <code>owner</code> identity before its first
-callback. The authenticated registration/PID and this identity admit one native
-window incarnation. Retirement keeps its last request baseline and rejects the
-old owner even when a later callback has a greater request number. A same-PID
-replacement needs a fresh actual Handle association; copied old pixels cannot
-be rebound by a new sole-PID match. A pending first callback remains unavailable
-for presentation. Associations are bounded to 128 and remain tombstones until
-registration retirement; exhaustion refuses new association instead of evicting
-history and reviving old callbacks. Participant rows expose <code>frame_owner</code>.</p>
-<p>Presentation topic reconciliation is serial and coalesces desired registry
-state. Sent subscriptions, including ones whose reply was lost, remain owned
-until an unsubscribe acknowledgement. A new registry event cannot cancel a
-pending removal. The possible subscription set is bounded to 128 and reset on
-actual broker generation retirement; an old acknowledgement cannot remove a
-new generation's subscription.</p>
-<p>Quoin scene records use the compositor's actual per-scene FrameHandles. Queued
-pixel stamps live on graphics Backings and survive ring moves. A replacement or
-released Backing clears its metadata. A generation change preserves historical
-receipt provenance, but old receipts cannot certify a current generation.</p>
-<p>Each row contains service, PID, registration incarnation, connection generation,
-native-window identity, frame-window identity and surface incarnation; current
-and applied snapshot identities; phase, state, resource evidence and optional
-actual presentation receipt. Visible, hidden, minimised, inactive session and
-closed states remain distinct. A hidden or inactive buffer is never presented
-merely because settings were applied. A physical VT claim additionally needs a
-real native seat transition; nested session state is not physical proof.</p>
-<p><code>app.participants.wait</code> accepts exactly:</p>
-<pre><code class="language-json">{"operation_id":"changed-operation","services":["term","shell"],"timeout_ms":1000}
-</code></pre>
-<p>Operation ID is nonempty and at most 128 bytes. Service names are unique,
-nonempty and at most 256 bytes; there are 1–128 services. Timeout is 1–60000 ms.
-The bounded request uses owner watch changes and one absolute deadline from
-admission, with lifecycle/generation cancellation. It returns
-<code>application.participants.wait.v1</code>, operation ID, expected services,
-<code>deadline_elapsed</code> and <code>observations</code>. Completion requires every requested
-service to have actual matching changed-operation records in presented or
-explicit nonvisible states, or a real closed record. On expiry, incomplete
-eligible live rows become nonresponsive while their actual phase remains
-unchanged. Missing rows remain missing, not manufactured participants.</p>
-<p>On-time completion requires the selected phase to have actually been observed
-by the owner no later than the admission deadline. A predeadline receipt may
-settle later and still succeed; a receipt first observed after the deadline
-cannot succeed on time. The owner retains up to 128 meaningful phase changes
-with private monotonic observation times, independent of authority acceptance
-times. Exhausted history refuses with <code>PARTICIPANT_HISTORY_GAP</code>; it never
-invents a missing earlier receipt. Repeated unchanged frames do not replace the
-first observation of the same phase and stamp.</p>
-<p>Optional <code>until</code> is <code>settled</code> (default), <code>presented</code> or <code>closed</code>. <code>closed</code>
-requires actual retirement of every selected owner. <code>presented</code> requires
-actual matching operation presentation for every selected row; hidden,
-minimised, inactive and closed rows cannot complete it. Optional <code>keys</code> is a
-unique list of 1–128 exact participant keys, at most 512 bytes each. Every key
-must exist and each requested service must have a selected row. This selects
-one real Quoin scene without claiming that its hidden sibling scenes presented.
-The reply echoes the selected keys and criterion.</p>
-<p>Authority observation uses the optional bounded <code>settings_observation</code> header
-on the existing protected settings snapshot topic. The snapshot body, digest
-and schema are unchanged. New durable changed operations may carry original
-acceptance timing; no-op, old replay, lookup and restart do not invent it.
-Latency requires matching operation identity, installed stamp and actual frame
-receipt, plus authenticated local source and equal boot/clock identities.
-Original settings delivery must itself carry local broker origin and a valid
-local Unix/session-bound principal. Remote operation identity remains valid
-control evidence, but its comparable timing fields are cleared before a local
-application can republish them. Matching JSON boot/clock fields alone cannot
-make a remote authority acceptance time local.
-Unavailable timing is null. Hidden, inactive and closed rows never supply new
-presentation samples. Quantiles must use real monotonic samples and report
-sample count, environment and estimator; sequential observation bounds are
-separate evidence.</p>
-<p>This contract is additive. Source implementation alone is not native or KMS
-acceptance; the exact published candidate must pass broker, lifecycle and
-seven-owner runtime gates.</p>
+<h1 id="native-participant-observation">Native participant observation</h1>
+<p>Status: additive source checkpoint; native acceptance pending.</p>
+<p>The canonical <code>application.describe.v1</code> envelope remains unchanged. Native GUI
+owners add <code>settings_observation</code>, <code>native_frames</code> and <code>installed_frame_stamp</code>.
+Quoin adds <code>native_scene_frames</code>, one bounded entry per actual scene surface,
+with separate current installed state. These are optional capability evidence,
+not required identity fields. Headless owners do not claim native frames.</p>
+<p><code>settings_observation</code> records the first native delivery and actual resource ACK
+for each snapshot identity and connection generation. Each point carries an
+optional boot identity, CLOCK_MONOTONIC identifier and nanoseconds. Reading
+description performs no I/O, activation, ACK, rendering or timestamp refresh.
+Delivery is not durable acceptance. Application ACK is not presentation.</p>
+<p><code>native_frames</code> exposes the real frame owner's bounded historical receipts.
+Their immutable stamp, native request, actual window incarnation and native
+clock remain attached to the submitted buffer. <code>installed_frame_stamp</code> is
+current preparation state and must never be substituted into a historical
+receipt. Quoin captures the binding of the actual published GPU ring slot,
+filters actual renderer visibility, and delivers a receipt only after a real
+backend presentation. Nested swap evidence is distinct from physical KMS/VT
+evidence. Hidden buffers and offscreen captures do not certify presentation.</p>
+<p>The shared <code>application::participants</code> registry is a bounded pure observation
+adapter. Existing native owners supply service/process/session/surface identity,
+registration and retirement, compositor visibility, accepted operation identity,
+actual ACK and existing frame handle. It opens no transport, timer or authority.
+Its phases are pending, accepted, applied and presented. Its states distinguish
+hidden, minimised, inactive session, closed, unsupported and nonresponsive within
+an explicit observation deadline. A deadline is not a diagnosis that a process
+is hung. Inactive physical VT classification requires real seat evidence.</p>
+<p>A participant generation retires held callbacks but a stable retained view
+captures fresh callback provenance for each new native request. Neither a
+reconnection nor an unchanged confirmation invents a new presentation stamp.
+Latency is available only for exact operation identity, installed view stamp,
+actual native receipt and matching boot/clock. Foreign or absent clocks and
+history lost on restart are unavailable. Quantiles require measured samples;
+sequential observation deadlines are only upper bounds.</p>
+<p>The <a href="/spec/application/native-participants/">native owner contract</a> wires these seams to the
+existing scene-host registry subscriber, actual broker sender incarnations and
+authenticated Unix peer PIDs. The simultaneous seven-owner gate distinguishes
+native installed/presented receipts from palette evidence and physical VT
+proof. Exact-candidate runtime acceptance remains required. No polling or
+parallel authority is authorised by this observation contract.</p>
         </article>
-        <p class="doc-source"><a href="/spec/application/native-participants.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
+        <p class="doc-source"><a href="/spec/application/participant-observation.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
     </div>
 </main>
 <script src="/web/base.js?v=2652b9bc10"></script>

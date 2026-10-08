@@ -173,6 +173,36 @@ impl RegistryPending {
 }
 type RegistryMailbox = Arc<Mutex<RegistryPending>>;
 
+#[derive(Default)]
+struct PresentationSubscriptions {
+    generation: u64,
+    // Include a subscribe before sending it: a timed-out reply may still
+    // have installed broker state. Only an acknowledged unsubscribe removes it.
+    possible: BTreeSet<String>,
+    desired: BTreeSet<String>,
+    dirty: bool,
+}
+impl PresentationSubscriptions {
+    fn reset(&mut self, generation:u64) {
+        *self = Self {generation,..Self::default()};
+    }
+    fn desire(&mut self, next:BTreeSet<String>) {
+        self.desired = next;
+        self.dirty = true;
+    }
+    fn subscribing(&mut self, generation:u64, service:&str)->Result<(),String> {
+        if self.generation != generation {return Err("subscription generation retired".into());}
+        if self.possible.len() >= 128 && !self.possible.contains(service) {
+            return Err("presentation subscription capacity".into());
+        }
+        self.possible.insert(service.to_owned());
+        Ok(())
+    }
+    fn unsubscribed(&mut self, generation:u64, service:&str) {
+        if self.generation == generation {self.possible.remove(service);}
+    }
+}
+
 /// The names to try, in order: `shell`, then the override when it differs.
 pub fn candidate_names(service_override: Option<&str>) -> Vec<String> {
     let mut names = vec![DEFAULT_SERVICE.to_owned()];
@@ -751,10 +781,22 @@ async fn serve(
     let mut registry = None;
     let mut registrations = BTreeMap::new();
     let mut subscriptions = None;
+    let subscription_state = Arc::new(Mutex::new(PresentationSubscriptions::default()));
+    subscription_state.lock().unwrap().reset(client.connection_generation());
     let mut registry_retries = 0;
     let mut registry_subscription = (initial_state == ConnState::Connected)
         .then(|| Box::pin(registry_subscribe(Arc::clone(client))));
     loop {
+        // Reconcile one acknowledged snapshot at a time. Registry updates
+        // only coalesce desired state and cannot cancel an unfinished removal.
+        if subscriptions.is_none() {
+            let mut state = subscription_state.lock().unwrap();
+            if state.dirty && settings::native::live_generation(client) == Some(state.generation) {
+                state.dirty = false;
+                subscriptions = Some(Box::pin(presentation_subscriptions(Arc::clone(client),
+                    Arc::clone(&subscription_state),state.generation,state.possible.clone(),state.desired.clone())));
+            }
+        }
         tokio::select! {
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
@@ -774,6 +816,7 @@ async fn serve(
                 notify(lane.publish(SettingsEvent::Wake));
                 registry = None;
                 subscriptions = None;
+                subscription_state.lock().unwrap().reset(client.connection_generation());
                 registrations.clear();
                 {
                     let mut pending=registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -804,7 +847,7 @@ async fn serve(
                         let mut pending = registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         pending.names = Some((generation, services));
                         pending.registrations = Some((generation, identities.clone()));
-                        subscriptions = Some(Box::pin(presentation_subscriptions(Arc::clone(client), registrations.keys().cloned().collect(), identities.keys().cloned().collect())));
+                        subscription_state.lock().unwrap().desire(identities.keys().cloned().collect());
                         registrations = identities;
                         (delivery.waker)();
                     }
@@ -833,7 +876,7 @@ async fn serve(
                                 let mut pending = registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                                 pending.names = Some((command.generation, identities.keys().cloned().collect()));
                                 pending.registrations = Some((command.generation, identities.clone()));
-                                subscriptions = Some(Box::pin(presentation_subscriptions(Arc::clone(client), registrations.keys().cloned().collect(), identities.keys().cloned().collect())));
+                                subscription_state.lock().unwrap().desire(identities.keys().cloned().collect());
                                 registrations = identities;
                                 (delivery.waker)();
                             }
@@ -885,6 +928,8 @@ async fn serve(
             }
             result = async {subscriptions.as_mut().expect("guarded presentation subscription").await}, if subscriptions.is_some() => {
                 subscriptions = None;
+                // Updates during the flight already set dirty. Do not start
+                // an unbounded retry loop for an unchanged failed snapshot.
                 if let Err(error) = result {tracing::warn!(%error, "presentation observation subscription incomplete; awaits next native lifecycle event");}
             }
             Some(event) = events.recv() => {
@@ -1132,16 +1177,21 @@ fn presentation_notice(command:&IncomingCommand, registrations:&BTreeMap<String,
             "peer_pid":principal.peer_pid,"broker_epoch":principal.broker_epoch,"connection_id":principal.connection_id}), value})
 }
 
-async fn presentation_subscriptions(client:Arc<SupervisedClient>, previous:BTreeSet<String>, next:BTreeSet<String>)->Result<(),String> {
-    let generation = settings::native::live_generation(&client).ok_or("native connection unavailable")?;
+async fn presentation_subscriptions(client:Arc<SupervisedClient>, state:Arc<Mutex<PresentationSubscriptions>>,
+    generation:u64, previous:BTreeSet<String>, next:BTreeSet<String>)->Result<(),String> {
+    if settings::native::live_generation(&client) != Some(generation) {return Err("native connection unavailable".into());}
     let deadline = tokio::time::Instant::now() + SEND_TIMEOUT;
     for service in previous.difference(&next) {
         let headers = BTreeMap::from([("name".into(),format!("{service}.presentation.changed"))]);
-        tokio::time::timeout_at(deadline,client.call_with_headers_raw_at_generation(generation,"noded","topic.unsubscribe",&headers,"")).await.map_err(|_|"unsubscribe deadline")?.map_err(|_|"unsubscribe failed")?;
+        let reply=tokio::time::timeout_at(deadline,client.call_with_headers_raw_at_generation(generation,"noded","topic.unsubscribe",&headers,"")).await.map_err(|_|"unsubscribe deadline")?.map_err(|_|"unsubscribe failed")?;
+        if reply.0 != 0 {return Err("native presentation unsubscribe refused".into());}
+        state.lock().unwrap().unsubscribed(generation,service);
     }
-    // Idempotent re-subscribe also recovers admission that was cancelled part
-    // way through a previous registry update. No timer retries this list.
+    // Idempotent re-subscribe recovers sent calls with uncertain replies.
+    // Registry updates coalesce without cancelling this snapshot; no poller
+    // or unbounded timer retry owns the list.
     for service in &next {
+        state.lock().unwrap().subscribing(generation,service)?;
         let headers = BTreeMap::from([("name".into(),format!("{service}.presentation.changed"))]);
         let reply = tokio::time::timeout_at(deadline,client.call_with_headers_raw_at_generation(generation,"noded","topic.subscribe",&headers,"")).await.map_err(|_|"subscribe deadline")?.map_err(|_|"subscribe failed")?;
         if reply.0 != 0 {return Err("native presentation subscription refused".into());}
@@ -2362,6 +2412,30 @@ mod tests {
         command.headers.insert("broker_origin".into(),"local".into());
         command.headers.insert("broker_registration".into(),"retired".into());
         assert!(presentation_notice(&command,&registrations).is_none());
+    }
+
+    #[test]
+    fn interrupted_subscription_removal_survives_coalesced_registry_updates() {
+        let mut state=PresentationSubscriptions::default(); state.reset(1);
+        state.subscribing(1,"old").unwrap();
+        state.desire(BTreeSet::new());
+        // Reconciliation has begun but no unsubscribe ACK has arrived.
+        state.desire(BTreeSet::from(["new".into()]));
+        assert!(state.possible.contains("old"),"desired state cannot erase pending removal");
+        assert_eq!(state.possible.difference(&state.desired).cloned().collect::<Vec<_>>(),vec!["old"]);
+        state.unsubscribed(1,"old"); state.subscribing(1,"new").unwrap();
+        assert_eq!(state.possible,state.desired);
+        // A sent subscribe with a lost reply is also retained for later removal.
+        state.subscribing(1,"uncertain").unwrap();
+        state.desire(BTreeSet::new());
+        assert!(state.possible.contains("uncertain"));
+        state.reset(2); state.subscribing(2,"old").unwrap();
+        state.unsubscribed(1,"old");
+        assert!(state.possible.contains("old"),"retired ACK cannot strip a new-generation subscription");
+        assert!(state.subscribing(1,"retired").is_err());
+        for index in 0..127 {state.subscribing(2,&format!("owner-{index}")).unwrap();}
+        assert!(state.subscribing(2,"over-capacity").is_err());
+        assert_eq!(state.possible.len(),128);
     }
 
     #[test]

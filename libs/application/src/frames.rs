@@ -17,6 +17,7 @@ use std::{
 use tokio::sync::Notify;
 
 struct Shared {
+    owner: Option<u64>,
     state: Mutex<State>,
     changed: Notify,
     observations: tokio::sync::watch::Sender<Snapshot>,
@@ -39,6 +40,8 @@ struct State {
 /// Copied evidence; current registration never relabels historical receipts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
+    /// Minted once by the actual Handle, even before its first callback.
+    pub owner: Option<u64>,
     pub window: Option<Id>,
     pub closed: bool,
     pub live_generation: Option<u64>,
@@ -97,12 +100,17 @@ impl Default for Handle {
 
 impl Handle {
     pub fn new() -> Self {
+        static OWNERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let owner = OWNERS.fetch_update(std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed, |value| value.checked_add(1)).ok();
         let (observations, _) = tokio::sync::watch::channel(Snapshot {
+            owner,
             window: None, closed: false, live_generation: None,
             lifecycle_revision: 0, last_observation: None, last_presented: None,
             last_observation_revision: None, last_presented_revision: None,
         });
         let shared = Arc::new(Shared {
+            owner,
             state: Mutex::new(State::default()),
             changed: Notify::new(),
             observations,
@@ -122,6 +130,7 @@ impl Handle {
     pub fn snapshot(&self) -> Snapshot {
         let state = self.shared.state.lock().unwrap();
         Snapshot {
+            owner: self.shared.owner,
             window: state.window,
             closed: state.closed,
             live_generation: state.generation,
@@ -261,6 +270,7 @@ impl Shared {
         // Receivers only clone copied metadata; they never acquire this lock.
         self.observations.send_if_modified(|value| {
             let next = Snapshot {
+                owner: self.owner,
                 window: state.window, closed: state.closed, live_generation: state.generation,
                 lifecycle_revision: state.revision,
                 last_observation: state.last_observation, last_presented: state.last_presented,
@@ -356,7 +366,7 @@ pub fn observation_json(receipt: FrameObservation) -> serde_json::Value {
 
 #[cfg(any(feature = "describe", feature = "acceptance", feature = "settings-native"))]
 pub fn snapshot_json(snapshot: &Snapshot) -> serde_json::Value {
-    serde_json::json!({"window":snapshot.window.map(Id::raw),"closed":snapshot.closed,"live_generation":snapshot.live_generation,"lifecycle_revision":snapshot.lifecycle_revision,"last_observation":snapshot.last_observation.map(observation_json),"last_presented":snapshot.last_presented.map(observation_json),"last_observation_revision":snapshot.last_observation_revision,"last_presented_revision":snapshot.last_presented_revision})
+    serde_json::json!({"owner":snapshot.owner,"window":snapshot.window.map(Id::raw),"closed":snapshot.closed,"live_generation":snapshot.live_generation,"lifecycle_revision":snapshot.lifecycle_revision,"last_observation":snapshot.last_observation.map(observation_json),"last_presented":snapshot.last_presented.map(observation_json),"last_observation_revision":snapshot.last_observation_revision,"last_presented_revision":snapshot.last_presented_revision})
 }
 
 /// Decode copied native metadata without certifying its source. The owning
@@ -385,7 +395,7 @@ pub fn decode_snapshot_json(value:&serde_json::Value)->Option<Snapshot> {
             stamp:FrameStamp {activation_epoch:value["stamp"]["activation_epoch"].as_u64()?,local_revision:value["stamp"]["local_revision"].as_u64()?},
             request_id:optional(&value["request_id"])?,outcome}))
     }
-    Some(Snapshot {window:optional(&value["window"])?.map(Id::from_raw),closed:value["closed"].as_bool()?,
+    Some(Snapshot {owner:optional(&value["owner"])?,window:optional(&value["window"])?.map(Id::from_raw),closed:value["closed"].as_bool()?,
         live_generation:optional(&value["live_generation"])?,lifecycle_revision:value["lifecycle_revision"].as_u64()?,
         last_observation:receipt(&value["last_observation"])?,last_presented:receipt(&value["last_presented"])?,
         last_observation_revision:optional(&value["last_observation_revision"])?,
@@ -454,6 +464,9 @@ mod tests {
     #[test]
     fn observation_watch_is_idle_and_preserves_historical_receipt_generation() {
         let handle = Handle::new();
+        assert!(handle.snapshot().owner.is_some());
+        assert_eq!(handle.snapshot().owner,handle.clone().snapshot().owner);
+        assert_ne!(handle.snapshot().owner,Handle::new().snapshot().owner);
         let mut changes = handle.subscribe_observations();
         assert!(!changes.has_changed().unwrap());
         let window = Id::unique();

@@ -4,16 +4,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="The existing scene-host registry subscriber owns application.participants.v1. Its app.describe extension participants and retained…">
+    <meta name="description" content="Status: additive source checkpoint; authority snapshot schema remains 1.">
     <!-- Favicons from share/brand: the SVG follows the visitor's light/dark preference. -->
     <link rel="icon" href="/favicon.ico?v=c34fdc68c4" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/web/favicon.svg?v=51993ccf9f">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-light.png?v=b7dd291dfa" media="(prefers-color-scheme: light)">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-dark.png?v=e6873d12a3" media="(prefers-color-scheme: dark)">
     <link rel="apple-touch-icon" sizes="180x180" href="/web/brand/apple-touch-icon.png?v=d578c3d9bb">
-    <title>Native participant observations — MixOS</title>
-    <link rel="canonical" href="https://mixos.dev/spec/application/native-participants/">
-    <link rel="alternate" type="text/markdown" href="/spec/application/native-participants.md" title="Markdown source">
+    <title>Runtime commit observation — MixOS</title>
+    <link rel="canonical" href="https://mixos.dev/spec/settings/commit-observation/">
+    <link rel="alternate" type="text/markdown" href="/spec/settings/commit-observation.md" title="Markdown source">
     <meta name="mixos-build" content="87a61ef09456">
     <link rel="preload" href="/web/fonts/icons.woff2?v=3a1086a40a" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="/web/fonts/sans.woff2?v=22f05185ef" as="font" type="font/woff2" crossorigin>
@@ -239,97 +239,24 @@
 <main id="content" tabindex="-1">
     <div id="doc-view" class="content-section">
         <article id="content-doc" class="prose" data-pagefind-body>
-<h1 id="native-participant-observations">Native participant observations</h1>
-<p>The existing scene-host registry subscriber owns <code>application.participants.v1</code>.
-Its <code>app.describe</code> extension <code>participants</code> and retained
-<code>&lt;service&gt;.participants.changed</code> topic contain the same copied owner record.
-Observing a record does not request a redraw, install settings or set authority.</p>
-<p>External application records arrive on owner-protected
-<code>&lt;application-service&gt;.presentation.changed</code>, contract
-<code>application.presentation.v1</code>. The local broker supplies the registration
-incarnation and native Unix principal. The receiver requires explicit local
-origin, the current registration incarnation and payload PID equal to the
-actual Unix peer PID. It joins exactly one actual native window with that PID;
-ambiguous multi-window associations are unavailable. The native window ID and
-generation are separate from the producer's frame window and connection
-generation. Same-name replacement retires old observation ownership even if
-the name list never changed. Registry history and pending notice maps are
-bounded; retired callbacks cannot regain admission after tombstone eviction.</p>
-<p>Each actual FrameHandle mints an immutable <code>owner</code> identity before its first
-callback. The authenticated registration/PID and this identity admit one native
-window incarnation. Retirement keeps its last request baseline and rejects the
-old owner even when a later callback has a greater request number. A same-PID
-replacement needs a fresh actual Handle association; copied old pixels cannot
-be rebound by a new sole-PID match. A pending first callback remains unavailable
-for presentation. Associations are bounded to 128 and remain tombstones until
-registration retirement; exhaustion refuses new association instead of evicting
-history and reviving old callbacks. Participant rows expose <code>frame_owner</code>.</p>
-<p>Presentation topic reconciliation is serial and coalesces desired registry
-state. Sent subscriptions, including ones whose reply was lost, remain owned
-until an unsubscribe acknowledgement. A new registry event cannot cancel a
-pending removal. The possible subscription set is bounded to 128 and reset on
-actual broker generation retirement; an old acknowledgement cannot remove a
-new generation's subscription.</p>
-<p>Quoin scene records use the compositor's actual per-scene FrameHandles. Queued
-pixel stamps live on graphics Backings and survive ring moves. A replacement or
-released Backing clears its metadata. A generation change preserves historical
-receipt provenance, but old receipts cannot certify a current generation.</p>
-<p>Each row contains service, PID, registration incarnation, connection generation,
-native-window identity, frame-window identity and surface incarnation; current
-and applied snapshot identities; phase, state, resource evidence and optional
-actual presentation receipt. Visible, hidden, minimised, inactive session and
-closed states remain distinct. A hidden or inactive buffer is never presented
-merely because settings were applied. A physical VT claim additionally needs a
-real native seat transition; nested session state is not physical proof.</p>
-<p><code>app.participants.wait</code> accepts exactly:</p>
-<pre><code class="language-json">{"operation_id":"changed-operation","services":["term","shell"],"timeout_ms":1000}
-</code></pre>
-<p>Operation ID is nonempty and at most 128 bytes. Service names are unique,
-nonempty and at most 256 bytes; there are 1–128 services. Timeout is 1–60000 ms.
-The bounded request uses owner watch changes and one absolute deadline from
-admission, with lifecycle/generation cancellation. It returns
-<code>application.participants.wait.v1</code>, operation ID, expected services,
-<code>deadline_elapsed</code> and <code>observations</code>. Completion requires every requested
-service to have actual matching changed-operation records in presented or
-explicit nonvisible states, or a real closed record. On expiry, incomplete
-eligible live rows become nonresponsive while their actual phase remains
-unchanged. Missing rows remain missing, not manufactured participants.</p>
-<p>On-time completion requires the selected phase to have actually been observed
-by the owner no later than the admission deadline. A predeadline receipt may
-settle later and still succeed; a receipt first observed after the deadline
-cannot succeed on time. The owner retains up to 128 meaningful phase changes
-with private monotonic observation times, independent of authority acceptance
-times. Exhausted history refuses with <code>PARTICIPANT_HISTORY_GAP</code>; it never
-invents a missing earlier receipt. Repeated unchanged frames do not replace the
-first observation of the same phase and stamp.</p>
-<p>Optional <code>until</code> is <code>settled</code> (default), <code>presented</code> or <code>closed</code>. <code>closed</code>
-requires actual retirement of every selected owner. <code>presented</code> requires
-actual matching operation presentation for every selected row; hidden,
-minimised, inactive and closed rows cannot complete it. Optional <code>keys</code> is a
-unique list of 1–128 exact participant keys, at most 512 bytes each. Every key
-must exist and each requested service must have a selected row. This selects
-one real Quoin scene without claiming that its hidden sibling scenes presented.
-The reply echoes the selected keys and criterion.</p>
-<p>Authority observation uses the optional bounded <code>settings_observation</code> header
-on the existing protected settings snapshot topic. The snapshot body, digest
-and schema are unchanged. New durable changed operations may carry original
-acceptance timing; no-op, old replay, lookup and restart do not invent it.
-Latency requires matching operation identity, installed stamp and actual frame
-receipt, plus authenticated local source and equal boot/clock identities.
-Original settings delivery must itself carry local broker origin and a valid
-local Unix/session-bound principal. Remote operation identity remains valid
-control evidence, but its comparable timing fields are cleared before a local
-application can republish them. Matching JSON boot/clock fields alone cannot
-make a remote authority acceptance time local.
-Unavailable timing is null. Hidden, inactive and closed rows never supply new
-presentation samples. Quantiles must use real monotonic samples and report
-sample count, environment and estimator; sequential observation bounds are
-separate evidence.</p>
-<p>This contract is additive. Source implementation alone is not native or KMS
-acceptance; the exact published candidate must pass broker, lifecycle and
-seven-owner runtime gates.</p>
+<h1 id="runtime-commit-observation">Runtime commit observation</h1>
+<p>Status: additive source checkpoint; authority snapshot schema remains 1.</p>
+<p><code>settings.get</code>, <code>settings.apply</code> and <code>settings.reset</code> may return an optional
+<code>observation</code> outside the durable snapshot and receipt. It records operation ID,
+exact snapshot identity, <code>changed</code>, and optional validation-start, commit-start
+and accepted CLOCK_MONOTONIC points with boot and clock identity. It is retained
+for only the latest actual successful durable operation in this process.</p>
+<p>Replaying that operation returns its original observation. An older replay or
+post-restart lookup has no runtime observation; current time is never assigned
+as its original acceptance time. A newly durable no-op has <code>changed:false</code> and
+does not imply a new application activation or native presentation. Failed
+validation or storage does not replace the previous successful observation.</p>
+<p>The snapshot bytes, digest, receipt schema and ABP framing are unchanged.
+Measurements compare only exact identities and matching clocks. Missing clocks
+remain unavailable. Native frame presentation and cold resource/bootstrap work
+are independent observations, not inferred from commit completion.</p>
         </article>
-        <p class="doc-source"><a href="/spec/application/native-participants.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
+        <p class="doc-source"><a href="/spec/settings/commit-observation.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
     </div>
 </main>
 <script src="/web/base.js?v=2652b9bc10"></script>

@@ -2,6 +2,11 @@
 
 ## 0.1.17
 
+- Retain immutable admitted frame-owner/native-window association and bounded
+  retired request history; old callbacks cannot certify same-PID replacement.
+- Serialise presentation subscriptions, retaining uncertain sent subscriptions
+  until acknowledged removal, fenced by actual broker connection generation.
+
 - Reduce native participant observations on the existing scene-host event pass,
   fenced by broker registration, Unix peer PID and actual window incarnation.
   Expose copied records through describe, retained owner events and bounded
