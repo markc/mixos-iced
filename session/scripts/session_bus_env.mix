@@ -1,0 +1,10 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Run by the session's own bus service after dbus-daemon reports ready.
+if len(args()) != 1 or not re_match(args()[0],"^(?:[2-9]|1[0-2])$") then raise("SESSION_INSTANCE","Require VT2–VT12") end
+$instance=args()[0]
+$root="/run/mixos/session/" .. $instance .. "/dbus"
+$address="unix:path=" .. $root .. "/bus"
+$reply=run_argv_must(["/usr/bin/dbus-send","--bus=" .. $address,"--print-reply","--reply-timeout=3000","--dest=org.freedesktop.DBus","/org/freedesktop/DBus","org.freedesktop.DBus.GetId"],{timeout:5})
+if not re_match($reply,"string \"[0-9a-f]{32}\"") then raise("SESSION_BUS_ID","Private daemon returned no bus ID") end
+write_atomic($root .. "/environment","DBUS_SESSION_BUS_ADDRESS=" .. $address .. "\n",{durability:"file",mode:0o600})

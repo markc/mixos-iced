@@ -1,0 +1,20 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Source contract for an image-owned compatibility bus; no service launches.
+$root=dirname(dirname(dirname(realpath($0))))
+$bus=read_file($root .. "/session/units/session-dbus@.service")
+for each $needle in ["Type=forking","User=mixos","RuntimeDirectory=mixos/session/%i/dbus","RuntimeDirectoryMode=0700","--session --fork --nopidfile --address=unix:path=/run/mixos/session/%i/dbus/bus","ExecStartPost=/opt/mixos/bin/mix /opt/mixos/share/session/session_bus_env.mix %i","PartOf=session@%i.target"]
+  if not contains($bus,$needle) then raise("BUS_LIFECYCLE",$needle) end
+end
+for each $relative in ["services/compd/units/compd@.service","services/compd/units/apps@.service","services/compd/units/scenes@.service","services/noded/units/noded@.service","services/editd/units/editd@.service","services/settingsd/units/settingsd@.service"]
+  $unit=read_file($root .. "/" .. $relative)
+  if not contains($unit,"Requires=session-dbus@%i.service") or not contains($unit,"After=session-dbus@%i.service") then raise("BUS_ORDER",$relative) end
+  $files=filter(lines($unit),fn($l)=starts_with($l,"EnvironmentFile="))
+  if not deep_eq($files,["EnvironmentFile=/etc/mixos/session/%i.env","EnvironmentFile=/run/mixos/session/%i/dbus/environment"]) then raise("HOST_ADDRESS_OVERRIDE",$relative) end
+  if contains($unit,"UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS") then raise("PRIVATE_ADDRESS_CLEARED",$relative) end
+  if not contains($unit,"UnsetEnvironment=DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS") then raise("HOST_BUS_VARIABLES",$relative) end
+end
+$target=read_file($root .. "/session/units/session@.target")
+if not contains($target,"Upholds=noded@%i.service seatd@%i.service session-dbus@%i.service") then raise("BUS_RECOVERY","Target must uphold bus") end
+$helper=read_file($root .. "/session/scripts/session_bus_env.mix")
+if not contains($helper,"org.freedesktop.DBus.GetId") or not contains($helper,"mode:0o600") then raise("BUS_READINESS","Require live ID before owned environment") end
+print("PASS session bus source contract: image-owned lifecycle, live readiness, final address precedence and host variable clearing")

@@ -11,7 +11,7 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-light.png?v=b7dd291dfa" media="(prefers-color-scheme: light)">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-dark.png?v=e6873d12a3" media="(prefers-color-scheme: dark)">
     <link rel="apple-touch-icon" sizes="180x180" href="/web/brand/apple-touch-icon.png?v=d578c3d9bb">
-    <title>Native session without D-Bus — MixOS</title>
+    <title>Native isolated session — MixOS</title>
     <link rel="canonical" href="https://mixos.dev/native-session/">
     <link rel="alternate" type="text/markdown" href="/native-session.md" title="Markdown source">
     <meta name="mixos-build" content="87a61ef09456">
@@ -239,11 +239,17 @@
 <main id="content" tabindex="-1">
     <div id="doc-view" class="content-section">
         <article id="content-doc" class="prose" data-pagefind-body>
-<h1 id="native-session-without-d-bus">Native session without D-Bus</h1>
+<h1 id="native-isolated-session">Native isolated session</h1>
 <p>The initial native session profile builds <code>compd</code> with <code>backend-all</code> and
 without <code>desktop-dbus</code>. ABP/noded carries application requests, discovery,
-session grants and mesh routing. The session owns its seatd instance and XDG
-runtime directory. It inherits no session bus or host activation environment.</p>
+session grants and mesh routing. The session owns its seatd instance, XDG
+runtime directory and a private compatibility session bus. It inherits no host
+session bus or host activation environment. <code>session-dbus@.service</code> owns the
+daemon and socket; its readiness helper checks the actual bus ID before
+publishing the final environment file. Citizens load that file after their
+profile, overriding any inherited host address and clearing system/starter bus
+variables. The daemon receives the owned profile's runtime and data lookup
+context for compatibility activation. Application control stays on ABP.</p>
 <p><code>desktop-dbus</code> is an explicit compatibility feature for RTKit, logind, MPRIS,
 portal Save As and systemd user scopes. It is disabled by default. The native
 profile retains direct CPU scheduling, DRM output control, native audio volume
@@ -272,6 +278,14 @@ delegation or kernel support is a launch failure. The supervisor must also use
 mix tools/native_session_gate.mix
 cargo build --locked -p slots --example containment-probe
 </code></pre>
+<p>The Cargo gate checks the native Rust dependency closure. The private session
+daemon is supplied by the image. <code>tests/desktop/session_bus_gate.mix</code> separately
+tests the production unit/helper in an explicitly enabled, owned root worker
+fixture: final environment precedence, actual socket/PID/cgroup identity,
+independence from native broker restart, daemon replacement and target teardown.
+Its root account and candidate paths are fixture substitutions; it starts no
+desktop and changes no VT. This check does not establish image or hardware
+readiness.</p>
 <p>Run <code>containment-probe</code> inside a delegated test service with containment enabled
 to verify actual descendant cleanup. Graph checks and nested rendering do not
 prove VT handover: GPU acquisition, physical input, scan-out, audio and rollback
