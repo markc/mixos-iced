@@ -171,20 +171,14 @@ pub fn refresh_geometry(
 ) -> bool {
     let mut changed = false;
     for (_, window) in windows {
-        if window.is_fullscreen()
-            && protocols::window::ident::ident::states(window).fullscreen
-        {
+        if window.is_fullscreen() && protocols::window::ident::ident::states(window).fullscreen {
             changed |= reconcile_window(comp, space, window);
         }
     }
     changed
 }
 
-fn reconcile_window(
-    comp: &super::CompState,
-    space: &mut Space<Window>,
-    window: &Window,
-) -> bool {
+fn reconcile_window(comp: &super::CompState, space: &mut Space<Window>, window: &Window) -> bool {
     let Some(location) = space.element_location(window) else {
         return false;
     };
