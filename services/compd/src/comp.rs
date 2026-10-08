@@ -182,11 +182,15 @@ struct Waiter {
 
 /// What a waiter waits for (comp `WaiterKind`).
 enum WaiterKind {
+    Hardware(comp_model::request::HardwareWaitSpec),
     /// `comp.window.wait`.
     Wait(WaitSpec),
     /// `comp.window.close {force}`: the polite close went out at admission;
     /// `gone` as soon as the window is, else the kill at the deadline.
-    ForceClose { id: u64, generation: u64 },
+    ForceClose {
+        id: u64,
+        generation: u64,
+    },
 }
 
 /// The engine half of the port, owned by the event loop's closure.
@@ -550,6 +554,29 @@ impl Bus {
                 deadline,
             } = waiter;
             match kind {
+                WaiterKind::Hardware(spec) => {
+                    let kind = hardware_kind(spec.until);
+                    if let Some(event) = lp
+                        .inner
+                        .comp
+                        .hardware
+                        .latest_before(kind, spec.after, deadline)
+                    {
+                        reply.send(ControlReply::Body(json!({"instance":self.context.instance,"until":kind.name(),"event":{"sequence":event.sequence,"device":event.device},"waited_ms":waited_ms})));
+                    } else if now >= deadline {
+                        reply.send(ControlReply::refused(
+                            "timeout",
+                            json!({"until":kind.name(),"waited_ms":waited_ms}),
+                        ));
+                    } else {
+                        still.push(Waiter {
+                            kind: WaiterKind::Hardware(spec),
+                            reply,
+                            admitted,
+                            deadline,
+                        });
+                    }
+                }
                 WaiterKind::Wait(spec) => {
                     let outcome = policy::window::wait_outcome(
                         &lp.inner.comp.registry,
@@ -615,6 +642,39 @@ impl Bus {
             worker.finish();
         }
     }
+}
+
+fn hardware_kind(until: comp_model::request::HardwareUntil) -> world::comp::hardware::Kind {
+    use comp_model::request::HardwareUntil;
+    use world::comp::hardware::Kind;
+    match until {
+        HardwareUntil::Keyboard => Kind::Keyboard,
+        HardwareUntil::Pointer => Kind::Pointer,
+        HardwareUntil::Paused => Kind::Paused,
+        HardwareUntil::Active => Kind::Active,
+    }
+}
+
+fn hardware_snapshot(lp: &Loop, context: &PortContext, profile: &str) -> ControlReply {
+    use world::comp::hardware::Kind;
+    let witness = &lp.inner.comp.hardware;
+    let events: serde_json::Map<String, Value> =
+        [Kind::Keyboard, Kind::Pointer, Kind::Paused, Kind::Active]
+            .into_iter()
+            .map(|kind| {
+                (
+                    kind.name().to_string(),
+                    witness.latest(kind).map_or(
+                        Value::Null,
+                        |event| json!({"sequence":event.sequence,"device":event.device}),
+                    ),
+                )
+            })
+            .collect();
+    ControlReply::Body(
+        json!({"instance":context.instance,"native":profile == "kms-live","sequence":witness.sequence(),
+        "session_active":matches!(lp.inner.status_session,world::state::state::StatusSession::Active),"events":events}),
+    )
 }
 
 fn identity(context: &PortContext, binding_profile: &'static str) -> policy_host::Identity {
@@ -748,6 +808,9 @@ impl CompEngine for Engine<'_> {
         policy_host::control::set(self.lp, path, value, generation).unwrap_or(ControlReply::Busy)
     }
     fn window(&mut self, op: &WindowOp) -> ControlReply {
+        if matches!(op, WindowOp::HardwareSnapshot) {
+            return hardware_snapshot(self.lp, self.context, self.binding_profile);
+        }
         policy_host::control::window(self.lp, op).unwrap_or(ControlReply::Busy)
     }
     fn input(&mut self, op: &InputOp) -> ControlReply {
@@ -774,6 +837,39 @@ impl CompEngine for Engine<'_> {
             return;
         };
         match op {
+            LongOp::HardwareWait(spec) => {
+                if self.binding_profile != "kms-live" {
+                    reply.send(ControlReply::refused("unsupported_backend", json!({})));
+                    return;
+                }
+                if spec.instance != self.context.instance.as_ref() {
+                    reply.send(ControlReply::refused("stale_instance", json!({})));
+                    return;
+                }
+                if spec.after > self.lp.inner.comp.hardware.sequence() {
+                    reply.send(ControlReply::refused("invalid_sequence", json!({})));
+                    return;
+                }
+                let deadline = admitted + spec.timeout;
+                let flag = Rc::clone(self.pending);
+                if self
+                    .handle
+                    .insert_source(Timer::from_deadline(deadline), move |_, _, _| {
+                        flag.set(true);
+                        TimeoutAction::Drop
+                    })
+                    .is_err()
+                {
+                    reply.send(ControlReply::Busy);
+                    return;
+                }
+                self.waiters.push(Waiter {
+                    kind: WaiterKind::Hardware(spec),
+                    reply,
+                    admitted,
+                    deadline,
+                });
+            }
             LongOp::CaptureFrame(spec) => {
                 policy_host::capture::start(self.lp, spec, admitted, move |answer| {
                     reply.send(answer)

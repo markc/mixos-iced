@@ -1,0 +1,60 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Native broker regression: nested and Bus injection cannot prove hardware.
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo=args()[0]
+$bin=args()[1]
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$R={run:nil,bus:nil,session:nil,child:nil,ok:false}
+fn check($value,$message)
+  if not $value then raise("HARDWARE_WITNESS",$message) end
+end
+fn call($verb,$body)
+  return $n.call($R.session.service,$verb,$body)
+end
+fn rpc($verb,$body)
+  $reply=call($verb,$body)
+  check($reply.rc == 0,json_encode($reply))
+  return $reply.result
+end
+try
+  $R.run=$n.new_run("/var/tmp/hardware-witness")
+  $root=$R.run.path
+  $R.bus=$n.private_bus({dir:$root,name:"hardware-witness",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"hardware-witness",run:$R.run,config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1})
+  check($n.wait_ready($R.session,30),"Actual native registration missing")
+  $before=rpc("comp.hardware.snapshot",{})
+  check(not $before.native and $before.sequence == 0,"Nested owner fabricated physical evidence")
+  $R.child=spawn([$bin .. "/testkit-input-probe","--app-id","dev.mixos.HardwareWitness","--seats","--seconds","60"],{env:$n.client_env($R.session,{}),stdout:{file:$root .. "/probe.log"},stderr:"stdout",detach:true})
+  $window=rpc("comp.window.wait",{match:{app_id:"dev.mixos.HardwareWitness"},until:"presented",timeout_ms:15000}).window
+  check($window.pid == $R.child,"Native probe owner differs")
+  $target={id:$window.id,generation:$window.generation}
+  rpc("comp.window.focus",merge($target,{raise:true}))
+  rpc("comp.input.key",{seat:"human",window:$target,text:"native-witness-negative"})
+  rpc("comp.input.pointer.move",{seat:"human",window:$target,x:20,y:20,corners:false})
+  $after=rpc("comp.hardware.snapshot",{})
+  check(deep_eq($before,$after),"Bus injection advanced native hardware witness")
+  for each $until in ["keyboard","pointer","paused","active"]
+    $reply=call("comp.hardware.wait",{instance:$before.instance,after:0,until:$until,timeout_ms:100})
+    check($reply.rc >= 10 and $reply.result.error == "unsupported_backend","Nested wait produced false physical PASS")
+  end
+  $invalid=call("comp.hardware.wait",{instance:$before.instance,after:0,until:"keyboard",extra:true})
+  check($invalid.rc >= 10,"Unknown hardware argument accepted")
+  write_file($root .. "/receipts.json",json_encode({before:$before,after:$after}))
+  rpc("comp.window.close",$target)
+  rpc("comp.window.wait",{match:$target,until:"gone",timeout_ms:5000})
+  print("PASS native hardware witness negative: real broker, actual window/input calls, nested refusal and unchanged physical evidence")
+  $R.ok=true
+catch $message
+  print("FAIL " .. $message)
+finally
+  if $R.child != nil then $h.stop($R.child) end
+  if $R.session != nil then $n.stop($R.session) end
+  if $R.bus != nil then $h.stop($R.bus.pid) end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end

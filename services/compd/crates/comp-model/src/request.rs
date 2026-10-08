@@ -57,6 +57,7 @@ pub enum StatsTarget {
 /// window is named; only `restore` may name none (most recently minimised).
 #[derive(Clone, Debug, PartialEq)]
 pub enum WindowOp {
+    HardwareSnapshot,
     WorldList,
     WorldCreate,
     WorldActivate {
@@ -340,8 +341,25 @@ pub struct SequenceStep {
 }
 
 /// A verb whose reply waits on a timer or an edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HardwareUntil {
+    Keyboard,
+    Pointer,
+    Paused,
+    Active,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HardwareWaitSpec {
+    pub instance: String,
+    pub after: u64,
+    pub until: HardwareUntil,
+    pub timeout: Duration,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum LongOp {
+    HardwareWait(HardwareWaitSpec),
     CaptureFrame(crate::capture::CaptureFrameSpec),
     RegionSelect {
         output: Option<String>,
@@ -379,6 +397,7 @@ impl LongOp {
                 steps.iter().map(|step| step.delay).sum()
             }
             Self::Wait(spec) => spec.timeout,
+            Self::HardwareWait(spec) => spec.timeout,
             Self::ForceClose { timeout, .. } => *timeout,
         }
     }
@@ -760,6 +779,46 @@ fn timeout_arg(
 pub fn parse_window_verb(verb: &str, args: &Value) -> Result<WindowVerb, ControlReply> {
     let empty = serde_json::Map::new();
     match verb {
+        "comp.hardware.snapshot" => {
+            args_object(args, &empty, &[])?;
+            Ok(WindowVerb::Op(WindowOp::HardwareSnapshot))
+        }
+        "comp.hardware.wait" => {
+            let object = args_object(args, &empty, &["instance", "after", "until", "timeout_ms"])?;
+            let instance = string_arg(object, "instance")?
+                .filter(|value| !value.is_empty() && value.len() <= 128)
+                .ok_or_else(|| {
+                    invalid_argument(
+                        "instance",
+                        "string",
+                        "required nonempty compositor incarnation",
+                    )
+                })?;
+            let after = present(object, "after")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    invalid_argument("after", "unsigned integer", "required native sequence")
+                })?;
+            let until = match present(object, "until").and_then(Value::as_str) {
+                Some("keyboard") => HardwareUntil::Keyboard,
+                Some("pointer") => HardwareUntil::Pointer,
+                Some("paused") => HardwareUntil::Paused,
+                Some("active") => HardwareUntil::Active,
+                _ => {
+                    return Err(invalid_argument(
+                        "until",
+                        "string",
+                        "keyboard|pointer|paused|active",
+                    ));
+                }
+            };
+            Ok(WindowVerb::Long(LongOp::HardwareWait(HardwareWaitSpec {
+                instance,
+                after,
+                until,
+                timeout: timeout_arg(object, Duration::from_secs(20))?,
+            })))
+        }
         "comp.world.list" | "comp.world.create" => {
             args_object(args, &empty, &[])?;
             Ok(WindowVerb::Op(if verb == "comp.world.list" {

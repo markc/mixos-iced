@@ -1,22 +1,22 @@
 //! Input wiring: the libinput source -> compositor lifecycle + redraw
 //! scheduling. (Ex wire.rs `start()` libinput closure.)
 
-use kms::input::loop_::libinput::libinput::LibinputSource;
 use crate::context::render::render::NativeRenderContext;
+use dispatcher::state::state::Dispatch;
+use dispatcher::wire::tablet::tablet as tbl;
+use kms::input::loop_::libinput::libinput::LibinputSource;
+use seat::pointer::restore::restore::TouchCursor;
 use smithay::backend::input::{Event, InputEvent};
+use smithay::input::tablet::TabletDescriptor;
+use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::input::event::tablet_pad::{
     ButtonState as PadButtonState, RingAxisSource, StripAxisSource, TabletPadEvent,
 };
 use smithay::reexports::input::{Device, DeviceCapability};
-use smithay::reexports::calloop::EventLoop;
-use smithay::input::tablet::TabletDescriptor;
 use std::cell::RefCell;
 use std::rc::Rc;
-use world::state::state::StatusSession;
-use seat::pointer::restore::restore::TouchCursor;
 use world::state::Loop;
-use dispatcher::state::state::Dispatch;
-use dispatcher::wire::tablet::tablet as tbl;
+use world::state::state::StatusSession;
 
 /// Drive the external `zwp_tablet_pad_v2` senders from a libinput pad event
 /// (delivered via smithay's `SpecialEvent`; see the local smithay patch). Pads are
@@ -24,7 +24,7 @@ use dispatcher::wire::tablet::tablet as tbl;
 fn handle_pad(state: &mut Loop, event: &TabletPadEvent) {
     // Local scope so the input-crate `EventTrait::device`/`TabletPadEventTrait::time`
     // don't collide with smithay's `Event::device` used by the touch code above.
-    use smithay::reexports::input::event::{tablet_pad::TabletPadEventTrait, EventTrait};
+    use smithay::reexports::input::event::{EventTrait, tablet_pad::TabletPadEventTrait};
     let key = event.device().sysname().to_string();
     match event {
         TabletPadEvent::Button(e) => {
@@ -37,18 +37,28 @@ fn handle_pad(state: &mut Loop, event: &TabletPadEvent) {
             }
             // Resolve the user's per-button binding (forwards natively when unbound).
             seat::pointer::input::tablet::pad::button(
-                state, &key, e.button_number(), pressed, e.time(),
+                state,
+                &key,
+                e.button_number(),
+                pressed,
+                e.time(),
             );
         }
         TabletPadEvent::Ring(e) => {
             pad_mode(state, &key, e);
             let finger = e.source() == RingAxisSource::Finger;
-            state.state.tablet.pad_ring(&key, e.number(), e.position(), finger, e.time());
+            state
+                .state
+                .tablet
+                .pad_ring(&key, e.number(), e.position(), finger, e.time());
         }
         TabletPadEvent::Strip(e) => {
             pad_mode(state, &key, e);
             let finger = e.source() == StripAxisSource::Finger;
-            state.state.tablet.pad_strip(&key, e.number(), e.position(), finger, e.time());
+            state
+                .state
+                .tablet
+                .pad_strip(&key, e.number(), e.position(), finger, e.time());
         }
         TabletPadEvent::Dial(e) => {
             pad_mode(state, &key, e);
@@ -58,9 +68,7 @@ fn handle_pad(state: &mut Loop, event: &TabletPadEvent) {
                 // Remap: inject a modifier + wheel scroll (e.g. Alt+Wheel for brush
                 // size) into the focused client — for apps without tablet-v2.
                 model::environment::preference::base::PenAction::Wheel { mods } => {
-                    seat::pointer::input::tablet::inject::wheel(
-                        state, &mods, v120, e.time(),
-                    );
+                    seat::pointer::input::tablet::inject::wheel(state, &mods, v120, e.time());
                 }
                 // Default: zoom the world while the Hand tool is on or a pan is in
                 // progress; otherwise forward the native dial event to the client.
@@ -68,7 +76,10 @@ fn handle_pad(state: &mut Loop, event: &TabletPadEvent) {
                     if dial_zoom_active(state) {
                         dial_zoom(state, v120);
                     } else {
-                        state.state.tablet.pad_dial(&key, e.number(), v120, e.time());
+                        state
+                            .state
+                            .tablet
+                            .pad_dial(&key, e.number(), v120, e.time());
                     }
                 }
             }
@@ -102,7 +113,9 @@ fn capture_pad(state: &mut Loop, device: &str, button: u32) -> bool {
 /// Hand grab — so this is gated on `hand_active` by the caller.
 fn dial_zoom(state: &mut Loop, v120: i32) {
     use slots::input::event::base::InputEvent;
-    let Some(pointer) = state.state.seat.seat.get_pointer() else { return };
+    let Some(pointer) = state.state.seat.seat.get_pointer() else {
+        return;
+    };
     let loc = pointer.current_location();
     let ev = InputEvent::PointerAxis {
         horizontal: 0.0,
@@ -125,7 +138,10 @@ where
 {
     let group = e.mode_group().index() as usize;
     let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-    state.state.tablet.pad_mode_switch(key, group, e.mode(), serial, e.time());
+    state
+        .state
+        .tablet
+        .pad_mode_switch(key, group, e.mode(), serial, e.time());
 }
 
 pub fn register(
@@ -162,11 +178,18 @@ pub fn register(
                     {
                         let dh = state.inner.loader.display_handle.clone();
                         if device.has_capability(DeviceCapability::TabletTool) {
-                            state.state.tablet.add_tablet::<Dispatch>(&dh, &TabletDescriptor::from(&device));
+                            state
+                                .state
+                                .tablet
+                                .add_tablet::<Dispatch>(&dh, &TabletDescriptor::from(&device));
                         }
                         if device.has_capability(DeviceCapability::TabletPad) {
                             let key = device.sysname().to_string();
-                            state.state.tablet.add_pad::<Dispatch>(&dh, key, tbl::pad_desc_from_device(&device));
+                            state.state.tablet.add_pad::<Dispatch>(
+                                &dh,
+                                key,
+                                tbl::pad_desc_from_device(&device),
+                            );
                         }
                     }
                     if device.has_capability(DeviceCapability::Keyboard) {
@@ -189,7 +212,10 @@ pub fn register(
                     state.state.seat.keyboards.retain(|d| d != device);
                     state.state.seat.touch_devices.retain(|d| d != device);
                     if device.has_capability(DeviceCapability::TabletTool) {
-                        state.state.tablet.remove_tablet(&TabletDescriptor::from(device));
+                        state
+                            .state
+                            .tablet
+                            .remove_tablet(&TabletDescriptor::from(device));
                         if !state.state.tablet.has_tablets() {
                             state.state.tablet.clear_tools();
                         }
@@ -217,9 +243,7 @@ pub fn register(
                 _ => None,
             };
             if let Some(device) = touch_device {
-                let Some(key) =
-                    crate::wire::input::map::map::touch_output(state, &device)
-                else {
+                let Some(key) = crate::wire::input::map::map::touch_output(state, &device) else {
                     return;
                 };
                 // Entering touch mode: hide + snapshot the shared cursor, then hand
@@ -234,11 +258,34 @@ pub fn register(
             // When DARK (no output), only keyboard events run the full pipeline so
             // the always-on fixed shortcuts (VT switch, volume, media) still work;
             // pointer/touch/gesture processing is dropped (no display to interact with).
-            let dark = *state.inner.kernel.get(
-                &drivers::lid::base::DISPLAY_OFF,
-            ) || ctx_rc.borrow().pipe().drm_output.is_none();
+            let dark = *state.inner.kernel.get(&drivers::lid::base::DISPLAY_OFF)
+                || ctx_rc.borrow().pipe().drm_output.is_none();
             if !dark || matches!(event, InputEvent::Keyboard { .. }) {
                 scenegraph::state::lifecycle::lifecycle::input(state, &event);
+                // Only this real libinput callback records native input. Bus
+                // injection and nested input never pass through this owner.
+                let observed = match &event {
+                    InputEvent::Keyboard { event } => Some((
+                        world::comp::hardware::Kind::Keyboard,
+                        event.device().sysname().to_string(),
+                    )),
+                    InputEvent::PointerMotion { event } => Some((
+                        world::comp::hardware::Kind::Pointer,
+                        event.device().sysname().to_string(),
+                    )),
+                    InputEvent::PointerMotionAbsolute { event } => Some((
+                        world::comp::hardware::Kind::Pointer,
+                        event.device().sysname().to_string(),
+                    )),
+                    InputEvent::PointerButton { event } => Some((
+                        world::comp::hardware::Kind::Pointer,
+                        event.device().sysname().to_string(),
+                    )),
+                    _ => None,
+                };
+                if let Some((kind, device)) = observed {
+                    state.inner.comp.hardware.note(kind, Some(&device));
+                }
             }
             // Display request queues (lid apply, settings mode change, activate/
             // deactivate reconcile) and the lock engage are NOT drained here —
@@ -256,9 +303,9 @@ pub fn register(
                 state.state.seat.force_cursor,
             );
             if !dark && cursor_before != cursor_after {
-                state.state.schedule_redraw(
-                    protocols::redraw::schedule::schedule::RedrawReason::Cursor,
-                );
+                state
+                    .state
+                    .schedule_redraw(protocols::redraw::schedule::schedule::RedrawReason::Cursor);
             }
         })
         .unwrap();

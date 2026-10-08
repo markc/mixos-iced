@@ -24,6 +24,7 @@ pub mod causes;
 pub mod corners;
 pub mod fullscreen;
 pub mod geometry;
+pub mod hardware;
 pub mod injection;
 pub(crate) mod input_geometry;
 pub mod latch;
@@ -100,6 +101,7 @@ pub struct CompState {
     /// Persistent generation-fenced tile membership and immutable normal
     /// restores. Geometry and native configures use comp::geometry.
     pub tiles: policy::tiling::Tiles,
+    pub hardware: hardware::Witness,
     tile_inputs: HashMap<SurfaceId, protocols::window::shell::shell::TileInputLease>,
     /// Bounded change detector only; public pending facts derive live plans.
     tile_pending_observation: Vec<(policy::tiling::Target, Option<policy::tiling::LayoutError>)>,

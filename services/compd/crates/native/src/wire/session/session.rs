@@ -13,9 +13,9 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::utils::{Logical, Point};
 use std::cell::RefCell;
 use std::rc::Rc;
-use world::state::state::StatusSession;
-use world::state::Loop;
 use world::environment::interface::lifecycle::lifecycle;
+use world::state::Loop;
+use world::state::state::StatusSession;
 
 pub fn register(
     event_loop: &mut EventLoop<'static, Loop>,
@@ -35,6 +35,7 @@ pub fn register(
             match event {
                 smithay::backend::session::Event::PauseSession => {
                     state.inner.status_session = StatusSession::Paused;
+                    state.inner.comp.hardware.note(world::comp::hardware::Kind::Paused, None);
                     world::comp::scenes::pointer_motion(state, None);
                     info!("Session paused (TTY switch away)");
                     // Drain copies already waiting behind a flip that can no
@@ -92,6 +93,7 @@ pub fn register(
                 smithay::backend::session::Event::ActivateSession => {
                     info!("Session activated");
                     state.inner.status_session = StatusSession::Active;
+                    state.inner.comp.hardware.note(world::comp::hardware::Kind::Active, None);
                     crate::render::execute::diagnostics::activated();
 
                     // Resume protocol (seat.lifecycle): input, activate
