@@ -398,12 +398,19 @@ async fn invalid_descriptions_refuse_before_pending_or_frontend_admission() {
         receive,
         ready,
     ));
-    let (_client, _ui, _bootstrap) =
+    let (client, _ui, _bootstrap) =
         tokio::task::spawn_blocking(move || observed.recv_timeout(Duration::from_secs(5)))
             .await
             .unwrap()
             .unwrap()
             .unwrap();
+    let mut connection = client.subscribe_state();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while settings::native::live_generation(&client).is_none() {
+            connection.changed().await.unwrap();
+        }
+    }).await.unwrap();
+    assert_eq!(client.service_name(), "scene-description-overridden");
     let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
     for body in [
         "{".into(),

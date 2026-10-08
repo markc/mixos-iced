@@ -795,12 +795,19 @@ mod tests {
                 ready,
                 settings,
             ));
-            let (_client, _ui) =
+            let (client, _ui) =
                 tokio::task::spawn_blocking(move || observed.recv_timeout(Duration::from_secs(5)))
                     .await
                     .unwrap()
                     .unwrap()
                     .unwrap();
+            let mut connection = client.subscribe_state();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while settings::native::live_generation(&client).is_none() {
+                    connection.changed().await.unwrap();
+                }
+            }).await.unwrap();
+            assert_eq!(client.service_name(), service);
             let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
             for body in [
                 "{".into(),
