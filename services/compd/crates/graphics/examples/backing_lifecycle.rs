@@ -58,6 +58,10 @@ fn draw(surface: &mut IcedSurface, ctx: &WgpuGlContext, gles: &mut GlesRenderer,
     make_current(gles);
     ctx.acquire_gl_state();
     let view = surface.begin_render_view().ok_or("released render target")?;
+    if surface.slot_count() > 1 {
+        assert_ne!(surface.target_slot(), surface.published_slot(),
+            "ring would overwrite the currently published backing");
+    }
     surface.set_target_presentation(Some((wanted.window, wanted.binding.clone())));
     let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("backing lifecycle actual clear"),
@@ -163,6 +167,8 @@ fn run(node: &str, directory: &Path) -> Result<()> {
     let c = expected(window, 3, [43, 173, 97, 255]);
     let d = expected(window, 4, [211, 127, 23, 255]);
     let e = expected(window, 5, [61, 109, 229, 255]);
+    let f = expected(window, 6, [157, 67, 199, 255]);
+    let g = expected(window, 7, [101, 233, 47, 255]);
     surface.sync_depth(node, &ctx, &mut gles, 2)?;
     assert_eq!(surface.slot_count(), 2);
     draw(&mut surface, &ctx, &mut gles, &a, true)?;
@@ -212,9 +218,9 @@ fn run(node: &str, directory: &Path) -> Result<()> {
     assert_eq!(surface.generation(), 0);
     assert!(surface.published_presentation().is_none(), "resize inherited old binding");
     assert_ne!(surface.gles_texture().unwrap().tex_id(), old_texture);
-    draw(&mut surface, &ctx, &mut gles, &a, true)?;
+    draw(&mut surface, &ctx, &mut gles, &f, true)?;
     complete(&mut surface, &ctx, &mut gles)?;
-    inspect(&surface, &ctx, &mut gles, directory, "resize-first-fresh", &a)?;
+    inspect(&surface, &ctx, &mut gles, directory, "resize-first-fresh", &f)?;
     // Retire with a real submitted frame, then require ensure's fresh target to
     // start without any old stamp or observer before it is drawn again.
     draw(&mut surface, &ctx, &mut gles, &b, true)?;
@@ -228,9 +234,9 @@ fn run(node: &str, directory: &Path) -> Result<()> {
     surface.sync_depth(node, &ctx, &mut gles, 3)?;
     assert_eq!(surface.generation(), 0);
     assert!(surface.published_presentation().is_none(), "ensure inherited retired binding");
-    draw(&mut surface, &ctx, &mut gles, &c, true)?;
+    draw(&mut surface, &ctx, &mut gles, &g, true)?;
     complete(&mut surface, &ctx, &mut gles)?;
-    inspect(&surface, &ctx, &mut gles, directory, "ensure-first-fresh", &c)?;
+    inspect(&surface, &ctx, &mut gles, directory, "ensure-first-fresh", &g)?;
     complete(&mut surface, &ctx, &mut gles)?;
     make_current(&mut gles);
     drop(surface);
