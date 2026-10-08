@@ -2044,6 +2044,12 @@ with private monotonic observation times, independent of authority acceptance
 times. Exhausted history refuses with `PARTICIPANT_HISTORY_GAP`; it never
 invents a missing earlier receipt. Repeated unchanged frames do not replace the
 first observation of the same phase and stamp.
+History retains that first physical receipt and its presentation latency for
+wait replies and operation samples. The inspector and retained changed topic
+continue to show the latest actual physical receipt; their
+`accepted_to_presented_ns` is the interval to that latest frame, an upper bound
+on first-presentation latency when ordinary frames continue. Changes to
+visibility, operation, stamp or incarnation still create new history records.
 
 Optional `until` is `settled` (default), `presented` or `closed`. `closed`
 requires actual retirement of every selected owner. `presented` requires

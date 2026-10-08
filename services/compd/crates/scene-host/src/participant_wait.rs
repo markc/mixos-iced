@@ -34,6 +34,11 @@ impl History {
                 if !row["presentation"].is_null() {
                     row["presentation"] = row["presentation"]["stamp"].clone();
                 }
+                // Ordinary frames update the inspector's physical receipt,
+                // not the first presentation of this operation and stamp.
+                if let Some(row) = row.as_object_mut() {
+                    row.remove("accepted_to_presented_ns");
+                }
             }
         }
         if self.records.is_empty() || self.fingerprint != fingerprint {
@@ -255,6 +260,37 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordinary_frames_preserve_first_phase_receipt_and_latency() {
+        let first_at = Instant::now();
+        let mut history = History::default();
+        let receipt = |frame: u64| json!({"participants":[{
+            "key":"term/main", "service":"term", "incarnation":1,
+            "state":"presented", "operation_id":"op",
+            "presentation":{"stamp":"stamp", "request_id":frame},
+            "accepted_to_presented_ns":frame * 100
+        }]});
+        for frame in 1..=256 {
+            assert!(history.observe(receipt(frame), first_at + Duration::from_millis(frame)));
+        }
+        assert_eq!(history.records.len(), 1);
+        assert_eq!(history.records[0].at, first_at + Duration::from_millis(1));
+        assert_eq!(history.records[0].value, receipt(1));
+        assert_eq!(history.latest, receipt(256));
+        let spec = parse(r#"{"operation_id":"op","services":["term"],"until":"presented","timeout_ms":10}"#).unwrap();
+        let settled = on_time(&history, &spec, 1, first_at + Duration::from_millis(10)).unwrap();
+        assert_eq!(settled.value["participants"][0]["accepted_to_presented_ns"], 100);
+        let mut changed = receipt(257);
+        changed["participants"][0]["state"] = json!("hidden");
+        history.observe(changed, first_at + Duration::from_millis(257));
+        let mut changed = receipt(258);
+        changed["participants"][0]["presentation"]["stamp"] = json!("new-stamp");
+        history.observe(changed, first_at + Duration::from_millis(258));
+        let mut changed = receipt(259);
+        changed["participants"][0]["incarnation"] = json!(2);
+        history.observe(changed, first_at + Duration::from_millis(259));
+        assert_eq!(history.records.len(), 4);
+    }
     #[test]
     fn bounded_wait_refuses_ambiguous_or_unbounded_requests() {
         assert!(

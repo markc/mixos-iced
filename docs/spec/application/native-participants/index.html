@@ -301,7 +301,13 @@ cannot succeed on time. The owner retains up to 128 meaningful phase changes
 with private monotonic observation times, independent of authority acceptance
 times. Exhausted history refuses with <code>PARTICIPANT_HISTORY_GAP</code>; it never
 invents a missing earlier receipt. Repeated unchanged frames do not replace the
-first observation of the same phase and stamp.</p>
+first observation of the same phase and stamp.
+History retains that first physical receipt and its presentation latency for
+wait replies and operation samples. The inspector and retained changed topic
+continue to show the latest actual physical receipt; their
+<code>accepted_to_presented_ns</code> is the interval to that latest frame, an upper bound
+on first-presentation latency when ordinary frames continue. Changes to
+visibility, operation, stamp or incarnation still create new history records.</p>
 <p>Optional <code>until</code> is <code>settled</code> (default), <code>presented</code> or <code>closed</code>. <code>closed</code>
 requires actual retirement of every selected owner. <code>presented</code> requires
 actual matching operation presentation for every selected row; hidden,
