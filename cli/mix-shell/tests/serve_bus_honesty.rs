@@ -311,5 +311,5 @@ async fn uncaught_interruption_text_is_a_reported_serve_error() {
     };
     assert_eq!(status.code(), Some(1));
     let stderr = dir.read("citizen.stderr");
-    assert!(stderr.contains("PROBE_REFUSAL") && stderr.contains("script error"), "{stderr}");
+    assert!(stderr.contains("not a signal") && stderr.contains("script error"), "{stderr}");
 }
