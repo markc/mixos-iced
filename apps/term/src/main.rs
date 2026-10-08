@@ -1322,7 +1322,7 @@ impl State {
                 "cursor":key.cursor,
             })),
         });
-        application::describe::complete_native(
+        application::describe::complete_native_frames(
             &mut describe,
             application::describe::Identity {
                 app_id: Some("dev.mixos.term"),
@@ -1331,6 +1331,7 @@ impl State {
                 service: &service,
             },
             self.settings.session(),
+            &self.frames,
         )?;
         Ok(describe)
     }

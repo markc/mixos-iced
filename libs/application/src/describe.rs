@@ -55,7 +55,7 @@ use std::fmt;
 #[cfg(feature = "settings-native")]
 mod native;
 #[cfg(feature = "settings-native")]
-pub use native::complete_native;
+pub use native::{complete_native, complete_native_frames};
 
 pub const CONTRACT: &str = "application.describe.v1";
 pub const VERB: &str = "app.describe";

@@ -26,7 +26,7 @@ pub fn manifest() -> Vec<bus::VerbDescriptor> {
         bus::VerbDescriptor::new(
             verb,
             &["body"],
-            "Desktop settings contract 0.1.1",
+            "Desktop settings contract 0.1.2",
             !matches!(*verb, "settings.apply" | "settings.reset"),
         )
     }))

@@ -11,13 +11,13 @@
 
 use crate::bridge::publish::ring::ring::Ring;
 use model::environment::interface::base as interface;
-use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::Offscreen;
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::utils::{Buffer as BufferCoord, Physical, Size};
 
 use crate::surface::error::SurfaceError;
 use crate::surface::wgpu_context::WgpuGlContext;
-use crate::surface::wgpu_import::{wrap_gles_texture, FOURCC};
+use crate::surface::wgpu_import::{FOURCC, wrap_gles_texture};
 
 /// One render target, addressable from both wgpu and GLES.
 ///
@@ -82,7 +82,11 @@ impl IcedSurface {
         for _ in 0..depth {
             slots.push(Backing::allocate(render_node, wgpu_ctx, gles, size)?);
         }
-        Ok(Ring::new(slots, wgpu_ctx.device.clone(), wgpu_ctx.queue.clone()))
+        Ok(Ring::new(
+            slots,
+            wgpu_ctx.device.clone(),
+            wgpu_ctx.queue.clone(),
+        ))
     }
 
     /// Match the ring to the live setting, allocating or dropping slots. Called
@@ -96,12 +100,16 @@ impl IcedSurface {
         want: usize,
     ) -> Result<(), SurfaceError> {
         let size = self.size;
-        let Some(ring) = self.backing.as_mut() else { return Ok(()) };
+        let Some(ring) = self.backing.as_mut() else {
+            return Ok(());
+        };
         if want == ring.len() {
             return Ok(());
         }
         trace!("IcedSurface ring {} -> {want} slots", ring.len());
-        ring.set_depth(want, || Backing::allocate(render_node, wgpu_ctx, gles, size))
+        ring.set_depth(want, || {
+            Backing::allocate(render_node, wgpu_ctx, gles, size)
+        })
     }
 
     /// Retire finished frames. Returns whether a new buffer became visible, which
@@ -132,6 +140,15 @@ impl IcedSurface {
     /// Bumped on every publish; the instance's damage follows it.
     pub fn generation(&self) -> u64 {
         self.backing.as_ref().map_or(0, |r| r.generation())
+    }
+    pub fn target_slot(&self) -> Option<usize> {
+        self.backing.as_ref().map(|ring| ring.target_index())
+    }
+    pub fn published_slot(&self) -> Option<usize> {
+        self.backing.as_ref().map(|ring| ring.published_index())
+    }
+    pub fn slot_count(&self) -> usize {
+        self.backing.as_ref().map_or(0, |ring| ring.len())
     }
 
     /// Whether the GPU backing is currently allocated. `false` after `release`
@@ -210,10 +227,12 @@ impl IcedSurface {
     /// or `None` while released. May block once the GPU is a whole ring behind.
     pub fn begin_render_view(&mut self) -> Option<wgpu::TextureView> {
         self.backing.as_mut().map(|r| {
-            r.begin().wgpu_texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("compd_iced_render_view"),
-                ..Default::default()
-            })
+            r.begin()
+                .wgpu_texture
+                .create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("compd_iced_render_view"),
+                    ..Default::default()
+                })
         })
     }
 }
@@ -234,6 +253,9 @@ impl Backing {
             .create_buffer(FOURCC, buffer_size)
             .map_err(SurfaceError::GlesTexture)?;
         let wgpu_texture = wrap_gles_texture(wgpu_ctx, &gles_texture)?;
-        Ok(Self { wgpu_texture, gles_texture })
+        Ok(Self {
+            wgpu_texture,
+            gles_texture,
+        })
     }
 }

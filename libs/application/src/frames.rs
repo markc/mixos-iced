@@ -30,6 +30,7 @@ struct State {
     waiter: bool,
     last_observation: Option<FrameObservation>,
     last_presented: Option<FrameObservation>,
+    scoped_observer: Option<FrameObserver>,
 }
 
 /// Copied evidence; current registration never relabels historical receipts.
@@ -81,7 +82,6 @@ pub enum WaitError {
 #[derive(Clone)]
 pub struct Handle {
     shared: Arc<Shared>,
-    observer: FrameObserver,
 }
 
 impl Default for Handle {
@@ -96,16 +96,15 @@ impl Handle {
             state: Mutex::new(State::default()),
             changed: Notify::new(),
         });
-        let observed = Arc::clone(&shared);
-        let observer = FrameObserver::new(move |receipt| observed.observe(receipt));
-        Self { shared, observer }
+        Self { shared }
     }
 
     /// Pure getter, sampled alongside the immutable view before it is drawn.
     pub fn binding(&self, stamp: FrameStamp) -> FrameBinding {
+        let observed = Arc::clone(&self.shared);
         FrameBinding {
             stamp,
-            observer: self.observer.clone(),
+            observer: FrameObserver::with_capture(move || observed.capture()),
         }
     }
 
@@ -136,6 +135,7 @@ impl Handle {
             return;
         }
         state.generation = generation;
+        state.scoped_observer = None;
         match state.revision.checked_add(1) {
             Some(next) => state.revision = next,
             None => state.closed = true,
@@ -232,9 +232,27 @@ impl Drop for WaitSlot {
 }
 
 impl Shared {
-    fn observe(&self, receipt: FrameObservation) {
+    fn capture(self: &Arc<Self>) -> FrameObserver {
         let mut state = self.state.lock().unwrap();
-        if state.closed || state.window.is_some_and(|window| window != receipt.window) {
+        if let Some(observer) = &state.scoped_observer {
+            return observer.clone();
+        }
+        let revision = state.revision;
+        let observed = Arc::downgrade(self);
+        let observer = FrameObserver::new(move |receipt| {
+            if let Some(observed) = observed.upgrade() {
+                observed.observe(receipt, revision);
+            }
+        });
+        state.scoped_observer = Some(observer.clone());
+        observer
+    }
+    fn observe(&self, receipt: FrameObservation, revision: u64) {
+        let mut state = self.state.lock().unwrap();
+        if state.closed
+            || state.revision != revision
+            || state.window.is_some_and(|window| window != receipt.window)
+        {
             return;
         }
         state.window = Some(receipt.window);
@@ -272,6 +290,34 @@ impl Shared {
     }
 }
 
+/// Production readback of copied native evidence. This never samples transport,
+/// binds current settings to historical pixels or requests a frame.
+#[cfg(any(feature = "describe", feature = "acceptance"))]
+pub fn observation_json(receipt: FrameObservation) -> serde_json::Value {
+    use serde_json::json;
+    let outcome = match receipt.outcome {
+        FrameOutcome::Presented {
+            clock_id,
+            seconds,
+            nanoseconds,
+            refresh_ns,
+            output_sequence,
+            flags,
+        } => {
+            json!({"kind":"presented","clock_id":clock_id,"seconds":seconds,"nanoseconds":nanoseconds,"refresh_ns":refresh_ns,"output_sequence":output_sequence,"flags":flags})
+        }
+        other => json!({"kind":match other {
+            FrameOutcome::Discarded=>"discarded",FrameOutcome::Unsupported=>"unsupported",FrameOutcome::Capacity=>"capacity",FrameOutcome::Exhausted=>"exhausted",FrameOutcome::Closed=>"closed",FrameOutcome::SubmissionFailed=>"submission_failed",FrameOutcome::Presented{..}=>unreachable!(),
+        }}),
+    };
+    json!({"window":receipt.window.raw(),"stamp":{"activation_epoch":receipt.stamp.activation_epoch,"local_revision":receipt.stamp.local_revision},"request_id":receipt.request_id,"outcome":outcome})
+}
+
+#[cfg(any(feature = "describe", feature = "acceptance"))]
+pub fn snapshot_json(snapshot: &Snapshot) -> serde_json::Value {
+    serde_json::json!({"window":snapshot.window.map(Id::raw),"closed":snapshot.closed,"live_generation":snapshot.live_generation,"lifecycle_revision":snapshot.lifecycle_revision,"last_observation":snapshot.last_observation.map(observation_json),"last_presented":snapshot.last_presented.map(observation_json)})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +348,33 @@ mod tests {
     }
     fn deadline() -> Instant {
         Instant::now() + Duration::from_secs(5)
+    }
+
+    #[test]
+    fn retired_binding_callback_cannot_populate_a_replacement_generation() {
+        let handle = Handle::new();
+        let window = Id::unique();
+        handle.set_live_generation(Some(1));
+        let retained_view = handle.binding(stamp(1));
+        let old = retained_view.captured();
+        assert!(old.same_presentation(&retained_view));
+        handle.set_live_generation(None);
+        handle.set_live_generation(Some(2));
+        old.observe(window, Some(10), presented());
+        assert!(handle.snapshot().last_presented.is_none());
+        assert!(!old.same_presentation(&retained_view));
+        retained_view
+            .captured()
+            .observe(window, Some(11), presented());
+        assert_eq!(
+            handle.snapshot().last_presented.unwrap().request_id,
+            Some(11)
+        );
+        assert_eq!(
+            handle.snapshot().last_presented.unwrap().stamp,
+            stamp(1),
+            "fresh ownership never relabels unchanged rendered pixels"
+        );
     }
 
     #[test]

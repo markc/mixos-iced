@@ -1,5 +1,12 @@
 # settings contract changes
 
+## 0.3.6
+
+Add optional monotonic delivery/application observations and shared clock
+identity. Keep observation metadata outside snapshots and cache envelopes.
+Authority contract 0.1.2 adds runtime-only durable commit timing with honest
+unavailability on old replay and restart. Snapshot schema remains 1.
+
 ## 0.3.5
 
 Add optional versioned `appearance.resources` (set ID, exact manifest digest,

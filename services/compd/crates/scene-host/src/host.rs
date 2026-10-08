@@ -625,6 +625,7 @@ pub struct SceneHost {
     service: Option<String>,
     refused: Option<String>,
     surfaces: BTreeMap<String, Surface>,
+    frame_owners: BTreeMap<String, (application::iced::window::Id, application::frames::Handle)>,
     /// Layout requests for mapped scenes whose first render is still due.
     /// Keep the admitted request intact for provenance/reconnect checks.
     pending_layouts: Vec<Request>,
@@ -684,6 +685,7 @@ impl SceneHost {
             service: None,
             refused: None,
             surfaces: BTreeMap::new(),
+            frame_owners: BTreeMap::new(),
             pending_layouts: Vec::new(),
             output_names: BTreeMap::new(),
             placed: BTreeMap::new(),
@@ -766,7 +768,11 @@ impl SceneHost {
             };
             let (rc, value) = match crate::description::complete(identity, self.settings.session())
             {
-                Ok(value) => (0, value),
+                Ok(mut value) => {
+                    value["installed_frame_stamp"]=self.settings.session().frame_stamp().map(|stamp|json!({"activation_epoch":stamp.activation_epoch,"local_revision":stamp.local_revision})).unwrap_or(Value::Null);
+                    value["native_scene_frames"]=json!(self.frame_owners.iter().map(|(scene,(_,frames))|json!({"scene":scene,"mapped":self.host.store.scene(scene).is_some_and(|entry|entry.mounted().is_some()),"frames":application::frames::snapshot_json(&frames.snapshot())})).collect::<Vec<_>>());
+                    (0, value)
+                }
                 Err(error) => (10, crate::description::refusal(&error)),
             };
             self.port.reply_description(request, rc, value.to_string());
@@ -776,6 +782,9 @@ impl SceneHost {
     }
 
     pub fn service_port(&mut self, lp: &mut world::state::Loop) -> Serviced {
+        for (_, frames) in self.frame_owners.values() {
+            frames.set_live_generation(self.port.settings_generation());
+        }
         let mut serviced = Serviced::default();
         let panels = &mut self.host.panels;
         let port = &self.port;
@@ -1049,6 +1058,9 @@ impl SceneHost {
             palette,
             prepared.clone(),
             self.appearance_generation,
+            &mut self.frame_owners,
+            self.settings.session().frame_stamp(),
+            self.port.settings_generation(),
             &self.wiring,
             state,
             renderer,
@@ -1098,6 +1110,9 @@ impl SceneHost {
     }
 
     pub fn finish(self) {
+        for (_, frames) in self.frame_owners.values() {
+            frames.close();
+        }
         self.port.finish();
     }
 

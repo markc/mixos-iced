@@ -204,7 +204,7 @@ checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
 
 [[package]]
 name = "application"
-version = "0.1.22"
+version = "0.1.24"
 dependencies = [
  "appearance",
  "assets",
@@ -6678,7 +6678,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "blake3",
  "bus",
@@ -6695,7 +6695,7 @@ dependencies = [
 
 [[package]]
 name = "settingsd"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "buildinfo",

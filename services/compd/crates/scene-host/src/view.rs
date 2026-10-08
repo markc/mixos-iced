@@ -109,6 +109,19 @@ pub enum SceneMessage {
     Replace(Arc<Content>),
     /// Restyle the existing widget tree without altering local edits or focus.
     Appearance(Arc<::appearance::settings::Prepared>),
+    Presentation(
+        Option<(
+            application::iced::window::Id,
+            application::frames::FrameBinding,
+        )>,
+    ),
+    AppearanceFrame(
+        Arc<::appearance::settings::Prepared>,
+        Option<(
+            application::iced::window::Id,
+            application::frames::FrameBinding,
+        )>,
+    ),
     Click(Arc<Route>),
     Toggle(Arc<Route>, String, bool),
     Input(Arc<Route>, String, String),
@@ -126,6 +139,10 @@ pub struct SceneUi {
     theme: Theme,
     buttons: Option<Arc<ResolvedButtonTable>>,
     prepared: Option<Arc<::appearance::settings::Prepared>>,
+    presentation: Option<(
+        application::iced::window::Id,
+        application::frames::FrameBinding,
+    )>,
     /// Local text of the fields being edited, by instance key, until the
     /// scene's own `value` port changes.
     edits: BTreeMap<String, String>,
@@ -546,6 +563,7 @@ impl SceneUi {
             theme: Theme::custom("design", seed),
             buttons: Some(design.buttons),
             prepared: None,
+            presentation: None,
             edits: BTreeMap::new(),
             toggles: BTreeMap::new(),
         }
@@ -575,6 +593,7 @@ impl SceneUi {
             theme,
             buttons: None,
             prepared: Some(prepared),
+            presentation: None,
             edits: BTreeMap::new(),
             toggles: BTreeMap::new(),
         }
@@ -1307,6 +1326,14 @@ impl SceneUi {
 
 impl IcedUi for SceneUi {
     type Message = SceneMessage;
+    fn frame_presentation(
+        &self,
+    ) -> Option<(
+        application::iced::window::Id,
+        application::frames::FrameBinding,
+    )> {
+        self.presentation.clone()
+    }
 
     fn view(&self) -> El<'_> {
         self.build_view()
@@ -1325,6 +1352,11 @@ impl IcedUi for SceneUi {
                 self.content = content;
             }
             SceneMessage::Appearance(prepared) => self.apply_appearance(prepared),
+            SceneMessage::Presentation(binding) => self.presentation = binding,
+            SceneMessage::AppearanceFrame(prepared, binding) => {
+                self.apply_appearance(prepared);
+                self.presentation = binding;
+            }
             SceneMessage::Input(_, key, value) => {
                 self.edits.insert(key, value);
             }
@@ -1385,6 +1417,8 @@ pub fn event_of(message: &SceneMessage) -> Option<(&str, &str, Value)> {
         SceneMessage::Submit(route, value) => route.event("submit", Some(json!(value))),
         SceneMessage::Replace(_)
         | SceneMessage::Appearance(_)
+        | SceneMessage::Presentation(_)
+        | SceneMessage::AppearanceFrame(..)
         | SceneMessage::Close
         | SceneMessage::EscapeEdge
         | SceneMessage::EdgeFocus(_) => None,

@@ -58,6 +58,15 @@ pub fn complete_native<T, C>(
         evidence("settings", session.host().consumer().evidence())?,
         "settings",
     )?;
+    install(
+        object,
+        "settings_observation",
+        evidence(
+            "settings_observation",
+            session.host().consumer().observations(),
+        )?,
+        "settings_observation",
+    )?;
     #[cfg(feature = "settings-cache")]
     install(
         object,
@@ -94,6 +103,36 @@ pub fn complete_native<T, C>(
         "resources",
     )?;
     complete(&mut staged, identity)?;
+    *value = staged;
+    Ok(())
+}
+
+/// Complete a real window owner's copied native frame history atomically.
+/// An installed stamp stays separate from each historical receipt's stamp.
+pub fn complete_native_frames<T, C>(
+    value: &mut Value,
+    identity: Identity<'_>,
+    session: &Session<T, C>,
+    frames: &crate::frames::Handle,
+) -> Result<(), Violation> {
+    let mut staged = value.clone();
+    complete_native(&mut staged, identity, session)?;
+    let object = staged
+        .as_object_mut()
+        .expect("completed native description is an object");
+    install(
+        object,
+        "native_frames",
+        crate::frames::snapshot_json(&frames.snapshot()),
+        "native_frames",
+    )?;
+    let stamp=session.frame_stamp().map(|stamp| serde_json::json!({"activation_epoch":stamp.activation_epoch,"local_revision":stamp.local_revision})).unwrap_or(Value::Null);
+    install(
+        object,
+        "installed_frame_stamp",
+        stamp,
+        "installed_frame_stamp",
+    )?;
     *value = staged;
     Ok(())
 }

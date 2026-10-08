@@ -65,10 +65,20 @@ pub struct Ring<T> {
 
 impl<T> Ring<T> {
     pub fn new(slots: Vec<T>, device: wgpu::Device, queue: wgpu::Queue) -> Self {
-        let done = (0..slots.len()).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        let done = (0..slots.len())
+            .map(|_| Arc::new(AtomicBool::new(false)))
+            .collect();
         Self {
-            slots, cursor: 0, published: 0, inflight: VecDeque::new(), done,
-            generation: 0, pending: false, retarget: false, device, queue,
+            slots,
+            cursor: 0,
+            published: 0,
+            inflight: VecDeque::new(),
+            done,
+            generation: 0,
+            pending: false,
+            retarget: false,
+            device,
+            queue,
         }
     }
 
@@ -84,16 +94,35 @@ impl<T> Ring<T> {
         std::mem::take(&mut self.retarget)
     }
 
-    pub fn len(&self) -> usize { self.slots.len() }
-    pub fn is_empty(&self) -> bool { self.slots.is_empty() }
-    pub fn generation(&self) -> u64 { self.generation }
-    pub fn published(&self) -> &T { &self.slots[self.published] }
-    pub fn target(&self) -> &T { &self.slots[self.cursor] }
+    pub fn len(&self) -> usize {
+        self.slots.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn published(&self) -> &T {
+        &self.slots[self.published]
+    }
+    pub fn target(&self) -> &T {
+        &self.slots[self.cursor]
+    }
+    /// Metadata owners bind to the actual ring slot, never the newest model.
+    pub fn target_index(&self) -> usize {
+        self.cursor
+    }
+    pub fn published_index(&self) -> usize {
+        self.published
+    }
 
     /// Whether a submitted frame has yet to be published. A dirty-driven host
     /// must keep scheduling while this holds, or a deferred publish lands on a
     /// frame that never comes and the surface sits on stale pixels.
-    pub fn has_pending(&self) -> bool { !self.inflight.is_empty() }
+    pub fn has_pending(&self) -> bool {
+        !self.inflight.is_empty()
+    }
 
     /// Frames allowed in flight: every slot except the published one and the one
     /// being drawn into.
@@ -128,7 +157,11 @@ impl<T> Ring<T> {
             return false;
         }
         let mut moved = false;
-        while self.inflight.front().is_some_and(|s| self.done[*s].load(Ordering::Acquire)) {
+        while self
+            .inflight
+            .front()
+            .is_some_and(|s| self.done[*s].load(Ordering::Acquire))
+        {
             let slot = self.inflight.pop_front().expect("front just matched");
             self.published = slot;
             self.generation += 1;
@@ -145,7 +178,10 @@ impl<T> Ring<T> {
             return &self.slots[self.cursor];
         }
         while self.inflight.len() > self.capacity() {
-            let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
             if !self.poll() {
                 // The wait returned with nothing retired: rather than spin on a
                 // callback that may never arrive, take the slot and accept the
@@ -189,11 +225,15 @@ impl<T> Ring<T> {
         let done = self.done[self.cursor].clone();
         done.store(false, Ordering::Release);
         let flag = done.clone();
-        self.queue.on_submitted_work_done(move || flag.store(true, Ordering::Release));
+        self.queue
+            .on_submitted_work_done(move || flag.store(true, Ordering::Release));
         self.inflight.push_back(self.cursor);
 
         if !pipeline || self.capacity() == 0 || self.generation == 0 {
-            let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
         }
         self.poll()
     }
@@ -214,7 +254,10 @@ impl<T> Ring<T> {
             self.done.push(Arc::new(AtomicBool::new(false)));
         }
         if self.slots.len() > depth {
-            let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
             self.poll();
             self.inflight.clear();
             self.slots.swap(0, self.published);
@@ -230,10 +273,15 @@ impl<T> Ring<T> {
     /// Replace every slot — the resize path, where each buffer must be
     /// reallocated at the new size and nothing may be carried over.
     pub fn replace(&mut self, slots: Vec<T>) {
-        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
         self.inflight.clear();
         self.pending = false;
-        self.done = (0..slots.len()).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        self.done = (0..slots.len())
+            .map(|_| Arc::new(AtomicBool::new(false)))
+            .collect();
         self.slots = slots;
         self.cursor = 0;
         self.published = 0;

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.24
+
+- Share bounded participant phase/state observations and expose exact native
+  frame history separately from installed settings. Capture callback lifecycle
+  provenance per admitted request, including unchanged retained views.
+- Add optional native delivery/application monotonic evidence without claiming
+  durable acceptance or presentation from description reads.
+
 ## 0.1.22
 
 - Share a bounded native refusal lane for existing actors. Preserve original

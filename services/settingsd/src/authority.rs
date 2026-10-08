@@ -3,11 +3,24 @@ use crate::store::{Accepted, Store, valid_operation_id};
 use serde_json::{Value, json};
 use settings::*;
 
+/// Runtime observation of one actual validated durable commit. It is not
+/// persisted/reconstructed on restart and never enters the snapshot digest.
+#[derive(Clone, serde::Serialize)]
+pub struct CommitObservation {
+    pub operation_id: String,
+    pub identity: settings::consumer::SnapshotIdentity,
+    pub changed: bool,
+    pub validation_started: Option<settings::clock::Stamp>,
+    pub commit_started: Option<settings::clock::Stamp>,
+    pub accepted: Option<settings::clock::Stamp>,
+}
+
 pub struct Authority {
     pub store: Store,
     pub accepted: Accepted,
     pub snapshot: Snapshot,
     pub published: Option<Revision>,
+    pub observation: Option<CommitObservation>,
 }
 impl Authority {
     pub fn new(store: Store, accepted: Accepted) -> anyhow::Result<Self> {
@@ -19,6 +32,7 @@ impl Authority {
             accepted,
             snapshot,
             published: None,
+            observation: None,
         })
     }
     fn target(&self, binding: &Binding) -> Result<(), Value> {
@@ -31,7 +45,7 @@ impl Authority {
     pub fn read(&self, request: ReadRequest) -> Result<Value, Value> {
         self.target(&request.binding)?;
         Ok(
-            json!({"status":"current","snapshot":self.snapshot,"publication_pending":self.published != Some(self.accepted.revision),"recovering":self.store.recovering,"restored_from_backup":self.store.restored}),
+            json!({"status":"current","snapshot":self.snapshot,"observation":self.observation,"publication_pending":self.published != Some(self.accepted.revision),"recovering":self.store.recovering,"restored_from_backup":self.store.restored}),
         )
     }
     pub fn status(&self, binding: &Binding, operation: Option<&str>) -> Result<Value, Value> {
@@ -75,6 +89,7 @@ impl Authority {
     /// Serialized by the owning worker. Deduplication before revision fencing
     /// makes a lost reply retry retrieve its original receipt after later edits.
     pub fn apply(&mut self, request: ApplyRequest) -> Result<Value, Value> {
+        let validation_started = settings::clock::now();
         self.target(&request.binding)?;
         if self.store.recovering {
             return Err(
@@ -111,7 +126,7 @@ impl Authority {
                 return Err(json!({"status":"operation_id_reused","receipt":receipt}));
             }
             return Ok(
-                json!({"status":receipt.outcome,"receipt":receipt,"publication_pending":self.published != Some(self.accepted.revision),"replayed":true}),
+                json!({"status":receipt.outcome,"receipt":receipt,"observation":self.observation.as_ref().filter(|observation| observation.operation_id == receipt.operation_id),"publication_pending":self.published != Some(self.accepted.revision),"replayed":true}),
             );
         }
         self.fence(&request)?;
@@ -163,15 +178,25 @@ impl Authority {
         }
         next.seal()
             .map_err(|e| json!({"status":"storage_failed","message":e.to_string()}))?;
+        let commit_started = settings::clock::now();
         if let Err(error) = self.store.commit(&self.accepted, &next) {
             return Err(
                 json!({"status":if self.store.recovering {"outcome_unknown"} else {"storage_failed"},"message":error.to_string()}),
             );
         }
+        let accepted = settings::clock::now();
         self.accepted = next;
         self.snapshot = next_snapshot;
+        self.observation = Some(CommitObservation {
+            operation_id: receipt.operation_id.clone(),
+            identity: (&self.snapshot).into(),
+            changed: !unchanged,
+            validation_started,
+            commit_started,
+            accepted,
+        });
         Ok(
-            json!({"status":receipt.outcome,"receipt":receipt,"publication_pending":self.published != Some(self.accepted.revision),"replayed":false}),
+            json!({"status":receipt.outcome,"receipt":receipt,"observation":self.observation,"publication_pending":self.published != Some(self.accepted.revision),"replayed":false}),
         )
     }
 }

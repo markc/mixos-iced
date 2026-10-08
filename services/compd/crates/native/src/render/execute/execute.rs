@@ -1450,7 +1450,7 @@ fn present(
     }
 
     // compd (integration batch D): this frame was handed to the display.
-    world::comp::presentation::frame_queued(state, &current_output, &window_visible);
+    world::comp::presentation::frame_queued(state, &current_output, &window_visible, states);
     frames::draw::present::callbacks::callbacks::send_window_frames(
         state,
         &current_output,

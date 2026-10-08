@@ -25,12 +25,12 @@ use std::time::Duration;
 use dispatcher::wire::trait_::surface_event::SurfaceHandle;
 use ledger::presentation::{FrameSource, SourceLedger};
 use ledger::presentation_stats::{StatsRegistry, SurfaceShown, WindowFrame};
-use surfaces::SurfaceId;
 use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{TraversalAction, with_surface_tree_downward};
 use smithay::wayland::seat::WaylandFocus;
+use surfaces::SurfaceId;
 
 use crate::state::Loop;
 
@@ -46,6 +46,11 @@ struct ShownWindow {
 }
 
 struct QueuedFrame {
+    frame_id: Option<u64>,
+    bindings: Vec<(
+        iced_core::window::Id,
+        iced_core::window::presentation::FrameBinding,
+    )>,
     shown: Vec<ShownWindow>,
     /// Mapped managed windows the frame does not show: `{id, generation}`
     /// and the root's content seq.
@@ -56,6 +61,7 @@ struct QueuedFrame {
 
 #[derive(Default)]
 pub struct Presentation {
+    frame_sequence: u64,
     pub stats: StatsRegistry,
     /// The content sources (`sources.*`, `comp.window.stats {source}`).
     pub sources: SourceLedger,
@@ -123,13 +129,22 @@ fn surface_tree(lp: &Loop, root: &WlSurface, root_id: SurfaceId) -> Vec<(u64, bo
 
 /// The backends' call-out: a frame showing `visible` was handed to the
 /// display of `output` (queued for a flip, or submitted nested).
-pub fn frame_queued(lp: &mut Loop, output: &Output, visible: &[Window]) {
+pub fn frame_queued(
+    lp: &mut Loop,
+    output: &Output,
+    visible: &[Window],
+    states: Option<&smithay::backend::renderer::element::RenderElementStates>,
+) {
     // Registrations first, so a source registered this frame reports in it.
     let now = super::injection::monotonic_us();
     for event in ui::source::take_events() {
         match event {
             ui::source::SourceEvent::Registered { id, output } => {
-                lp.inner.comp.presentation.sources.register(&id, output, now);
+                lp.inner
+                    .comp
+                    .presentation
+                    .sources
+                    .register(&id, output, now);
             }
             ui::source::SourceEvent::Unregistered { id, revision } => {
                 let _ = lp.inner.comp.presentation.sources.unregister(&id, revision);
@@ -138,15 +153,37 @@ pub fn frame_queued(lp: &mut Loop, output: &Output, visible: &[Window]) {
     }
     // Keyed as the scene host registers them: the engine's output key.
     let sources = ui::source::frame(&crate::state::state::output_key(output));
+    // Bind to the actually published texture slot, then capture lifecycle at
+    // native queue admission. Current scene state cannot relabel held pixels.
+    let bindings = sources
+        .iter()
+        .filter(|source| source.shown)
+        .filter_map(|source| {
+            let handle = ui::source::native_handle(&source.id)?;
+            let (window, binding) = lp
+                .inner
+                .surface()
+                .registry
+                .as_ref()?
+                .frame_presentation(handle, states?)?;
+            Some((window, binding.captured()))
+        })
+        .collect();
     let comp = &lp.inner.comp;
     let mut listed = HashSet::new();
     let mut shown = Vec::new();
     for window in visible {
-        let Some(id) = SurfaceHandle::of_window(window).and_then(|handle| comp.registry.id_for_handle(&handle)) else {
+        let Some(id) = SurfaceHandle::of_window(window)
+            .and_then(|handle| comp.registry.id_for_handle(&handle))
+        else {
             continue;
         };
-        let Some(record) = comp.registry.get(id) else { continue };
-        let Some(root) = window.wl_surface() else { continue };
+        let Some(record) = comp.registry.get(id) else {
+            continue;
+        };
+        let Some(root) = window.wl_surface() else {
+            continue;
+        };
         listed.insert(id);
         shown.push(ShownWindow {
             id: id.0,
@@ -157,27 +194,82 @@ pub fn frame_queued(lp: &mut Loop, output: &Output, visible: &[Window]) {
     let hidden = comp
         .registry
         .surface_rows()
-        .filter(|record| record.mapped() && record.role().managed_toplevel() && !listed.contains(&record.id()))
-        .map(|record| (record.id().0, record.generation(), comp.commits(record.id())))
+        .filter(|record| {
+            record.mapped() && record.role().managed_toplevel() && !listed.contains(&record.id())
+        })
+        .map(|record| {
+            (
+                record.id().0,
+                record.generation(),
+                comp.commits(record.id()),
+            )
+        })
         .collect();
-    let queue = lp.inner.comp.presentation.queued.entry(output.name()).or_default();
-    if queue.len() == IN_FLIGHT {
-        queue.pop_front();
+    let presentation = &mut lp.inner.comp.presentation;
+    let frame_id = presentation.frame_sequence.checked_add(1);
+    if let Some(next) = frame_id {
+        presentation.frame_sequence = next;
     }
-    queue.push_back(QueuedFrame { shown, hidden, sources });
+    let queue = presentation.queued.entry(output.name()).or_default();
+    if queue.len() == IN_FLIGHT {
+        if let Some(retired) = queue.pop_front() {
+            for (window, binding) in retired.bindings {
+                binding.observe(
+                    window,
+                    retired.frame_id,
+                    iced_core::window::presentation::FrameOutcome::Discarded,
+                );
+            }
+        }
+    }
+    queue.push_back(QueuedFrame {
+        shown,
+        hidden,
+        sources,
+        bindings,
+        frame_id,
+    });
 }
 
 /// The backends' call-out: `output`'s oldest queued frame reached the
 /// screen at `time` (CLOCK_MONOTONIC), with this refresh and these
 /// `wp_presentation` kind bits.
-pub fn presented(lp: &mut Loop, output: &Output, time: Duration, refresh: Option<Duration>, flags: u32) {
+pub fn presented(
+    lp: &mut Loop,
+    output: &Output,
+    time: Duration,
+    refresh: Option<Duration>,
+    flags: u32,
+    sequence: u64,
+) {
     let name = output.name();
     let tv_us = u64::try_from(time.as_micros()).unwrap_or(u64::MAX);
     let refresh_us = refresh.and_then(|refresh| u64::try_from(refresh.as_micros()).ok());
     let presentation = &mut lp.inner.comp.presentation;
-    let Some(frame) = presentation.queued.get_mut(&name).and_then(VecDeque::pop_front) else {
+    let Some(frame) = presentation
+        .queued
+        .get_mut(&name)
+        .and_then(VecDeque::pop_front)
+    else {
         return;
     };
+    for (window, binding) in &frame.bindings {
+        let outcome = if frame.frame_id.is_some() {
+            iced_core::window::presentation::FrameOutcome::Presented {
+                clock_id: Some(1),
+                seconds: time.as_secs(),
+                nanoseconds: time.subsec_nanos(),
+                refresh_ns: refresh
+                    .and_then(|interval| u32::try_from(interval.as_nanos()).ok())
+                    .unwrap_or(0),
+                output_sequence: sequence,
+                flags,
+            }
+        } else {
+            iced_core::window::presentation::FrameOutcome::Exhausted
+        };
+        binding.observe(*window, frame.frame_id, outcome);
+    }
     if presentation.stats.epoch_us == 0 {
         presentation.stats.epoch_us = tv_us;
     }
@@ -185,23 +277,39 @@ pub fn presented(lp: &mut Loop, output: &Output, time: Duration, refresh: Option
     for window in &frame.shown {
         let mut fold = WindowFrame::default();
         for &(surface, is_root, seq) in &window.surfaces {
-            presentation.stats.surface_frame(surface, is_root, seq, SurfaceShown::Shown, &mut fold);
+            presentation
+                .stats
+                .surface_frame(surface, is_root, seq, SurfaceShown::Shown, &mut fold);
         }
-        presentation.stats.window_frame(window.id, window.generation, fold, tv_us, refresh_us);
-        presentation.presented_since_map.insert(SurfaceId(window.id));
+        presentation
+            .stats
+            .window_frame(window.id, window.generation, fold, tv_us, refresh_us);
+        presentation
+            .presented_since_map
+            .insert(SurfaceId(window.id));
         listed.insert(window.id);
     }
     for &(id, generation, seq) in &frame.hidden {
         let mut fold = WindowFrame::default();
-        presentation.stats.surface_frame(id, true, seq, SurfaceShown::Hidden, &mut fold);
-        presentation.stats.window_frame(id, generation, fold, tv_us, refresh_us);
+        presentation
+            .stats
+            .surface_frame(id, true, seq, SurfaceShown::Hidden, &mut fold);
+        presentation
+            .stats
+            .window_frame(id, generation, fold, tv_us, refresh_us);
         listed.insert(id);
     }
-    presentation.stats.hide_unlisted(|window| listed.contains(&window));
-    presentation.stats.output_frame(&name, tv_us, flags, refresh_us);
+    presentation
+        .stats
+        .hide_unlisted(|window| listed.contains(&window));
+    presentation
+        .stats
+        .output_frame(&name, tv_us, flags, refresh_us);
     // The content sources this frame reported, against the same frame time.
     let Presentation { stats, sources, .. } = presentation;
     for source in &frame.sources {
-        sources.resolve(source, tv_us, refresh_us, |input_seq, at_us| stats.input_mark(input_seq, at_us));
+        sources.resolve(source, tv_us, refresh_us, |input_seq, at_us| {
+            stats.input_mark(input_seq, at_us)
+        });
     }
 }

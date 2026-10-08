@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 [package]
 name = "settingsd"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -19,7 +19,7 @@ contract = "public"
 mod_module_files = "deny"
 
 [dependencies]
-settings.workspace = true
+settings = { workspace = true, features = ["observation"] }
 config.workspace = true
 strict.workspace = true
 bus = { workspace = true, features = ["native"] }

@@ -12,22 +12,21 @@
 
 use crate::context::render::render::NativeRenderContext;
 use crate::render::execute::execute::FrameOutcome;
-use std::os::fd::AsFd;
 use smithay::backend::drm::DrmDeviceNotifier;
-use smithay::reexports::calloop::ping::make_ping;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::calloop::LoopHandle;
+use smithay::reexports::calloop::ping::make_ping;
 use std::cell::RefCell;
+use std::os::fd::AsFd;
 use std::rc::Rc;
 use std::time::Duration;
-use world::state::state::StatusSession;
 use world::state::Loop;
+use world::state::state::StatusSession;
 
 #[cfg(feature = "flip-estimate")]
 type EstimateSlot = Rc<RefCell<Option<smithay::reexports::calloop::RegistrationToken>>>;
 #[cfg(feature = "timing-predict")]
-type PredictClock =
-    Rc<RefCell<kms::scanout::timing::predict::predict::PresentationClock>>;
+type PredictClock = Rc<RefCell<kms::scanout::timing::predict::predict::PresentationClock>>;
 
 pub fn register(
     event_loop: &mut EventLoop<'static, Loop>,
@@ -35,9 +34,7 @@ pub fn register(
     drm_notifier: DrmDeviceNotifier,
     ctx_rc: Rc<RefCell<NativeRenderContext>>,
 ) {
-    let refresh = kms::scanout::timing::vblank::vblank::interval(
-        &ctx_rc.borrow().pipe().mode,
-    );
+    let refresh = kms::scanout::timing::vblank::vblank::interval(&ctx_rc.borrow().pipe().mode);
 
     #[cfg(feature = "flip-estimate")]
     let estimate_slot: EstimateSlot = Rc::new(RefCell::new(None));
@@ -60,13 +57,11 @@ pub fn register(
     // `published` flag itself is still set (`notify_offthread_published`), so the
     // next commit-driven composite samples the buffer, and the flag survives
     // until the gate lifts and the loop free-runs again.
-    graphics::bridge::publish::wake::wake::set_offthread_waker(std::sync::Arc::new(
-        move || {
-            if !protocols::tearing::gate::gate::engaged() {
-                redraw_ping.ping();
-            }
-        },
-    ));
+    graphics::bridge::publish::wake::wake::set_offthread_waker(std::sync::Arc::new(move || {
+        if !protocols::tearing::gate::gate::engaged() {
+            redraw_ping.ping();
+        }
+    }));
 
     // The stall rescue: a deadline that exists only while work is
     // outstanding on a live pipe — a request it has not rendered, or a flip it is
@@ -76,7 +71,9 @@ pub fn register(
     let ctx_outstanding = ctx_rc.clone();
     let rescue = crate::wire::watchdog::idle::idle::IdleRescue::new(
         move |key: &str, in_flight: bool| {
-            let Ok(mut ctx) = ctx_rescue.try_borrow_mut() else { return };
+            let Ok(mut ctx) = ctx_rescue.try_borrow_mut() else {
+                return;
+            };
             for pipe in ctx.outputs.iter_mut() {
                 if world::state::state::output_key(&pipe.output) == key {
                     if let Some(o) = pipe.drm_output.as_mut() {
@@ -138,7 +135,9 @@ pub fn register(
             // has moved the epoch: mark the pipes stale or the executor's
             // epoch-current skip would (correctly) find nothing to do.
             if published {
-                state.state.redraw.request_silent_for(protocols::redraw::schedule::schedule::RedrawReason::Background);
+                state.state.redraw.request_silent_for(
+                    protocols::redraw::schedule::schedule::RedrawReason::Background,
+                );
             }
             // No output live: nothing renders, but the control plane must still
             // move. Pumped here, per request, rather than by a repeating dark tick.
@@ -198,7 +197,7 @@ pub fn register(
     event_loop
         .handle()
         .insert_source(drm_notifier, move |event, event_meta, state| {
-            use kms::loop_::notifier::notifier::{decode, DecodedDrmEvent};
+            use kms::loop_::notifier::notifier::{DecodedDrmEvent, decode};
 
             match decode(event, event_meta) {
                 DecodedDrmEvent::Error(error) => {
@@ -215,7 +214,11 @@ pub fn register(
                     // Measure event arrival, before pause/throttle gates and
                     // before rendering the next frame. CPU during this wait is
                     // unrelated event-loop work, so it is recorded as zero.
-                    if let Some(pipe) = context_drm.borrow_mut().outputs.iter_mut().find(|p| p.crtc == crtc)
+                    if let Some(pipe) = context_drm
+                        .borrow_mut()
+                        .outputs
+                        .iter_mut()
+                        .find(|p| p.crtc == crtc)
                         && let Some(span) = pipe.flip_trace.take()
                     {
                         span.finish();
@@ -386,7 +389,10 @@ fn process_vblank_inner(
     #[cfg(feature = "flip-estimate")] estimate_slot: &EstimateSlot,
     #[cfg(feature = "timing-predict")] predict_clock: &PredictClock,
 ) {
-    *state.inner.kernel.get_mut(&drivers::resume::base::VBLANK_SEEN_MUT) = true;
+    *state
+        .inner
+        .kernel
+        .get_mut(&drivers::resume::base::VBLANK_SEEN_MUT) = true;
 
     let mut ctx = ctx_rc.borrow_mut();
 
@@ -417,10 +423,10 @@ fn process_vblank_inner(
     // Per pipe: a global silent request would leave idle
     // sibling pipes behind the epoch with nothing to wake them.
     if !ctx.outputs[idx].props_applied {
-        state
-            .state
-            .redraw
-            .request_pipe_silent(&key, protocols::redraw::schedule::schedule::RedrawReason::Output);
+        state.state.redraw.request_pipe_silent(
+            &key,
+            protocols::redraw::schedule::schedule::RedrawReason::Output,
+        );
     }
     // Phase reference for the tearing policy's "time until the next vblank".
     //
@@ -449,8 +455,7 @@ fn process_vblank_inner(
     // completions on THIS pipe (a dropped frame — a vblank with no new buffer —
     // doesn't increment), keyed by output. The overlay samples the delta.
     if matches!(pending_feedback, Some(Some(_))) {
-        let key =
-            world::state::state::output_key(&ctx.outputs[idx].output);
+        let key = world::state::state::output_key(&ctx.outputs[idx].output);
         model::stats::registry::base::present(&key);
     }
 
@@ -468,8 +473,7 @@ fn process_vblank_inner(
     // `refresh`. Otherwise a high-refresh output is paced at a slower neighbour's
     // rate. `refresh` (the primary's, from register()) is retained only for the
     // throttle gate above, which is feature-gated off in the shipping build.
-    let this_refresh =
-        kms::scanout::timing::vblank::vblank::interval(&ctx.outputs[idx].mode);
+    let this_refresh = kms::scanout::timing::vblank::vblank::interval(&ctx.outputs[idx].mode);
     // MSC for presentation feedback. The page-flip event's own sequence is the cheap
     // source and is used whenever it carries one; a driver that leaves it 0 is repaired
     // from the CRTC here, while `ctx` still holds the device fd. See
@@ -480,7 +484,9 @@ fn process_vblank_inner(
         sequence,
     );
     // compd (integration batch D): the output whose queued frame this vblank completes.
-    let presented_output = pending_feedback.as_ref().map(|_| ctx.outputs[idx].output.clone());
+    let presented_output = pending_feedback
+        .as_ref()
+        .map(|_| ctx.outputs[idx].output.clone());
     drop(ctx);
 
     let stamp = kms::scanout::timing::vblank::vblank::interpret(
@@ -516,6 +522,7 @@ fn process_vblank_inner(
             stamp.time,
             (!tore).then_some(this_refresh),
             frames::draw::present::callbacks::callbacks::hw_flip_kind(tore).bits(),
+            stamp.sequence,
         );
     }
 

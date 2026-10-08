@@ -1,5 +1,12 @@
 # settingsd contract changes
 
+## 0.1.2
+
+Add optional runtime commit observation outside the snapshot and durable
+receipt. Preserve original timing for the latest replay; older receipts and
+restart have no reconstructed acceptance time. Newly durable no-ops explicitly
+report no change. Snapshot schema, digest and ABP framing stay unchanged.
+
 ## 0.1.1
 
 Accept the optional versioned `appearance.resources` reference with structural

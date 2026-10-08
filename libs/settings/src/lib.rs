@@ -2,6 +2,9 @@
 //! Shared headless settings contract and consumer. No renderer or owned transport.
 #[cfg(feature = "cache")]
 pub mod cache;
+/// Host monotonic observations, never settings authority or wall-clock time.
+#[cfg(feature = "observation")]
+pub mod clock;
 pub mod consumer;
 pub mod domains;
 pub mod fallback;
@@ -15,7 +18,7 @@ pub use design::EMBEDDED_DEFAULT_SOURCE;
 pub use model::*;
 pub use resolve::{describe, resolve, resolve_with_embedded};
 
-pub const CONTRACT_VERSION: &str = "0.1.1";
+pub const CONTRACT_VERSION: &str = "0.1.2";
 pub const SCHEMA: u32 = 1;
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_SNAPSHOT_BYTES: usize = 1024 * 1024 - 64 * 1024;

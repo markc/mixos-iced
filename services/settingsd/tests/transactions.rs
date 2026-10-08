@@ -260,6 +260,37 @@ fn no_op_is_durable_without_a_revision_or_snapshot_change() {
         "unknown_operation"
     );
 }
+
+#[test]
+fn runtime_commit_observation_is_never_reconstructed_for_an_old_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = authority(dir.path());
+    let first = request(&state, "timed-change", "dark");
+    let result = state.apply(first.clone()).unwrap();
+    let original = result["observation"].clone();
+    assert_eq!(original["changed"], true);
+    assert_eq!(original["operation_id"], "timed-change");
+    let snapshot = state.snapshot.clone();
+    assert_eq!(state.apply(first.clone()).unwrap()["observation"], original);
+    assert_eq!(state.snapshot, snapshot);
+
+    // A newly durable no-op may have commit timing, but explicitly does not
+    // claim a new snapshot, application activation or native presentation.
+    let noop = request(&state, "timed-noop", "dark");
+    let noop_result = state.apply(noop.clone()).unwrap();
+    assert_eq!(noop_result["observation"]["changed"], false);
+    assert_eq!(state.snapshot, snapshot);
+    assert!(state.apply(first.clone()).unwrap()["observation"].is_null());
+    drop(state);
+
+    let (store, data) = Store::open(dir.path(), &binding()).unwrap();
+    let mut restored = Authority::new(store, data).unwrap();
+    assert_eq!(restored.snapshot, snapshot);
+    assert!(restored.observation.is_none());
+    assert!(restored.apply(first).unwrap()["observation"].is_null());
+    assert!(restored.apply(noop).unwrap()["observation"].is_null());
+    assert!(restored.observation.is_none());
+}
 #[test]
 fn invalid_batch_conflicting_editor_and_wrong_target_preserve_accepted_bytes() {
     let dir = tempfile::tempdir().unwrap();
