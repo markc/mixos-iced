@@ -158,6 +158,8 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
             .env("MIXOS_APP_HOME", directory.path().join("cap"))
             .env("MIXOS_NODE_CONFIG", &node_config)
             .env_remove("DISPLAY")
+            .env("MIXOS_ACCEPTANCE_RUN", "headless-not-owned")
+            .env("MIXOS_ACCEPTANCE_INSTANCE", "91")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DBUS_SESSION_BUS_ADDRESS")
             .stdout(Stdio::null())
@@ -166,6 +168,29 @@ async fn agent_capture_edit_export_cancel_and_single_instance() {
             .unwrap(),
     );
     assert_eq!(info(&client, "cap-test").await["headless"], true);
+    let description = client
+        .call("cap-test", "app.describe", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(description["service"], "cap-test");
+    assert_eq!(description["pid"], cap.0.id());
+    assert!(description["app_id"].is_null());
+    for verb in description["verbs"].as_array().unwrap() {
+        assert!(!verb.as_str().unwrap().starts_with("app.acceptance."));
+    }
+    let (rc, body) = client
+        .call_with_headers_raw(
+            "cap-test",
+            "app.acceptance.describe",
+            &std::collections::BTreeMap::new(),
+            "{}",
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        rc, 0,
+        "a headless launch cannot expose GUI fixture ownership: {body}"
+    );
     let duplicate = Command::new(env!("CARGO_BIN_EXE_cap"))
         .args(["--headless", "--service", "cap-test", "--noded-url", &url])
         .env("MIXOS_APP_HOME", directory.path().join("duplicate"))

@@ -19,6 +19,12 @@ async fn observed(
                     && state.reply_tasks <= 1
                     && state.operations <= OPERATION_CAP + CLEANUP_CAP
             );
+            #[cfg(feature = "acceptance")]
+            assert!(
+                state.fixture_waits <= 2
+                    && state.fixture_controls <= 4
+                    && state.fixture_active <= 6
+            );
             if predicate(&state) {
                 return state;
             }
@@ -38,6 +44,124 @@ impl Drop for Stop {
         self.0.quit();
         self.0.wait_done(Duration::from_secs(5));
     }
+}
+
+#[cfg(feature = "acceptance")]
+#[test]
+fn fixture_waits_leave_release_headroom_and_retire_on_native_loss_and_shutdown() {
+    use application::acceptance::{Fixture, Launch, frames::Target};
+    let mut broker = term_test_broker::Broker::start_stable();
+    let (fixture, _inspector_task) = Fixture::new::<crate::app::Message>(
+        Launch {
+            run: "cap-owned".into(),
+            instance: 73,
+        },
+        crate::acceptance::POINTS,
+        vec![application::inspect::Target::new(
+            "root",
+            application::iced::widget::Id::from(crate::acceptance::ROOT_ID),
+        )],
+        application::inspect::Limits::new(),
+    )
+    .unwrap();
+    let (probe, mut observation) = tokio::sync::watch::channel(ActorProbe::default());
+    let (send, receive) = mpsc::channel(OUTBOX_CAP);
+    let (handle, mut ui, _bootstrap, mut events) = start_configured_channels(
+        "actor-cap-fixture",
+        &broker.url,
+        None,
+        send,
+        receive,
+        Some(fixture),
+        Some(probe),
+    )
+    .unwrap();
+    let _stop = Stop(handle.clone());
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        let first = observed(&mut observation, |state| state.connected).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                ui.reconcile(handle.settings_generation());
+                ui.drain_with(|| handle.settings_generation(), |_| {});
+                if ui.preparation_evidence().current { break; }
+                assert!(ui.preparation_evidence().fault.is_none(), "{:?}", ui.preparation_evidence().fault);
+                events.next().await.expect("actual preparation wake");
+            }
+        }).await.expect("real native bootstrap activation");
+        let caller = Arc::new(NodedClient::connect_anonymous(&broker.url).await.unwrap());
+        // This target deliberately has no native presented observation. It
+        // holds a waiter; the actor test never manufactures frame success.
+        let window = application::iced::window::Id::unique();
+        let stamp = ui.session().frame_stamp().unwrap();
+        handle.fixture_frames.as_ref().unwrap().publish(Target { window, stamp: Some(stamp) }).unwrap();
+        let identity = json!({"run":"cap-owned","instance":73,"generation":first.generation});
+        let description = caller.call("actor-cap-fixture", "app.acceptance.describe", identity).await.unwrap();
+        assert_eq!(description["pid"], std::process::id());
+        assert_eq!(description["frames"]["enabled"], true);
+        let arm = caller.call("actor-cap-fixture", "app.acceptance.barrier.arm",
+            json!({"run":"cap-owned","instance":73,"generation":first.generation,"point":"cap.prepare","token":"held"})).await.unwrap();
+        assert_eq!(arm["ok"], true);
+        let reference = json!({"run":"cap-owned","instance":73,"generation":first.generation,"token":"held","sequence":arm["sequence"]});
+        let barrier_wait = {
+            let caller = caller.clone(); let reference = reference.clone();
+            tokio::spawn(async move { caller.call("actor-cap-fixture", "app.acceptance.barrier.wait", reference).await })
+        };
+        let frame_request = json!({"run":"cap-owned","instance":73,"generation":first.generation,
+            "window":window.raw(),"activation_epoch":stamp.activation_epoch,"local_revision":stamp.local_revision,"timeout_ms":10000});
+        let frame_wait = {
+            let caller = caller.clone(); let request = frame_request.clone();
+            tokio::spawn(async move { caller.call("actor-cap-fixture", "app.acceptance.frame.wait", request).await })
+        };
+        observed(&mut observation, |state| state.fixture_waits == 2).await;
+        assert!(!barrier_wait.is_finished() && !frame_wait.is_finished());
+        assert_eq!(observation.borrow().pending, 0, "fixture does not allocate a product ticket");
+        let third = caller.call_with_headers_raw("actor-cap-fixture", "app.acceptance.barrier.wait", &BTreeMap::new(), &reference.to_string()).await.unwrap();
+        assert_eq!(third.0, 10);
+        let held = caller.call("actor-cap-fixture", "app.acceptance.barrier.state", reference.clone()).await.unwrap();
+        assert_eq!(held["state"], "armed");
+        ui.retry_preparation(handle.settings_generation()).unwrap();
+        let reached = tokio::time::timeout(Duration::from_secs(3), barrier_wait).await.unwrap().unwrap().unwrap();
+        assert_eq!(reached["state"], "reached", "actual Cap prepare hook blocks before publication");
+        let released = tokio::time::timeout(Duration::from_secs(2),
+            caller.call("actor-cap-fixture", "app.acceptance.barrier.release", reference.clone())).await.unwrap().unwrap();
+        assert_eq!(released["state"], "released");
+        observed(&mut observation, |state| state.fixture_waits == 1 && state.fixture_controls == 0).await;
+        assert!(!frame_wait.is_finished());
+        broker.bounce();
+        let next = observed(&mut observation, |state| state.connected && state.generation > first.generation && state.fixture_waits == 0).await;
+        let retired = tokio::time::timeout(Duration::from_secs(5), frame_wait).await.unwrap().unwrap();
+        assert!(retired.is_err() || retired.as_ref().is_ok_and(|value| value["ok"] == false), "lost frame wait cannot claim success: {retired:?}");
+        assert!(!handle.frames.snapshot().closed, "surviving window keeps its observer");
+        assert_eq!(handle.frames.snapshot().live_generation, Some(next.generation));
+        assert!(handle.frames.snapshot().last_presented.is_none());
+        caller.close().await;
+        let caller = Arc::new(NodedClient::connect_anonymous(&broker.url).await.unwrap());
+        let stale = caller.call("actor-cap-fixture", "app.acceptance.barrier.release", reference).await.unwrap();
+        assert_eq!(stale["ok"], false, "old native generation cannot release replacement work");
+        let arm = caller.call("actor-cap-fixture", "app.acceptance.barrier.arm",
+            json!({"run":"cap-owned","instance":73,"generation":next.generation,"point":"cap.prepare","token":"shutdown"})).await.unwrap();
+        assert_eq!(arm["ok"], true);
+        let reference = json!({"run":"cap-owned","instance":73,"generation":next.generation,"token":"shutdown","sequence":arm["sequence"]});
+        let barrier_wait = {
+            let caller = caller.clone();
+            tokio::spawn(async move { caller.call("actor-cap-fixture", "app.acceptance.barrier.wait", reference).await })
+        };
+        let frame_wait = {
+            let caller = caller.clone(); let mut request = frame_request;
+            request["generation"] = json!(next.generation);
+            tokio::spawn(async move { caller.call("actor-cap-fixture", "app.acceptance.frame.wait", request).await })
+        };
+        observed(&mut observation, |state| state.fixture_waits == 2).await;
+        handle.quit();
+        for waiting in [barrier_wait, frame_wait] {
+            let result = tokio::time::timeout(Duration::from_secs(3), waiting).await.unwrap().unwrap();
+            assert!(result.is_err() || result.as_ref().is_ok_and(|value| value["ok"] == false), "shutdown wait cannot claim success: {result:?}");
+        }
+        handle.wait_done(Duration::from_secs(5));
+        assert!(*handle.done.0.lock().unwrap(), "real actor shutdown receipt");
+        assert!(handle.frames.snapshot().closed);
+        caller.close().await;
+    });
 }
 
 fn reconnect(gui_capacity: usize) {

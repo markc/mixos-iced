@@ -1,6 +1,6 @@
 [package]
 name = "cap"
-version = "0.1.4"
+version = "0.1.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -16,6 +16,9 @@ contract = "public"
 
 [lints.clippy]
 mod_module_files = "deny"
+
+[features]
+acceptance = ["application/acceptance"]
 
 [dependencies]
 iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland", "tiny-skia", "canvas", "image-without-codecs"] }

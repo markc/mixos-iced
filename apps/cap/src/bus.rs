@@ -151,6 +151,9 @@ pub struct BusHandle {
     outgoing: Admission,
     cleanup: Admission,
     quitting: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")]
+    pub(crate) fixture_frames: Option<application::acceptance::frames::Endpoint>,
 }
 
 impl BusHandle {
@@ -246,6 +249,9 @@ impl BusHandle {
                 outgoing: Admission::new(OPERATION_CAP),
                 cleanup: Admission::new(CLEANUP_CAP),
                 quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                frames: application::frames::Handle::new(),
+                #[cfg(feature = "acceptance")]
+                fixture_frames: None,
             },
             rx,
         )
@@ -351,6 +357,12 @@ pub fn start(
 #[cfg(test)]
 #[derive(Clone, Debug, Default)]
 struct ActorProbe {
+    #[cfg(feature = "acceptance")]
+    fixture_waits: usize,
+    #[cfg(feature = "acceptance")]
+    fixture_controls: usize,
+    #[cfg(feature = "acceptance")]
+    fixture_active: usize,
     generation: u64,
     connected: bool,
     pending: usize,
@@ -378,6 +390,72 @@ fn start_inner(
     String,
 > {
     let (send, receive) = mpsc::channel(gui_capacity);
+    start_configured_channels(
+        service,
+        url,
+        handoff,
+        send,
+        receive,
+        #[cfg(feature = "acceptance")]
+        None,
+        #[cfg(test)]
+        probe,
+    )
+}
+
+#[cfg(feature = "acceptance")]
+pub(crate) fn start_fixture(
+    service: &str,
+    url: &str,
+    handoff: Option<Vec<String>>,
+    fixture: Option<application::acceptance::Fixture>,
+) -> Result<
+    (
+        BusHandle,
+        Ui<()>,
+        appearance::settings::Prepared,
+        mpsc::Receiver<Delivery>,
+    ),
+    String,
+> {
+    let (send, receive) = mpsc::channel(OUTBOX_CAP);
+    start_configured_channels(
+        service,
+        url,
+        handoff,
+        send,
+        receive,
+        fixture,
+        #[cfg(test)]
+        None,
+    )
+}
+
+fn start_configured_channels(
+    service: &str,
+    url: &str,
+    handoff: Option<Vec<String>>,
+    send: mpsc::Sender<Delivery>,
+    receive: mpsc::Receiver<Delivery>,
+    #[cfg(feature = "acceptance")] fixture: Option<application::acceptance::Fixture>,
+    #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
+) -> Result<
+    (
+        BusHandle,
+        Ui<()>,
+        appearance::settings::Prepared,
+        mpsc::Receiver<Delivery>,
+    ),
+    String,
+> {
+    let frames = application::frames::Handle::new();
+    let worker_frames = frames.clone();
+    #[cfg(feature = "acceptance")]
+    let fixture_frames = fixture
+        .as_ref()
+        .map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
+    #[cfg(feature = "acceptance")]
+    let worker_fixture_frames = fixture_frames.clone();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let (ready_send, ready_receive) = std::sync::mpsc::channel();
     let done = Arc::new((Mutex::new(false), Condvar::new()));
@@ -398,7 +476,14 @@ fn start_inner(
                         handoff,
                         send,
                         rx,
-                        ready_send,
+                        WorkerBoot {
+                            ready: ready_send,
+                            frames: worker_frames,
+                            #[cfg(feature = "acceptance")]
+                            fixture_frames: worker_fixture_frames,
+                            #[cfg(feature = "acceptance")]
+                            fixture,
+                        },
                         #[cfg(test)]
                         probe,
                     ));
@@ -426,12 +511,24 @@ fn start_inner(
             outgoing: Admission::new(OPERATION_CAP),
             cleanup: Admission::new(CLEANUP_CAP),
             quitting: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            frames,
+            #[cfg(feature = "acceptance")]
+            fixture_frames,
         },
         ui,
         bootstrap,
         receive,
     ))
 }
+struct WorkerBoot {
+    ready: Ready,
+    frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")]
+    fixture_frames: Option<application::acceptance::frames::Endpoint>,
+    #[cfg(feature = "acceptance")]
+    fixture: Option<application::acceptance::Fixture>,
+}
+
 type Ready = std::sync::mpsc::Sender<
     Result<
         (

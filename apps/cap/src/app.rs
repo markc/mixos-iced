@@ -265,10 +265,17 @@ impl App {
     }
 }
 pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Result<(), String> {
+    #[cfg(feature = "acceptance")]
+    let (fixture, fixture_task) = crate::acceptance::setup()?;
+    #[cfg(not(feature = "acceptance"))]
+    let fixture_task = Task::none();
     let directory = capture::media_directory()?;
     let handoff = path
         .as_ref()
         .map(|p| vec![p.to_string_lossy().into_owned()]);
+    #[cfg(feature = "acceptance")]
+    let (bus, mut settings_ui, bootstrap, rx) = bus::start_fixture(service, url, handoff, fixture)?;
+    #[cfg(not(feature = "acceptance"))]
     let (bus, mut settings_ui, bootstrap, rx) = bus::start(service, url, handoff)?;
     let result = (|| {
         DELIVERIES
@@ -276,7 +283,7 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
             .map_err(|_| "Cap already started in this process")?;
         settings_ui.reconcile(bus.settings_generation());
         let mut app = App::new(bus.clone(), bootstrap, settings_ui, comp.into(), directory);
-        let mut startup = vec![app.refresh()];
+        let mut startup = vec![fixture_task, app.refresh()];
         if let Some(path) = path {
             startup.push(app.open_path(path));
         }
@@ -297,9 +304,11 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
         .title(|_: &App| label("title"))
         .theme(|app: &App| app.look().theme())
         .subscription(App::subscription)
+        .frame_presentation(App::frame_binding)
         .run()
         .map_err(|e| e.to_string())
     })();
+    bus.frames.close();
     bus.quit();
     bus.wait_done(Duration::from_secs(3));
     result
@@ -310,6 +319,39 @@ async fn work<T: Send + 'static>(
     crate::worker::run(f).await
 }
 impl App {
+    fn frame_binding(&self) -> Option<application::frames::FrameBinding> {
+        self.settings_ui
+            .session()
+            .frame_stamp()
+            .map(|stamp| self.bus.frames.binding(stamp))
+    }
+    fn publish_frame_target(&self) {
+        #[cfg(feature = "acceptance")]
+        if let (Some(endpoint), Some(window)) = (&self.bus.fixture_frames, self.window)
+            && let Err(error) = endpoint.publish(application::acceptance::frames::Target {
+                window,
+                stamp: self.settings_ui.session().frame_stamp(),
+            })
+        {
+            tracing::warn!(%error, "Cap fixture frame target failed");
+        }
+    }
+    #[cfg(feature = "acceptance")]
+    fn fixture_container<'a>(
+        &self,
+        content: Element<'a, Message, Theme>,
+        id: &'static str,
+    ) -> Element<'a, Message, Theme> {
+        if self.bus.fixture_frames.is_some() {
+            container(content)
+                .width(iced::Fill)
+                .height(iced::Fill)
+                .id(id)
+                .into()
+        } else {
+            content
+        }
+    }
     fn look(&self) -> &appearance::settings::Prepared {
         self.settings_ui
             .session()
@@ -410,6 +452,7 @@ impl App {
             .settings_ui
             .drain_with(|| self.bus.settings_generation(), |_| {});
         self.settings_ui.reconcile(self.bus.settings_generation());
+        self.publish_frame_target();
         changes.len()
     }
     fn info(&mut self) -> Value {
@@ -738,11 +781,19 @@ impl App {
                 Task::none()
             }
             Message::Window(id, window::Event::Opened { .. }) => {
+                if self.window.is_some_and(|window| window != id) {
+                    return Task::none();
+                }
                 self.window = Some(id);
+                self.publish_frame_target();
                 self.refresh()
             }
-            Message::Window(_, window::Event::CloseRequested) => {
+            Message::Window(id, window::Event::CloseRequested) if self.window == Some(id) => {
                 self.request_pending(Pending::Quit)
+            }
+            Message::Window(id, window::Event::Closed) if self.window == Some(id) => {
+                self.bus.frames.close();
+                Task::none()
             }
             Message::Window(_, _) => Task::none(),
             Message::Mode(mode) => {
@@ -1353,6 +1404,8 @@ impl App {
                     .center(iced::Fill)
                     .into()
             };
+        #[cfg(feature = "acceptance")]
+        let content = self.fixture_container(content, crate::acceptance::VIEWPORT_ID);
         let status = column![
             row![
                 self.text(&self.status),
@@ -1392,6 +1445,8 @@ impl App {
         .height(iced::Fill)
         .width(iced::Fill)
         .into();
+        #[cfg(feature = "acceptance")]
+        let base = self.fixture_container(base, crate::acceptance::ROOT_ID);
         if self.confirm {
             let dialog = column![
                 self.text(label("discard-title")),
@@ -1534,6 +1589,39 @@ struct Picture<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "acceptance")]
+    #[test]
+    fn fixture_target_keeps_the_actual_main_window_and_ignores_foreign_edges() {
+        let mut app = test_app();
+        let endpoint = application::acceptance::frames::Endpoint::new(app.bus.frames.clone());
+        app.bus.fixture_frames = Some(endpoint.clone());
+        let main = window::Id::unique();
+        let foreign = window::Id::unique();
+        let opened = |id| {
+            Message::Window(
+                id,
+                window::Event::Opened {
+                    position: None,
+                    size: iced::Size::new(1040.0, 720.0),
+                    scale_factor: 1.0,
+                },
+            )
+        };
+        let _ = app.update(opened(main));
+        assert_eq!(endpoint.target().unwrap().window, main);
+        assert!(
+            endpoint.target().unwrap().stamp.is_none(),
+            "bootstrap is not a checked native stamp"
+        );
+        let _ = app.update(opened(foreign));
+        let _ = app.update(Message::Window(foreign, window::Event::Closed));
+        assert_eq!(endpoint.target().unwrap().window, main);
+        assert!(!app.bus.frames.snapshot().closed);
+        assert!(app.frame_binding().is_none());
+        let _ = app.update(Message::Window(main, window::Event::Closed));
+        assert!(app.bus.frames.snapshot().closed);
+    }
     use crate::bus::Effect;
     fn test_app() -> App {
         let consumer = settings::consumer::Consumer::for_app(
