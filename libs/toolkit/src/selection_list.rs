@@ -520,6 +520,7 @@ mod tests {
         let options = vec!["Calendar · calendar · disabled · right".to_owned()];
         let mut list = TestList::new(&options, |_, value| value);
         let mut tree = Tree::new(&list as &dyn Widget<_, _, _>);
+        Widget::diff(&mut list, &mut tree);
         let mut renderer = LayoutRenderer::new();
         let size = Size::new(120.0, 100.0);
         let node = Widget::layout(&mut list, &mut tree, &renderer, &Limits::new(Size::ZERO, size));
