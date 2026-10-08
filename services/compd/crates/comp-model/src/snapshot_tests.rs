@@ -381,7 +381,7 @@ fn fixture() -> CompSnapshot {
 #[test]
 fn output_allocation_and_topology_fences_are_exact_read_only_leaves() {
     let mut snapshot = fixture();
-    let instance = uuid::Uuid::new_v4().to_string();
+    let instance = uuid::Uuid::now_v7().to_string();
     let output = snapshot.outputs.get_mut("o_dp_1").unwrap();
     output.instance = instance.clone();
     output.generation = 17;

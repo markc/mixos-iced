@@ -100,13 +100,13 @@ mod tests {
     use super::*;
     #[test]
     fn strict_fractional_request_and_retired_output_fences() {
-        let id = uuid::Uuid::new_v4();
+        let id = uuid::Uuid::now_v7();
         let args = json!({"output":"DP-1","instance":id,"generation":7,"scale":1.25});
         let spec = parse(&args).unwrap();
         assert!(admit(&spec, id, 7, true, 1.0).unwrap());
         assert!(!admit(&spec, id, 7, true, 1.25).unwrap());
         assert!(
-            admit(&spec, uuid::Uuid::new_v4(), 7, true, 1.0).is_err(),
+            admit(&spec, uuid::Uuid::now_v7(), 7, true, 1.0).is_err(),
             "same name/geometry replacement cannot reuse old instance"
         );
         assert!(

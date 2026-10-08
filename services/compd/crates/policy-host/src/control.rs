@@ -135,7 +135,7 @@ fn refresh_output_generations(lp: &mut Loop) {
     for output in lp.inner.host_space().state.outputs() {
         let generation = lp.inner.comp.output_generation(&output.name());
         let data = output.user_data();
-        data.insert_if_missing(|| comp_model::output_scale::OutputIdentity(uuid::Uuid::new_v4()));
+        data.insert_if_missing(|| comp_model::output_scale::OutputIdentity(uuid::Uuid::now_v7()));
         data.insert_if_missing(|| {
             comp_model::capture::OutputGeneration(
                 std::sync::atomic::AtomicU64::new(generation),
@@ -437,7 +437,7 @@ mod output_scale_tests {
             Some(Scale::Integer(1)),
             Some((40, 20).into()),
         );
-        let instance = uuid::Uuid::new_v4();
+        let instance = uuid::Uuid::now_v7();
         let spec = comp_model::output_scale::ScaleSpec {
             output: output.name(),
             instance,
@@ -452,7 +452,7 @@ mod output_scale_tests {
         let mut change = spec.clone();
         change.scale = 2.0;
         for (identity, generation, available) in [
-            (uuid::Uuid::new_v4(), 3, true),
+            (uuid::Uuid::now_v7(), 3, true),
             (instance, 4, true),
             (instance, 3, false),
         ] {
