@@ -6,13 +6,17 @@ Requires=seatd@%i.service
 After=noded@%i.service seatd@%i.service
 BindsTo=seatd@%i.service
 PartOf=session@%i.target
+Requires=session-dbus@%i.service
+After=session-dbus@%i.service
 
 [Service]
 Type=simple
 User=mixos
 SupplementaryGroups=seat
 EnvironmentFile=/etc/mixos/session/%i.env
-UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
+UnsetEnvironment=DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
+# The final, bus-owned file overrides even a profile-supplied host address.
+EnvironmentFile=/run/mixos/session/%i/dbus/environment
 Environment=LIBSEAT_BACKEND=seatd MIXOS_CONTAIN_CHILDREN=1
 RuntimeDirectory=mixos/session/%i/desktop
 RuntimeDirectoryMode=0700

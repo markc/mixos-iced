@@ -2,7 +2,9 @@
 
 `session@4.target` composes component-owned units for noded, compd, editd, settingsd,
 the application registry, the scene loader and a private seatd instance.
-It starts no session D-Bus server. Application control uses ABP through noded.
+It owns a private session D-Bus server and socket under its runtime directory.
+Application control uses ABP through noded. D-Bus supplies compatibility names
+inside this session and never connects citizens to the host desktop's bus.
 The compositor is built with `--no-default-features --features backend-all`;
 `desktop-dbus` is an explicit compatibility feature.
 
@@ -25,10 +27,10 @@ Seatd listens at its built-in `/run/seatd.sock`; it has no `-s` option.
 Each instance gets a private mount view of `/run`, backed by
 `/run/mixos/seat/<instance>`, so `SEATD_SOCK` must name
 `/run/mixos/seat/<instance>/seatd.sock` for its clients. This leaves other
-seat brokers' sockets alone. The image supplies `seatd`, `wpctl` and `pactl`;
-audio uses the selected native PipeWire/Pulse sockets. No session D-Bus
-server is required for this profile. A distribution's `libpulse` can still
-link `libdbus-1`; absence of a session bus does not imply a library-free
+seat brokers' sockets alone. The image supplies `seatd`, `dbus-daemon`, `wpctl` and `pactl`;
+audio uses the selected native PipeWire/Pulse sockets. The session D-Bus
+server is owned by `session-dbus@.service`. A distribution's `libpulse` can still
+link `libdbus-1`; a Rust closure without D-Bus clients does not imply a library-free
 dependency closure.
 
 Provision the profile's writable state directory for its service account,
@@ -56,8 +58,18 @@ The environment file defines absolute `MIXOS_ETC`, `MIXOS_VAR`, `MIXOS_RUN`,
 pins its unique name and Unix socket inside this runtime directory. Compd's
 `preferences.json` beside its settings file enables `scene_host`; the loader's `SCENES_DIR` holds the profile's
 private scene state, and `SCENES_TEMPLATES` points to the shipped catalogue.
-Every service clears inherited D-Bus variables even if the environment file
-sets them. The compositor's VT comes from the unit instance, not a host seat.
+Install `session/scripts/session_bus_env.mix` under `/opt/mixos/share/session`
+alongside the collected units. The bus startup helper verifies a live bus ID
+through its own socket and writes an owned mode-0600 environment file.
+Every citizen loads this file after its profile environment, setting its address to
+`unix:path=/run/mixos/session/%i/dbus/bus` and clears inherited system/starter
+bus variables. The bus service clears all inherited D-Bus variables, owns only
+its `dbus` runtime child and stops with the session target. Its forking startup
+returns after the daemon creates its listening socket. Restarting noded leaves
+this socket and the compositor runtime untouched. An acceptance run must connect
+to this address and retain its bus ID, socket owner and service identity;
+an address string alone does not establish a private live bus.
+The compositor's VT comes from the unit instance, not a host seat.
 
 Each app-launching service owns its descendants through a delegated cgroup.
 Stopping the target stops its services and app descendants. Before switching

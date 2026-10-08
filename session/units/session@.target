@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 [Unit]
 Description=Native MixOS session on VT%i
-Wants=noded@%i.service seatd@%i.service compd@%i.service apps@%i.service scenes@%i.service editd@%i.service settingsd@%i.service
-Upholds=noded@%i.service seatd@%i.service compd@%i.service apps@%i.service scenes@%i.service editd@%i.service settingsd@%i.service
+Wants=noded@%i.service seatd@%i.service session-dbus@%i.service compd@%i.service apps@%i.service scenes@%i.service editd@%i.service settingsd@%i.service
+Upholds=noded@%i.service seatd@%i.service session-dbus@%i.service compd@%i.service apps@%i.service scenes@%i.service editd@%i.service settingsd@%i.service
 After=noded@%i.service seatd@%i.service compd@%i.service apps@%i.service scenes@%i.service editd@%i.service
 # Settings readiness never blocks the compositor or application startup.

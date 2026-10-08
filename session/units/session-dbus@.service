@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[Unit]
+Description=Private D-Bus for MixOS session %i
+PartOf=session@%i.target
+
+[Service]
+# dbus-daemon's parent exits once the owned socket is ready. One daemon
+# remains in this service cgroup; no host bus or user-manager is involved.
+Type=forking
+User=mixos
+EnvironmentFile=/etc/mixos/session/%i.env
+RuntimeDirectory=mixos/session/%i/dbus
+RuntimeDirectoryMode=0700
+UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
+ExecStart=/usr/bin/dbus-daemon --session --fork --nopidfile --address=unix:path=/run/mixos/session/%i/dbus/bus
+ExecStartPost=/opt/mixos/bin/mix /opt/mixos/share/session/session_bus_env.mix %i
+KillMode=control-group
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=1

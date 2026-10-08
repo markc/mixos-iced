@@ -5,12 +5,16 @@ Requires=noded@%i.service
 After=noded@%i.service
 BindsTo=noded@%i.service
 PartOf=session@%i.target
+Requires=session-dbus@%i.service
+After=session-dbus@%i.service
 
 [Service]
 Type=simple
 User=mixos
 EnvironmentFile=/etc/mixos/session/%i.env
-UnsetEnvironment=DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
+UnsetEnvironment=DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE DBUS_SYSTEM_BUS_ADDRESS
+# The final, bus-owned file overrides even a profile-supplied host address.
+EnvironmentFile=/run/mixos/session/%i/dbus/environment
 ExecStart=/opt/mixos/bin/editd serve
 KillMode=control-group
 TimeoutStopSec=10

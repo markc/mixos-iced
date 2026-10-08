@@ -1,0 +1,12 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- systemd-owned probe for the session bus environment precedence gate.
+if len(args()) != 2 then raise("ARGS","EXPECTED_ADDRESS OUTPUT") end
+$address=args()[0]
+if env("DBUS_SESSION_BUS_ADDRESS") != $address then raise("HOST_BUS","Citizen did not inherit its owned session bus") end
+for each $name in ["DBUS_SYSTEM_BUS_ADDRESS","DBUS_STARTER_ADDRESS","DBUS_STARTER_BUS_TYPE"]
+  if env($name) != nil then raise("HOST_BUS","Inherited " .. $name) end
+end
+$reply=run_argv_must(["/usr/bin/dbus-send","--bus=" .. $address,"--print-reply","--reply-timeout=3000","--dest=org.freedesktop.DBus","/org/freedesktop/DBus","org.freedesktop.DBus.GetId"],{timeout:5})
+$ids=re_find($reply,"string \"([0-9a-f]{32})\"")
+if len($ids) != 1 then raise("BUS_ID","No actual private bus ID") end
+write_new(args()[1],json_encode({address:$address,bus_id:$ids[0].groups[0],pid:pid(),host_variables_cleared:true}),0o600)

@@ -1,0 +1,154 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Privileged, owned build-worker fixture; no desktop, seat, VT or host bus changes.
+-- Exercises the actual bus unit/helper, final EnvironmentFile precedence,
+-- broker-independent lifecycle, bus replacement and target-owned teardown.
+if len(args()) != 2 then raise("ARGS","REPO CANDIDATE_BIN") end
+$repo=realpath(args()[0])
+$bin=realpath(args()[1])
+if uid() != 0 or env("MIXOS_SESSION_BUS_TEST") != "1" then raise("OWNED_FIXTURE","Require root and explicit MIXOS_SESSION_BUS_TEST=1 on the owned worker") end
+$mix=$bin .. "/mix"
+export MIXOS_TEST_MIX=$mix
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$tag="mixos-session-bus-test-" .. to_string(pid())
+$target=$tag .. ".target"
+$bus=$tag .. "-bus.service"
+$citizen=$tag .. "-citizen.service"
+$unit_root="/run/systemd/system/"
+$runtime="/run/mixos/session/12/dbus"
+$address="unix:path=" .. $runtime .. "/bus"
+$root="/var/tmp/" .. $tag
+$R={files:[],loaded:false,runtime_owned:false,broker:nil,ok:false}
+fn check($value,$message)
+  if not $value then raise("SESSION_BUS_GATE",$message) end
+end
+fn bus_id()
+  $reply=run_argv_must(["/usr/bin/dbus-send","--bus=" .. $address,"--print-reply","--reply-timeout=3000","--dest=org.freedesktop.DBus","/org/freedesktop/DBus","org.freedesktop.DBus.GetId"],{timeout:5})
+  $ids=re_find($reply,"string \"([0-9a-f]{32})\"")
+  check(len($ids) == 1,"Owned daemon returned no actual bus ID")
+  return $ids[0].groups[0]
+end
+fn main_pid()
+  return to_number(trim(run_argv_must(["systemctl","show","-p","MainPID","--value",$bus])))
+end
+fn env_file()
+  check(read_file($runtime .. "/environment") == "DBUS_SESSION_BUS_ADDRESS=" .. $address .. "\n","Owned environment address differs")
+  check(trim(run_argv_must(["stat","-c","%a:%u",$runtime .. "/environment"])) == "600:0","Owned environment mode or owner differs")
+end
+fn owned_daemon()
+  $daemon=main_pid()
+  $socket=trim(run_argv_must(["stat","-Lc","%d:%i:%F:%u",$runtime .. "/bus"]))
+  check(ends_with($socket,":socket:0"),"Owned daemon socket type or UID differs")
+  $group=trim(run_argv_must(["systemctl","show","-p","ControlGroup","--value",$bus]))
+  check($group == "/system.slice/" .. $bus and contains(read_file("/proc/" .. to_string($daemon) .. "/cgroup"),$group),"Daemon is not owned by this exact service cgroup")
+  $owner=trim(run_argv_must(["systemctl","show","-p","User","--value",$bus]))
+  check($owner == "root","Fixture service account differs")
+  $executable=trim(run_argv_must(["readlink","-f","/proc/" .. to_string($daemon) .. "/exe"]))
+  check($executable == realpath("/usr/bin/dbus-daemon"),"Unit main PID is not the actual daemon")
+  $environment=read_file("/proc/" .. to_string($daemon) .. "/environ")
+  check(contains($environment,"XDG_RUNTIME_DIR=" .. $root .. "/runtime"),"Daemon lost its owned activation runtime")
+  check(contains($environment,"XDG_DATA_DIRS=" .. $root .. "/data"),"Daemon lost its owned activation lookup")
+  return {unit:$bus,pid:$daemon,cgroup:$group,user:$owner,executable:$executable,socket:$socket,session_environment:true}
+end
+fn citizen($label,$expected)
+  $output=$root .. "/" .. $label .. ".json"
+  $source=read_file($repo .. "/services/settingsd/units/settingsd@.service")
+  $envlines=filter(lines($source),fn($line)=starts_with($line,"EnvironmentFile=") or starts_with($line,"UnsetEnvironment="))
+  $environment=join($envlines,"\n")
+  $environment=replace($environment,"/etc/mixos/session/%i.env",$root .. "/profile.env")
+  $environment=replace($environment,"%i","12")
+  $contents="[Unit]\nRequires=" .. $bus .. "\nAfter=" .. $bus .. "\nPartOf=" .. $target .. "\n[Service]\nType=oneshot\nUser=root\n" .. $environment .. "\nExecStart=" .. $mix .. " " .. $repo .. "/tests/desktop/session_bus_probe.mix " .. $address .. " " .. $output .. "\n"
+  write_file($unit_root .. $citizen,$contents)
+  run_argv_must(["systemctl","daemon-reload"],{timeout:30})
+  run_argv_must(["systemctl","start",$citizen],{timeout:15})
+  $receipt=json_parse(read_file($output))
+  check($receipt.bus_id == $expected and $receipt.address == $address and $receipt.host_variables_cleared,"Citizen did not reach this owned daemon")
+  return $receipt
+end
+try
+  check(not exists("/run/mixos/session/12") and not exists("/etc/mixos/session/12.env"),"Fixture runtime instance is already owned")
+  check(not exists($root),"Fixture scratch path exists")
+  for each $name in [$target,$bus,$citizen]
+    check(not exists($unit_root .. $name),"Fixture unit exists")
+  end
+  mkdir($root,{parents:true})
+  write_new($root .. "/profile.env","DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent-host-bus\nDBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent-system-bus\nDBUS_STARTER_ADDRESS=unix:path=/nonexistent-starter-bus\nDBUS_STARTER_BUS_TYPE=session\nXDG_RUNTIME_DIR=" .. $root .. "/runtime\nXDG_DATA_DIRS=" .. $root .. "/data\n",0o600)
+  $source=read_file($repo .. "/session/units/session-dbus@.service")
+  -- Sole fixture differences: root account, unique target/unit names, exact
+  -- candidate Mix and source helper paths. The production runtime stays exact.
+  $source=replace($source,"PartOf=session@%i.target","PartOf=" .. $target)
+  $source=replace($source,"User=mixos","User=root")
+  $source=replace($source,"/etc/mixos/session/%i.env",$root .. "/profile.env")
+  $source=replace($source,"/opt/mixos/bin/mix /opt/mixos/share/session/session_bus_env.mix",$mix .. " " .. $repo .. "/session/scripts/session_bus_env.mix")
+  $source=replace($source,"%i","12")
+  write_new($unit_root .. $bus,$source,0o644)
+  $R.files=concat($R.files,[$unit_root .. $bus])
+  write_new($unit_root .. $target,"[Unit]\nWants=" .. $bus .. "\nAfter=" .. $bus .. "\n",0o644)
+  $R.files=concat($R.files,[$unit_root .. $target,$unit_root .. $citizen])
+  run_argv_must(["systemctl","daemon-reload"],{timeout:30})
+  $R.loaded=true
+  $R.runtime_owned=true
+  run_argv_must(["systemctl","start",$target],{timeout:15})
+  $first=bus_id()
+  $initial_pid=main_pid()
+  check($initial_pid > 0 and process_alive($initial_pid),"Unit does not own its real daemon")
+  env_file()
+  $initial_owner=owned_daemon()
+  $initial=citizen("initial",$first)
+  -- Actual native broker restart is independent of the session-bus cgroup.
+  $R.broker=$n.private_bus({dir:$root .. "/broker",name:$tag,noded:$bin .. "/noded"})
+  $R.broker.restart_record="restart.json"
+  $R.broker=$n.restart_private_bus($R.broker)
+  check(bus_id() == $first and main_pid() == $initial_pid,"Native broker restart replaced the session bus")
+  $after_broker=citizen("after-broker",$first)
+  run_argv_must(["systemctl","restart",$bus],{timeout:15})
+  $second=bus_id()
+  $replacement_pid=main_pid()
+  check($second != $first and $replacement_pid > 0 and $replacement_pid != $initial_pid and not process_alive($initial_pid),"Unit restart did not retire and replace its daemon")
+  env_file()
+  $replacement_owner=owned_daemon()
+  $replacement=citizen("replacement",$second)
+  run_argv_must(["systemctl","stop",$target],{timeout:15})
+  check(not process_alive($replacement_pid) and not exists($runtime .. "/bus") and not exists($runtime .. "/environment"),"Target stop retained daemon/socket/environment")
+  write_new($root .. "/acceptance.json",json_encode({production_unit:true,production_helper:true,fixture_user:"root",instance:12,initial:$initial,initial_owner:$initial_owner,after_broker:$after_broker,replacement:$replacement,replacement_owner:$replacement_owner,broker_independent:true,target_retired:true,desktop_started:false,vt_changed:false}),0o600)
+  $R.ok=true
+catch $message
+  print("FAIL owned session bus: " .. $message)
+finally
+  if $R.loaded then
+    $journal=run_argv(["journalctl","--no-pager","-u",$bus,"-u",$citizen,"-u",$target,"-n","150"],{timeout:15,max_output:100000})
+    write_file($root .. "/units.log",$journal.stdout .. $journal.stderr)
+    $stopped=run_argv(["systemctl","stop",$target,$citizen,$bus],{timeout:20})
+    if not $stopped.ok then $R.ok=false; print($stopped.stderr) end
+  end
+  if $R.broker != nil then
+    try
+      if is_file($R.broker.dir .. "/restart.json") then
+        $replacement=json_parse(read_file($R.broker.dir .. "/restart.json"))
+        check($replacement.dir == $R.broker.dir and $replacement.node == $R.broker.node and $replacement.port == $R.broker.port,"Replacement broker ledger is not owned")
+        $h.stop($replacement.pid)
+      end
+      $h.stop($R.broker.pid)
+    catch $message
+      $R.ok=false
+      print("Owned broker teardown failed: " .. $message)
+    end
+  end
+  for each $file in $R.files
+    if exists($file) then
+      $removed=run_argv(["rm","--",$file])
+      if not $removed.ok then $R.ok=false; print("Owned unit retained: " .. $file) end
+    end
+  end
+  if $R.loaded then
+    run_argv_must(["systemctl","daemon-reload"],{timeout:30})
+    $reset=run_argv(["systemctl","reset-failed",$bus,$citizen],{timeout:15})
+  end
+  if $R.runtime_owned and not exists($runtime) and exists("/run/mixos/session/12") then
+    $removed=run_argv(["rmdir","--","/run/mixos/session/12"])
+    if not $removed.ok then $R.ok=false; print("Owned runtime parent retained: " .. $removed.stderr) end
+  end
+  print("kept session bus artefacts: " .. $root)
+end
+if not $R.ok then exit(1) end
+print("PASS production session bus unit/helper: final environment precedence, native broker independence, replacement and target teardown")

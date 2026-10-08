@@ -1490,12 +1490,18 @@ The public language regression corpus accompanies the interpreter transplant.
 
 <!-- page: https://mixos.dev/native-session/ (source: https://mixos.dev/native-session.md) -->
 
-# Native session without D-Bus
+# Native isolated session
 
 The initial native session profile builds `compd` with `backend-all` and
 without `desktop-dbus`. ABP/noded carries application requests, discovery,
-session grants and mesh routing. The session owns its seatd instance and XDG
-runtime directory. It inherits no session bus or host activation environment.
+session grants and mesh routing. The session owns its seatd instance, XDG
+runtime directory and a private compatibility session bus. It inherits no host
+session bus or host activation environment. `session-dbus@.service` owns the
+daemon and socket; its readiness helper checks the actual bus ID before
+publishing the final environment file. Citizens load that file after their
+profile, overriding any inherited host address and clearing system/starter bus
+variables. The daemon receives the owned profile's runtime and data lookup
+context for compatibility activation. Application control stays on ABP.
 
 `desktop-dbus` is an explicit compatibility feature for RTKit, logind, MPRIS,
 portal Save As and systemd user scopes. It is disabled by default. The native
@@ -1534,6 +1540,15 @@ cargo build --locked --profile release-fast -p compd --no-default-features --fea
 mix tools/native_session_gate.mix
 cargo build --locked -p slots --example containment-probe
 ```
+
+The Cargo gate checks the native Rust dependency closure. The private session
+daemon is supplied by the image. `tests/desktop/session_bus_gate.mix` separately
+tests the production unit/helper in an explicitly enabled, owned root worker
+fixture: final environment precedence, actual socket/PID/cgroup identity,
+independence from native broker restart, daemon replacement and target teardown.
+Its root account and candidate paths are fixture substitutions; it starts no
+desktop and changes no VT. This check does not establish image or hardware
+readiness.
 
 Run `containment-probe` inside a delegated test service with containment enabled
 to verify actual descendant cleanup. Graph checks and nested rendering do not
