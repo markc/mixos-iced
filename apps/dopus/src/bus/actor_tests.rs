@@ -16,7 +16,11 @@ async fn observed(
                 "actual actor invariant: {state:?}"
             );
             #[cfg(feature = "acceptance")]
-            assert!(state.fixture_waits <= 2 && state.fixture_controls <= 4 && state.fixture_active <= 6);
+            assert!(
+                state.fixture_waits <= 2
+                    && state.fixture_controls <= 4
+                    && state.fixture_active <= 6
+            );
             assert!(
                 state.active <= PENDING_BOUND
                     && state.reply_tasks <= JOB_BOUND
@@ -113,8 +117,14 @@ fn fixture_waits_leave_release_headroom_and_retire_on_native_loss_and_shutdown()
     .unwrap();
     let (probe, mut observation) = tokio::sync::watch::channel(ActorProbe::default());
     let (mut handle, mut events) = actor::start_configured(
-        "actor-dopus-fixture", &broker.url, true, DELIVERY_BOUND, Some(fixture), Some(probe),
-    ).unwrap();
+        "actor-dopus-fixture",
+        &broker.url,
+        true,
+        DELIVERY_BOUND,
+        Some(fixture),
+        Some(probe),
+    )
+    .unwrap();
     let mut ui = handle.take_settings_ui().unwrap();
     let _stop = Stop(handle.clone());
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {

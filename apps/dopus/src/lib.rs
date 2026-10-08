@@ -30,9 +30,9 @@
 //! - law 7 (`set_split_ratio` from the divider): [`app`] (`Msg::Split`),
 //!   [`view::panes::Divider`].
 
-pub mod app;
 #[cfg(feature = "acceptance")]
 mod acceptance;
+pub mod app;
 pub mod bus;
 pub mod config;
 pub mod dirs;

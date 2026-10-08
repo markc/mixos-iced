@@ -538,12 +538,20 @@ fn action_table(keymap: &Keymap) -> Vec<ActionRow> {
 impl Dopus {
     fn frame_binding(&self) -> Option<application::frames::FrameBinding> {
         let bus = self.bus.as_ref()?;
-        self.settings.session().frame_stamp().map(|stamp| bus.frames.binding(stamp))
+        self.settings
+            .session()
+            .frame_stamp()
+            .map(|stamp| bus.frames.binding(stamp))
     }
     fn publish_frame_target(&self) {
         #[cfg(feature = "acceptance")]
-        if let Some(bus) = &self.bus && let (Some(endpoint), Some(window)) = (&bus.fixture_frames, self.window)
-            && let Err(error) = endpoint.publish(application::acceptance::frames::Target { window, stamp: self.settings.session().frame_stamp() }) {
+        if let Some(bus) = &self.bus
+            && let (Some(endpoint), Some(window)) = (&bus.fixture_frames, self.window)
+            && let Err(error) = endpoint.publish(application::acceptance::frames::Target {
+                window,
+                stamp: self.settings.session().frame_stamp(),
+            })
+        {
             tracing::warn!(%error, "Dopus fixture frame target failed");
         }
     }
@@ -1442,7 +1450,11 @@ impl Dopus {
             }
             application::iced::window::Event::CloseRequested => return self.quit(),
             application::iced::window::Event::Closed => {
-                if self.window == Some(id) && let Some(bus) = &self.bus { bus.frames.close(); }
+                if self.window == Some(id)
+                    && let Some(bus) = &self.bus
+                {
+                    bus.frames.close();
+                }
             }
             application::iced::window::Event::Unfocused => {
                 keys::cancel(&self.router);
@@ -1640,10 +1652,19 @@ impl Dopus {
             self.core.availability().operation_running,
         );
         #[cfg(feature = "acceptance")]
-        let content = if self.bus.as_ref().is_some_and(|bus| bus.fixture_frames.is_some()) {
-            application::iced::widget::container(content).width(application::iced::Fill).height(application::iced::Fill)
-                .id(crate::acceptance::VIEWPORT_ID).into()
-        } else { content };
+        let content = if self
+            .bus
+            .as_ref()
+            .is_some_and(|bus| bus.fixture_frames.is_some())
+        {
+            application::iced::widget::container(content)
+                .width(application::iced::Fill)
+                .height(application::iced::Fill)
+                .id(crate::acceptance::VIEWPORT_ID)
+                .into()
+        } else {
+            content
+        };
         // The router wraps everything: it sees every key before its children
         // and publishes resolved actions (never `event::listen`, which drops
         // keys under load — the ced/term rule). While a dialog is up it
@@ -1673,10 +1694,19 @@ impl Dopus {
             &self.tint,
         ));
         #[cfg(feature = "acceptance")]
-        let content = if self.bus.as_ref().is_some_and(|bus| bus.fixture_frames.is_some()) {
-            application::iced::widget::container(content).width(application::iced::Fill).height(application::iced::Fill)
-                .id(crate::acceptance::ROOT_ID).into()
-        } else { content };
+        let content = if self
+            .bus
+            .as_ref()
+            .is_some_and(|bus| bus.fixture_frames.is_some())
+        {
+            application::iced::widget::container(content)
+                .width(application::iced::Fill)
+                .height(application::iced::Fill)
+                .id(crate::acceptance::ROOT_ID)
+                .into()
+        } else {
+            content
+        };
         content
     }
 }
@@ -1707,18 +1737,25 @@ mod tests {
     fn fixture_target_follows_only_the_owned_typed_window() {
         let (_dir, mut app, _lane) = fixture();
         let (mut bus, _responses) = BusHandle::response_sink();
-        bus.fixture_frames = Some(application::acceptance::frames::Endpoint::new(bus.frames.clone()));
+        bus.fixture_frames = Some(application::acceptance::frames::Endpoint::new(
+            bus.frames.clone(),
+        ));
         let endpoint = bus.fixture_frames.as_ref().unwrap().clone();
         let frames = bus.frames.clone();
         app.bus = Some(bus);
         let window = application::iced::window::Id::unique();
         let foreign = application::iced::window::Id::unique();
         let opened = || application::iced::window::Event::Opened {
-            position: None, size: Size::new(980.0, 640.0), scale_factor: 1.0,
+            position: None,
+            size: Size::new(980.0, 640.0),
+            scale_factor: 1.0,
         };
         let _ = app.on_window(window, opened());
         assert_eq!(endpoint.target().unwrap().window, window);
-        assert!(endpoint.target().unwrap().stamp.is_none(), "bootstrap does not claim activation");
+        assert!(
+            endpoint.target().unwrap().stamp.is_none(),
+            "bootstrap does not claim activation"
+        );
         assert!(app.frame_binding().is_none());
         let _ = app.on_window(foreign, opened());
         let _ = app.on_window(foreign, application::iced::window::Event::Closed);
@@ -1815,7 +1852,9 @@ mod tests {
         app.window = Some(window);
         app.publish_frame_target();
         assert_eq!(endpoint.target().unwrap().stamp, Some(stamp));
-        app.settings.set_context(PreparationContext::new(1.5).unwrap(), Some(1)).unwrap();
+        app.settings
+            .set_context(PreparationContext::new(1.5).unwrap(), Some(1))
+            .unwrap();
         app.publish_frame_target();
         assert_eq!(endpoint.target().unwrap().stamp, Some(stamp));
         drive(&mut lane, 2);
@@ -1826,7 +1865,10 @@ mod tests {
         assert_eq!(endpoint.target().unwrap().window, window);
         assert_eq!(endpoint.target().unwrap().stamp, Some(installed));
         assert!(app.frame_binding().is_some());
-        assert!(frames.snapshot().last_presented.is_none(), "publication is not a presented receipt");
+        assert!(
+            frames.snapshot().last_presented.is_none(),
+            "publication is not a presented receipt"
+        );
     }
 
     #[test]
@@ -2810,7 +2852,10 @@ mod tests {
             assert!(value.get("settings_cache").is_some());
             if verb == "dopus.state" {
                 assert_eq!(value["ui"]["location_draft"]["pane"], "left");
-                assert_eq!(value["ui"]["location_draft"]["text"], "unfinished native path");
+                assert_eq!(
+                    value["ui"]["location_draft"]["text"],
+                    "unfinished native path"
+                );
                 assert_eq!(app.editing.as_ref().unwrap().1, "unfinished native path");
             }
             if verb == "app.describe" {

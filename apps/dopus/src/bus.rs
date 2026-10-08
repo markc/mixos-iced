@@ -421,8 +421,20 @@ pub fn spawn_settings(
 }
 
 #[cfg(feature = "acceptance")]
-pub(crate) fn spawn_settings_fixture(service: &str, url: &str, fixture: Option<application::acceptance::Fixture>) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
-    actor::start_configured(service, url, true, DELIVERY_BOUND, fixture, #[cfg(test)] None)
+pub(crate) fn spawn_settings_fixture(
+    service: &str,
+    url: &str,
+    fixture: Option<application::acceptance::Fixture>,
+) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
+    actor::start_configured(
+        service,
+        url,
+        true,
+        DELIVERY_BOUND,
+        fixture,
+        #[cfg(test)]
+        None,
+    )
 }
 
 #[cfg(test)]

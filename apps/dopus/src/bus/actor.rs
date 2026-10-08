@@ -69,7 +69,16 @@ pub(super) fn start(
     capacity: usize,
     #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
 ) -> Result<(BusHandle, Receiver<Delivery>), StartError> {
-    start_configured(service, url, settings, capacity, #[cfg(feature = "acceptance")] None, #[cfg(test)] probe)
+    start_configured(
+        service,
+        url,
+        settings,
+        capacity,
+        #[cfg(feature = "acceptance")]
+        None,
+        #[cfg(test)]
+        probe,
+    )
 }
 
 pub(super) fn start_configured(
@@ -83,7 +92,9 @@ pub(super) fn start_configured(
     let frames = application::frames::Handle::new();
     let worker_frames = frames.clone();
     #[cfg(feature = "acceptance")]
-    let fixture_frames = fixture.as_ref().map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
+    let fixture_frames = fixture
+        .as_ref()
+        .map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
     #[cfg(feature = "acceptance")]
     let worker_fixture_frames = fixture_frames.clone();
     let (send, events) = channel(capacity);
@@ -385,16 +396,7 @@ async fn worker(
             client.close().await;
             return faults;
         }
-        return run(
-            client,
-            service,
-            url,
-            send,
-            effects,
-            None,
-            presentation,
-        )
-        .await;
+        return run(client, service, url, send, effects, None, presentation).await;
     };
     let (consumer, bootstrap) = match prepared {
         Ok(prepared) => prepared,
@@ -405,20 +407,38 @@ async fn worker(
         }
     };
     #[cfg(feature = "acceptance")]
-    let prepare_hook = presentation.fixture.as_ref().map(|fixture| fixture.hook.clone());
-    let worker = SettingsWorker::contextual(move |appearance, snapshot: &settings::Snapshot, context: &crate::app::PreparationContext| {
-        #[cfg(feature = "acceptance")]
-        if let Some(hook) = &prepare_hook {
-            let fault = |message| settings::Diagnostic::new("fixture_prepare_cancelled", "dopus.prepare", message);
-            let observation = application::acceptance::barrier::Observation::try_new(format!("revision={} scale={}", snapshot.revision.0, context.scale()))
+    let prepare_hook = presentation
+        .fixture
+        .as_ref()
+        .map(|fixture| fixture.hook.clone());
+    let worker = SettingsWorker::contextual(
+        move |appearance,
+              snapshot: &settings::Snapshot,
+              context: &crate::app::PreparationContext| {
+            #[cfg(feature = "acceptance")]
+            if let Some(hook) = &prepare_hook {
+                let fault = |message| {
+                    settings::Diagnostic::new("fixture_prepare_cancelled", "dopus.prepare", message)
+                };
+                let observation = application::acceptance::barrier::Observation::try_new(format!(
+                    "revision={} scale={}",
+                    snapshot.revision.0,
+                    context.scale()
+                ))
                 .map_err(|error| fault(format!("{error:?}")))?;
-            if let Some(permit) = hook.reach("dopus.prepare", observation).map_err(|error| fault(format!("{error:?}")))? {
-                permit.wait_blocking().map_err(|error| fault(format!("{error:?}")))?;
+                if let Some(permit) = hook
+                    .reach("dopus.prepare", observation)
+                    .map_err(|error| fault(format!("{error:?}")))?
+                {
+                    permit
+                        .wait_blocking()
+                        .map_err(|error| fault(format!("{error:?}")))?;
+                }
             }
-        }
-        crate::app::Content::build_contextual(appearance, snapshot, context)
-    })
-        .with_contextual_resource_requirements(crate::icons::requirements);
+            crate::app::Content::build_contextual(appearance, snapshot, context)
+        },
+    )
+    .with_contextual_resource_requirements(crate::icons::requirements);
     let worker = match crate::dirs::AppDirs::resolve(crate::dirs::COMPONENT) {
         Some(dirs) => worker.with_cache_directory(dirs.settings_cache_dir()),
         None => worker,
@@ -497,7 +517,9 @@ async fn run(
         if lifecycle != Some((state, generation)) {
             frames.set_live_generation(settings::native::live_generation(&client));
             #[cfg(feature = "acceptance")]
-            if lifecycle.is_some() && let Some(fixture) = &fixture {
+            if lifecycle.is_some()
+                && let Some(fixture) = &fixture
+            {
                 fixture.close(application::acceptance::barrier::ClosedReason::LostGeneration);
             }
             lifecycle = Some((state, generation));
@@ -644,16 +666,31 @@ async fn run(
     let deadline = Instant::now() + SHUTDOWN_BUDGET;
     frames.close();
     #[cfg(feature = "acceptance")]
-    if let Some(fixture) = &fixture { fixture.close(application::acceptance::barrier::ClosedReason::Shutdown); }
-    for (label, tasks) in [("fixture control", &mut fixture_controls), ("fixture wait", &mut fixture_waits)] {
+    if let Some(fixture) = &fixture {
+        fixture.close(application::acceptance::barrier::ClosedReason::Shutdown);
+    }
+    for (label, tasks) in [
+        ("fixture control", &mut fixture_controls),
+        ("fixture wait", &mut fixture_waits),
+    ] {
         while !tasks.is_empty() {
-            match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), tasks.join_next()).await {
+            match tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                tasks.join_next(),
+            )
+            .await
+            {
                 Ok(Some(result)) => reap(label, result, &mut faults, reply_record),
                 Ok(None) | Err(_) => break,
             }
         }
     }
-    cancel("fixture control", fixture_controls, &mut faults, reply_record);
+    cancel(
+        "fixture control",
+        fixture_controls,
+        &mut faults,
+        reply_record,
+    );
     cancel("fixture wait", fixture_waits, &mut faults, reply_record);
     effects.close();
     while let Ok(effect) = effects.try_recv() {
