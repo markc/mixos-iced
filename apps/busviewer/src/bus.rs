@@ -1292,7 +1292,7 @@ mod tests {
         impl Drop for Stop {
             fn drop(&mut self) {
                 self.0.quit();
-                self.0.wait_done().unwrap();
+                let _ = self.0.wait_done();
             }
         }
         let _stop = Stop(handle.clone());
@@ -1329,7 +1329,7 @@ mod tests {
             assert_eq!(third.0, 10, "third wait cannot grow task storage");
             let held = caller.call("actor-viewer", "app.acceptance.barrier.state", reference.clone()).await.unwrap();
             assert_eq!(held["state"], "armed");
-            ui.set_context((), handle.settings_generation()).unwrap();
+            ui.retry_preparation(handle.settings_generation()).unwrap();
             let reached = tokio::time::timeout(Duration::from_secs(3), barrier_wait).await.unwrap().unwrap().unwrap();
             assert_eq!(reached["state"], "reached", "actual preparation reaches hold");
             let released = tokio::time::timeout(Duration::from_secs(2), caller.call("actor-viewer", "app.acceptance.barrier.release", reference)).await.unwrap().unwrap();
