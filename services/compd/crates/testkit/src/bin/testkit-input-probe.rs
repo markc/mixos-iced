@@ -711,7 +711,9 @@ fn run() -> Result<(), String> {
         if let Some((serial, width, height)) = probe.pending_configure.take() {
             xdg.ack_configure(serial);
             if awaiting_configure {
-                say(&format!("remap_configure_ack {width} {height} serial={serial}"));
+                say(&format!(
+                    "remap_configure_ack {width} {height} serial={serial}"
+                ));
             }
             let width = if width > 0 { width } else { options.width };
             let height = if height > 0 { height } else { options.height };
