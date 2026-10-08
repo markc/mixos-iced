@@ -173,6 +173,8 @@ fn verify_pixels($label,$owner,$identity,$target,$snapshot,$expanded,$back,$forw
   run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:30,
     env:$n.client_env($R.session,$h.bus_env($R.bus,$R.run.path))})
   $native=$capture.ppm($path)
+  write_file($R.run.path .. "/individual-layout-" .. $label .. ".json",json_encode($layout))
+  write_file($R.run.path .. "/individual-geometry-" .. $label .. ".json",json_encode($geometry))
   check($native.w == $output.width*$scale and $native.h == $output.height*$scale,"Screencopy did not capture selected native output")
   $pairs=$snapshot.effective["app:dopus"].design.pairs
   $foreground=$oracle.rgba($pairs.base.rendered_foreground)
@@ -240,9 +242,30 @@ fn verify_pixels($label,$owner,$identity,$target,$snapshot,$expanded,$back,$forw
         ceil($physical[1]+$physical[3])-floor($physical[1])+4],scale:$scale,
       bounds:[$bounds[0]-(floor($physical[0])-2)/$scale,$bounds[1]-(floor($physical[1])-2)/$scale,$bounds[2],$bounds[3]],
       foreground:$foreground,background:$background}
+    -- An adjacent actual glyph can enter the two-physical-pixel guard. Draw
+    -- its independently selected catalogue scalar at its actual inspected
+    -- bounds rather than treating valid neighbouring ink as leakage.
+    $neighbours=[]
+    for each $other in $entries
+      if $other.alias == $alias then continue end
+      $near=filter($layout.records,fn($record)=$record.alias == $other.alias)
+      check(len($near) == 1,"Neighbour is not uniquely realised")
+      $near=$near[0].layout_bounds
+      if ($near[0]*$scale < ceil($physical[0]+$physical[2])+2 and
+        ($near[0]+$near[2])*$scale > floor($physical[0])-2 and
+        $near[1]*$scale < ceil($physical[1]+$physical[3])+2 and
+        ($near[1]+$near[3])*$scale > floor($physical[1])-2) then
+        check(deep_eq($other.background,$background),"Adjacent glyph crosses a distinct background")
+        $neighbours=concat($neighbours,[{glyph:$R.package.icon_catalogue.glyphs[$other.name],
+          bounds:[$near[0]-(floor($physical[0])-2)/$scale,$near[1]-(floor($physical[1])-2)/$scale,$near[2],$near[3]],
+          foreground:$other.foreground}])
+      end
+    end
+    $request.neighbours=$neighbours
     $origin=[$geometry.x*$scale,$geometry.y*$scale]
     $reference=render_reference($request,$label .. "-" .. $alias)
     $proof=$oracle.compare($native,$reference,$physical,$origin,$background)
+    write_file($R.run.path .. "/pixels-" .. $label .. "-" .. $alias .. ".json",json_encode({request:$request,proof:$proof}))
     check($proof.matches,"Native " .. $name .. " pixels differ: " .. json_encode($proof))
     if not contains($R.covered,$name) then $R.covered=concat($R.covered,[$name]) end
     $wrong_name=if $name == "delete" then "folder" else "delete" end

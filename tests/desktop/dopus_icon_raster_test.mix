@@ -26,5 +26,9 @@ for each $scale in [1,2]
   check(not $oracle.compare($native,$shifted,$bounds,[16,14],[10,20,30]).matches,"Shifted glyph accepted")
   $blank=pixel_fixture($side,$side,[0,0,0,0],[220,180,100])
   check(not $oracle.compare($native,$blank,$bounds,[16,14],[10,20,30]).matches,"Blank glyph accepted")
+  $neighbour_only=pixel_fixture($side,$side,[$side-2,2,2,4*$scale],[220,180,100])
+  $native_neighbour_only=pixel_fixture(64,64,[16+8*$scale,14+4*$scale,2,4*$scale],[220,180,100])
+  check(not $oracle.compare($native_neighbour_only,$neighbour_only,$bounds,[16,14],[10,20,30]).matches,
+    "Neighbour guard ink falsely proves a blank target glyph")
 end
 print("PASS pure icon crop guards: correct origin at scales 1/2; tint, shift and blank refused; no native claim")

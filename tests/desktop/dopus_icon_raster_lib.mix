@@ -12,7 +12,9 @@ fn compare($native,$reference,$bounds,$origin,$background)
     for $x=floor($bounds[0])-2 to ceil($bounds[0]+$bounds[2])+1
       $expected=$capture.pixel($reference,$x-floor($bounds[0])+2,$y-floor($bounds[1])+2)
       $actual=$capture.pixel($native,$origin[0]+$x,$origin[1]+$y)
-      if not deep_eq($expected,$background) then $ink=$ink+1 end
+      if ($x >= ceil($bounds[0]) and $x < floor($bounds[0]+$bounds[2]) and
+        $y >= ceil($bounds[1]) and $y < floor($bounds[1]+$bounds[3]) and
+        not deep_eq($expected,$background)) then $ink=$ink+1 end
       $different=false
       for $channel=0 to 2
         $delta=abs($expected[$channel]-$actual[$channel])

@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 type DecorationPainter<'a, R> = dyn Fn(&mut R, usize, Decoration, Rectangle, Rectangle) + 'a;
+type DecorationIdentity<'a> = dyn Fn(usize, Decoration) -> Option<iced_core::widget::Id> + 'a;
 /// One column contract for headers and rows. Secondary widths are measured
 /// in the resolved mono role, including the widest absolute time form.
 #[derive(Clone, Copy, Debug)]
@@ -201,7 +202,7 @@ pub struct FilePane<'a, Theme, Renderer> {
     tips: Vec<Element<'a, Message, Theme, Renderer>>,
     tooltip: Option<Box<Tooltip<'a, Message, Theme, Renderer>>>,
     decoration: Box<DecorationPainter<'a, Renderer>>,
-    decoration_id: Option<Box<dyn Fn(usize, Decoration) -> Option<iced_core::widget::Id> + 'a>>,
+    decoration_id: Option<Box<DecorationIdentity<'a>>>,
     open_label: String,
     transfer: Option<Box<dyn Transfer + 'a>>,
     busy: bool,
