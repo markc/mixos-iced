@@ -21,7 +21,7 @@ use std::{
 static NEXT_CONSUMER: AtomicU64 = AtomicU64::new(1);
 
 /// Identity of accepted or installed data, without copying the full projection.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct SnapshotIdentity {
     pub incarnation: String,
     pub revision: Revision,
