@@ -419,7 +419,7 @@ impl App {
         info["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
         info
     }
-    fn describe(&mut self) -> Value {
+    fn describe(&mut self) -> Result<Value, String> {
         self.settings_ui.reconcile(self.bus.settings_generation());
         let mut describe = json!({
             "schema":"cap.v1",
@@ -428,9 +428,11 @@ impl App {
             "transport":"native",
             "verbs":verbs::VERBS
         });
-        describe["settings"] = json!(self.settings_ui.session().host().consumer().evidence());
-        describe["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
-        describe
+        application::describe::complete_native(&mut describe, application::describe::Identity {
+            app_id: Some(APP_ID), version: env!("CARGO_PKG_VERSION"),
+            pid: std::process::id(), service: self.bus.service_name(),
+        }, self.settings_ui.session()).map_err(|error| error.to_string())?;
+        Ok(describe)
     }
     fn modal(&self) -> bool {
         self.confirm || self.picker.is_some() || self.dialog.is_some()
@@ -1203,14 +1205,15 @@ impl App {
                 return Task::none();
             }
         };
-        if verb == "cap.ping" || verb == "cap.info" || verb == "app.describe" {
+        if verb == "app.describe" {
+            let result = self.describe();
+            self.reply(id, result);
+            return Task::none();
+        }
+        if verb == "cap.ping" || verb == "cap.info" {
             // The existing modal bypass: information commands answer with
             // real work state while a dialogue is open.
-            let value = if verb == "app.describe" {
-                self.describe()
-            } else {
-                self.info()
-            };
+            let value = self.info();
             self.reply(id, Ok(value));
             return Task::none();
         }
@@ -1856,6 +1859,11 @@ mod tests {
         assert_eq!(rc, 0);
         let value: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value["app_id"], APP_ID);
+        assert_eq!(value["service"], "cap");
+        assert_eq!(value["pid"], std::process::id());
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+        assert!(value["resources"].is_null());
+        assert!(value["preparation"].is_object());
         assert_eq!(value["settings"]["context"], "app:cap");
         assert!(value["settings_cache"].is_object());
         assert!(matches!(app.dialog, Some(Dialog::About)));

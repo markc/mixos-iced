@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+
+- Complete GUI and headless descriptions from the shared presentation owner,
+  including actual identity and installed resource/preparation/cache evidence.
+- Refuse invalid raw description bodies on the existing bounded actor reply
+  path before GUI admission; keep Cap's error vocabulary and string inventory.
+
 ## 0.1.3
 
 - Use shared native admission, retained outboxes, origin-owning replies and

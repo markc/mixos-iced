@@ -52,6 +52,20 @@ fn reconnect(gui_capacity: usize) {
             start_inner("actor-cap", &broker.url, None, gui_capacity, Some(probe)).unwrap();
         let _stop = Stop(handle.clone());
         let mut state = observed(&mut observation, |state| state.connected).await;
+        assert_eq!(handle.service_name(), "actor-cap", "actual custom registered supervisor identity");
+        let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
+        let oversized = format!("{{{}}}", " ".repeat(application::describe::MAX_REQUEST_BYTES));
+        for body in ["{", "[]", "null", r#"{"extra":true}"#, oversized.as_str()] {
+            let (rc, body, _) = tokio::time::timeout(Duration::from_secs(5),
+                caller.call_with_headers_raw("actor-cap", "app.describe", &BTreeMap::new(), body))
+                .await.unwrap().unwrap();
+            assert_eq!(rc, 10);
+            let refusal: Value = serde_json::from_str(&body).unwrap();
+            assert!(refusal["error"].is_string());
+            assert!(refusal["describe_code"].is_string());
+        }
+        caller.close().await;
+        assert_eq!(observation.borrow().pending, 0, "invalid descriptions bypass paused GUI");
         let mut decisive = None;
         for batch in 0..5 {
             let caller = Arc::new(NodedClient::connect_anonymous(&broker.url).await.unwrap());

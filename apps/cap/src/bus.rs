@@ -154,6 +154,9 @@ pub struct BusHandle {
 }
 
 impl BusHandle {
+    pub fn service_name(&self) -> &str {
+        self.client.as_ref().map_or("cap", |client| client.service_name())
+    }
     pub fn is_current(&self, request: &Request) -> bool {
         self.client.as_ref().is_none_or(|client| {
             settings::native::live_generation(client) == Some(request.generation)

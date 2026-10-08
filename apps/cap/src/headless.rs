@@ -57,7 +57,7 @@ pub fn run(service: &str, url: &str, comp: &str, path: Option<PathBuf>) -> Resul
                 let id=command.id;let verb=command.verb.as_str();
                 let value=match verbs::parse(verb,&command.body){Ok(v)=>v,Err(e)=>{respond(&handle,id,Err(e));continue}};
                 if matches!(verb,"cap.ping"|"cap.info"){respond(&handle,id,Ok(info(&mut settings_ui,&handle,&document,&current_path,&metadata,!jobs.is_empty())));continue}
-                if verb=="app.describe"{respond(&handle,id,Ok(describe(&mut settings_ui,&handle)));continue}
+                if verb=="app.describe"{respond(&handle,id,describe(&mut settings_ui,&handle));continue}
                 if verb=="cap.cancel"{if let Some(tx)=&cancellation{let _=tx.send(true);}respond(&handle,id,Ok(json!({"cancelling":cancellation.is_some()})));continue}
                 if !jobs.is_empty(){respond(&handle,id,Err("busy".into()));continue}
                 if matches!(verb,"cap.open"|"cap.capture"|"cap.quit")&&document.as_ref().is_some_and(Document::dirty){respond(&handle,id,Err("export or undo unsaved annotations first".into()));continue}
@@ -103,7 +103,7 @@ fn info(
     info["settings_cache"] = json!(settings_ui.session().cache_evidence());
     info
 }
-fn describe(settings_ui: &mut Ui<()>, handle: &bus::BusHandle) -> Value {
+fn describe(settings_ui: &mut Ui<()>, handle: &bus::BusHandle) -> Result<Value, String> {
     settings_ui.reconcile(handle.settings_generation());
     let mut describe = json!({
         "schema":"cap.v1",
@@ -112,7 +112,38 @@ fn describe(settings_ui: &mut Ui<()>, handle: &bus::BusHandle) -> Value {
         "transport":"native",
         "verbs":verbs::VERBS
     });
-    describe["settings"] = json!(settings_ui.session().host().consumer().evidence());
-    describe["settings_cache"] = json!(settings_ui.session().cache_evidence());
-    describe
+    application::describe::complete_native(&mut describe, application::describe::Identity {
+        app_id: None, version: env!("CARGO_PKG_VERSION"),
+        pid: std::process::id(), service: handle.service_name(),
+    }, settings_ui.session()).map_err(|error| error.to_string())?;
+    Ok(describe)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn canonical_headless_description_uses_actual_owner_and_null_window_identity() {
+        let consumer = settings::consumer::Consumer::for_app(settings::Binding {
+            instance: "fixture".into(), profile: "default".into(),
+        }, "cap").unwrap();
+        let (mut ui, _lane) = application::presentation::native::bridge(
+            application::presentation::native::Session::new(consumer),
+            application::presentation::native::Worker::offline(|_, _| Ok(())),
+        );
+        let (handle, _effects) = bus::BusHandle::response_sink();
+        let value = describe(&mut ui, &handle).unwrap();
+        assert_eq!(value["service"], "cap");
+        assert_eq!(value["pid"], std::process::id());
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(value["headless"], true);
+        assert!(value["app_id"].is_null());
+        assert!(value["resources"].is_null());
+        assert!(value["preparation"].is_object());
+        assert_eq!(value["verbs"], json!(verbs::VERBS));
+        let before = ui.session().preparation_evidence().desired;
+        assert_eq!(describe(&mut ui, &handle).unwrap(), value);
+        assert_eq!(ui.session().preparation_evidence().desired, before);
+        assert!(ui.session().frame_stamp().is_none());
+    }
 }

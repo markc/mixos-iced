@@ -62,6 +62,9 @@ struct CropArg {
     crop: Option<Crop>,
 }
 pub fn parse(verb: &str, body: &str) -> Result<Value, String> {
+    if verb == application::describe::VERB {
+        application::describe::validate_request(body).map_err(|error| error.to_string())?;
+    }
     if body.len() > 1024 * 1024 {
         return Err("command exceeds 1 MiB".into());
     }
@@ -85,6 +88,10 @@ pub fn parse(verb: &str, body: &str) -> Result<Value, String> {
         return Err("this command takes an empty object".into());
     }
     Ok(value)
+}
+
+pub(crate) fn describe_refusal(error: &application::describe::Violation) -> Value {
+    json!({"error":error.to_string(), "describe_code":error.code, "path":error.path})
 }
 pub fn operation(verb: &str, value: Value) -> Result<Operation, String> {
     Ok(match verb {

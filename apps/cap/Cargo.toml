@@ -1,6 +1,6 @@
 [package]
 name = "cap"
-version = "0.1.3"
+version = "0.1.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,7 +21,7 @@ mod_module_files = "deny"
 iced = { workspace = true, features = ["advanced", "crisp", "thread-pool", "wayland", "tiny-skia", "canvas", "image-without-codecs"] }
 iced_winit = { path = "../../vendor/iced/winit", features = ["wayland", "image"] }
 iced_runtime = { workspace = true, features = ["image"] }
-application = { workspace = true, features = ["tiny-skia", "image", "settings-cache"] }
+application = { workspace = true, features = ["tiny-skia", "image", "settings-cache", "describe"] }
 toolkit = { workspace = true, features = ["tiny-skia", "image", "i18n"] }
 appearance.workspace = true
 settings = { workspace = true, features = ["native"] }

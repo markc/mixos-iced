@@ -218,6 +218,18 @@ fn refusal(
     faults: &mut Faults,
     shed: &mut u64,
 ) {
+    refuse_body(client, command, tasks, admission, faults, shed, BUSY_BODY.into());
+}
+
+fn refuse_body(
+    client: &Arc<SupervisedClient>,
+    command: IncomingCommand,
+    tasks: &mut TaskSet<Result<(), String>>,
+    admission: &Admission,
+    faults: &mut Faults,
+    shed: &mut u64,
+    body: String,
+) {
     let Some(permit) = admission.try_acquire() else {
         *shed = shed.saturating_add(1);
         return;
@@ -225,7 +237,7 @@ fn refusal(
     let now = Instant::now();
     let reply = Accepted::new(client.clone(), command, permit, now).reply(
         10,
-        BUSY_BODY.into(),
+        body,
         now + SHUTDOWN_BUDGET,
     );
     if let Err(reply) = tasks.try_spawn_with(reply, NativeReply::into_task) {
@@ -438,6 +450,12 @@ pub(super) async fn worker(
                     if let Some(needed) = lane.delivery(&command) { wake(&mut gui, needed); continue; }
                     if command.topic().is_some() || command.command.is_empty() { continue; }
                     if settings::native::live_generation(&client) != Some(command.generation) { faults.push("stale command retired before frontend admission".into()); continue; }
+                    if command.command == application::describe::VERB
+                        && let Err(error) = application::describe::validate_request(&command.body) {
+                        refuse_body(&client, command, &mut refusals, &refusal_admission, &mut faults,
+                            &mut shed_refusals, crate::verbs::describe_refusal(&error).to_string());
+                        continue;
+                    }
                     let Some(permit) = admission.try_acquire() else { refusal(&client, command, &mut refusals, &refusal_admission, &mut faults, &mut shed_refusals); continue; };
                     let Some(id) = next_id.checked_add(1) else { permit.finish(); refusal(&client, command, &mut refusals, &refusal_admission, &mut faults, &mut shed_refusals); continue; };
                     next_id = id;
