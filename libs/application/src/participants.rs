@@ -144,7 +144,13 @@ impl Registry {
         if !self.participants.contains_key(&key) && self.participants.len() >= self.capacity {
             // Closed history is bounded by the same capacity. Never reuse a
             // minted token, so evicting its tombstone cannot revive callbacks.
-            if let Some(retired) = self.participants.iter().filter(|(_, p)| p.closed).min_by_key(|(_, p)| p.token.0).map(|(key, _)| key.clone()) {
+            if let Some(retired) = self
+                .participants
+                .iter()
+                .filter(|(_, p)| p.closed)
+                .min_by_key(|(_, p)| p.token.0)
+                .map(|(key, _)| key.clone())
+            {
                 self.participants.remove(&retired);
             } else {
                 return Err(Error::Capacity);
@@ -227,7 +233,11 @@ impl Registry {
     /// identity never inherits the previous revision's application timing.
     pub fn accepted(&mut self, token: Token, accepted: Accepted) -> Result<(), Error> {
         let participant = self.participant(token)?;
-        if participant.accepted.as_ref().is_none_or(|previous| previous.identity != accepted.identity) {
+        if participant
+            .accepted
+            .as_ref()
+            .is_none_or(|previous| previous.identity != accepted.identity)
+        {
             participant.applied = None;
             participant.baseline_request = participant.frames.as_ref().and_then(|handle| {
                 handle
@@ -360,9 +370,9 @@ impl Registry {
                         .flatten()
                 });
         let accepted_to_presented_ns = if eligible {
-            accepted
-                .zip(presentation)
-                .and_then(|(accepted, frame)| { let accepted = accepted.timing.as_ref()?; match frame.outcome {
+            accepted.zip(presentation).and_then(|(accepted, frame)| {
+                let accepted = accepted.timing.as_ref()?;
+                match frame.outcome {
                     FrameOutcome::Presented {
                         clock_id: Some(clock_id),
                         seconds,
@@ -375,7 +385,8 @@ impl Registry {
                             .checked_sub(accepted.nanoseconds)
                     }
                     _ => None,
-                }})
+                }
+            })
         } else {
             None
         };
@@ -415,8 +426,18 @@ mod tests {
     fn churn_surface_reuse_and_untimed_replay_preserve_identity_fences() {
         let mut registry = Registry::new(1, clock());
         let window = Id::unique();
-        let old = registry.register(scope(window, 1), None, Visibility::Visible).unwrap();
-        registry.accepted(old, Accepted {identity:identity(1),timing:None}).unwrap();
+        let old = registry
+            .register(scope(window, 1), None, Visibility::Visible)
+            .unwrap();
+        registry
+            .accepted(
+                old,
+                Accepted {
+                    identity: identity(1),
+                    timing: None,
+                },
+            )
+            .unwrap();
         registry.applied(old, identity(1), stamp(1), None).unwrap();
         registry.accepted(old, accepted(1)).unwrap();
         let current = registry.observe(old, false).unwrap();
@@ -424,12 +445,16 @@ mod tests {
         assert!(current.accepted_to_applied_ns.is_none());
         let mut replacement = scope(window, 1);
         replacement.surface_incarnation += 1;
-        let new = registry.register(replacement, None, Visibility::Visible).unwrap();
+        let new = registry
+            .register(replacement, None, Visibility::Visible)
+            .unwrap();
         assert_ne!(old, new);
         assert_eq!(registry.retire(old), Err(Error::Retired));
         registry.retire(new).unwrap();
         for _ in 0..32 {
-            let token = registry.register(scope(Id::unique(), 1), None, Visibility::Visible).unwrap();
+            let token = registry
+                .register(scope(Id::unique(), 1), None, Visibility::Visible)
+                .unwrap();
             assert_eq!(registry.retire(new), Err(Error::Retired));
             registry.retire(token).unwrap();
         }
@@ -453,7 +478,10 @@ mod tests {
     fn accepted(revision: u64) -> Accepted {
         Accepted {
             identity: identity(revision),
-            timing: Some(Timing {clock: clock(), nanoseconds: 100}),
+            timing: Some(Timing {
+                clock: clock(),
+                nanoseconds: 100,
+            }),
         }
     }
     fn stamp(epoch: u64) -> FrameStamp {
@@ -497,7 +525,15 @@ mod tests {
             .unwrap();
         registry.accepted(token, accepted(1)).unwrap();
         registry
-            .applied(token, identity(1), stamp(1), Some(Timing {clock:clock(),nanoseconds:200}))
+            .applied(
+                token,
+                identity(1),
+                stamp(1),
+                Some(Timing {
+                    clock: clock(),
+                    nanoseconds: 200,
+                }),
+            )
             .unwrap();
         present(&handle, window, 1, 1, Some(1));
         let visible = registry.observe(token, false).unwrap();
@@ -540,12 +576,28 @@ mod tests {
             .unwrap();
         registry.accepted(old, accepted(1)).unwrap();
         registry
-            .applied(old, identity(1), stamp(1), Some(Timing {clock:clock(),nanoseconds:200}))
+            .applied(
+                old,
+                identity(1),
+                stamp(1),
+                Some(Timing {
+                    clock: clock(),
+                    nanoseconds: 200,
+                }),
+            )
             .unwrap();
         present(&handle, window, 1, 1, Some(1));
         handle.set_live_generation(None);
         assert_eq!(
-            registry.applied(old, identity(1), stamp(1), Some(Timing {clock:clock(),nanoseconds:200})),
+            registry.applied(
+                old,
+                identity(1),
+                stamp(1),
+                Some(Timing {
+                    clock: clock(),
+                    nanoseconds: 200
+                })
+            ),
             Err(Error::WrongGeneration)
         );
         assert_ne!(
@@ -562,7 +614,15 @@ mod tests {
         assert_eq!(registry.accepted(old, accepted(2)), Err(Error::Retired));
         registry.accepted(new, accepted(2)).unwrap();
         registry
-            .applied(new, identity(2), stamp(2), Some(Timing {clock:clock(),nanoseconds:200}))
+            .applied(
+                new,
+                identity(2),
+                stamp(2),
+                Some(Timing {
+                    clock: clock(),
+                    nanoseconds: 200,
+                }),
+            )
             .unwrap();
         present(&handle, window, 1, 2, Some(1));
         assert_eq!(
@@ -588,7 +648,15 @@ mod tests {
         registry.accepted(token, accepted(2)).unwrap();
         registry.accepted(token, accepted(3)).unwrap();
         assert_eq!(
-            registry.applied(token, identity(2), stamp(2), Some(Timing {clock:clock(),nanoseconds:200})),
+            registry.applied(
+                token,
+                identity(2),
+                stamp(2),
+                Some(Timing {
+                    clock: clock(),
+                    nanoseconds: 200
+                })
+            ),
             Err(Error::WrongIdentity)
         );
         let foreign = Clock {
@@ -597,7 +665,15 @@ mod tests {
             clock_id: 1,
         };
         registry
-            .applied(token, identity(3), stamp(3), Some(Timing {clock:foreign,nanoseconds:200}))
+            .applied(
+                token,
+                identity(3),
+                stamp(3),
+                Some(Timing {
+                    clock: foreign,
+                    nanoseconds: 200,
+                }),
+            )
             .unwrap();
         present(&handle, window, 3, 1, None);
         let observation = registry.observe(token, false).unwrap();
@@ -615,7 +691,15 @@ mod tests {
             .unwrap();
         registry.accepted(token, accepted(1)).unwrap();
         registry
-            .applied(token, identity(1), stamp(1), Some(Timing {clock:clock(),nanoseconds:200}))
+            .applied(
+                token,
+                identity(1),
+                stamp(1),
+                Some(Timing {
+                    clock: clock(),
+                    nanoseconds: 200,
+                }),
+            )
             .unwrap();
         let observation = registry.observe(token, false).unwrap();
         assert_eq!(observation.state, State::Unsupported);

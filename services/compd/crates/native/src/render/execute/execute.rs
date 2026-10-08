@@ -20,10 +20,13 @@
 //!   can act on empty frames when the `flip-estimate` net is compiled in and
 //!   enabled.
 
-use render_gles::element::wrap::wrap::GlesElementWrapper;
+use super::diagnostics;
 use crate::context::render::render::NativeRenderContext;
-use frames::draw::plan::frame::frame::{plan, FramePass};
+use dispatcher::frame::frame::{ElementMeta, SceneDispatch};
+use frames::draw::plan::frame::frame::{FramePass, plan};
 use frames::draw::plan::tap::tap::POST_SCENE;
+use graphics::capture::registry::{CaptureRegistry, OutputId};
+use render_gles::element::wrap::wrap::GlesElementWrapper;
 use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, UnderlyingStorage};
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
 use smithay::backend::renderer::{Bind, RendererSuper};
@@ -32,12 +35,8 @@ use smithay::utils::user_data::UserDataMap;
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Transform};
 use std::cell::RefCell;
 use std::rc::Rc;
-use world::state::state::{StateDRMBinding, StatusSession};
 use world::state::Loop;
-use dispatcher::frame::frame::{ElementMeta, SceneDispatch};
-use graphics::capture::registry::{CaptureRegistry, OutputId};
-use super::diagnostics;
-
+use world::state::state::{StateDRMBinding, StatusSession};
 
 /// Honor `RenderFrameResult::needs_sync()` before queueing to KMS: when smithay
 /// can't hand the atomic commit a GPU fence (device lacks fencing, or the
@@ -120,9 +119,7 @@ const CAP_DEFER_FLOOR: std::time::Duration = std::time::Duration::from_micros(1_
 /// `PreparedFrame::is_empty`, not `plane_state.skip`, and `queue_frame` gates
 /// `swapchain.submitted` on `skip`. So such a frame re-presents the current
 /// framebuffer without pushing history OR advancing ages: still 1:1.
-fn discard_unsubmitted_render(
-    pipe: &crate::context::render::render::OutputPipe,
-) {
+fn discard_unsubmitted_render(pipe: &crate::context::render::render::OutputPipe) {
     if let Some(o) = pipe.drm_output.as_ref() {
         o.with_compositor(|c| c.reset_buffer_ages());
     }
@@ -166,7 +163,8 @@ fn owe_frames(
     let windows = Rc::new(RefCell::new(visible));
     let fired = Rc::new(std::cell::Cell::new(false));
     let output = pipe.output.clone();
-    let (timer_windows, timer_fired, timer_output) = (windows.clone(), fired.clone(), output.clone());
+    let (timer_windows, timer_fired, timer_output) =
+        (windows.clone(), fired.clone(), output.clone());
     let armed = state.loop_handle.insert_source(
         smithay::reexports::calloop::timer::Timer::from_duration(delay),
         move |_, _, state: &mut Loop| {
@@ -178,7 +176,11 @@ fn owe_frames(
     );
     match armed {
         Ok(token) => {
-            pipe.owed_frames = Some(crate::context::render::render::OwedFrames { token, windows, fired });
+            pipe.owed_frames = Some(crate::context::render::render::OwedFrames {
+                token,
+                windows,
+                fired,
+            });
         }
         Err(err) => {
             // Late beats never: without the timer the client would wait forever.
@@ -199,7 +201,11 @@ fn cancel_owed_frames(state: &Loop, pipe: &mut crate::context::render::render::O
     }
 }
 
-fn send_owed(state: &mut Loop, output: &smithay::output::Output, visible: &[smithay::desktop::Window]) {
+fn send_owed(
+    state: &mut Loop,
+    output: &smithay::output::Output,
+    visible: &[smithay::desktop::Window],
+) {
     frames::draw::present::callbacks::callbacks::send_window_frames(state, output, visible);
     frames::draw::present::callbacks::callbacks::send_layer_frames(state, output);
     frames::draw::present::cursor::cursor::send_frames(state, output);
@@ -218,9 +224,11 @@ fn capture_offscreen(ctx_rc: &Rc<RefCell<NativeRenderContext>>, state: &mut Loop
         screencopy::offscreen::fail_pending(serve_plain_copies);
         return;
     };
-    if !ctx.outputs.iter().any(|pipe| {
-        screencopy::offscreen::pending(&pipe.output, serve_plain_copies)
-    }) {
+    if !ctx
+        .outputs
+        .iter()
+        .any(|pipe| screencopy::offscreen::pending(&pipe.output, serve_plain_copies))
+    {
         screencopy::offscreen::fail_pending(serve_plain_copies);
         return;
     }
@@ -252,7 +260,12 @@ fn capture_offscreen(ctx_rc: &Rc<RefCell<NativeRenderContext>>, state: &mut Loop
         let prepared = frames::scene::scene::prepare(state, renderer, size);
         let scene = frames::scene::scene::scene(state, renderer, size, prepared);
         screencopy::offscreen::capture(
-            renderer, &scene.Element, |element| element.is_cursor(), output, size, scale,
+            renderer,
+            &scene.Element,
+            |element| element.is_cursor(),
+            output,
+            size,
+            scale,
             serve_plain_copies,
         );
     }
@@ -282,8 +295,15 @@ fn capture_windows_offscreen(ctx_rc: &Rc<RefCell<NativeRenderContext>>, state: &
     for pipe in &ctx.outputs {
         let scale = pipe.output.current_scale().fractional_scale();
         screencopy::offscreen::capture_windows(renderer, &pipe.output, |renderer, target| {
-            let window = world::window::draw::frame::scene::capture_window(state, target.id, target.generation)
-                .map_err(|error| screencopy::file::ControlReply::WindowTarget { id: target.id, error })?;
+            let window = world::window::draw::frame::scene::capture_window(
+                state,
+                target.id,
+                target.generation,
+            )
+            .map_err(|error| screencopy::file::ControlReply::WindowTarget {
+                id: target.id,
+                error,
+            })?;
             world::window::draw::frame::scene::capture(renderer, &window, scale)
                 .map_err(screencopy::file::capture_failed)
         });
@@ -357,9 +377,8 @@ pub fn execute(
     // that would strip hardware planes (and the hardware cursor with them) the
     // moment any selector is armed, including on a desktop that is merely waiting
     // for a target and never tears.
-    let mut frame_flags = kms::scanout::plane::direct::direct::flags(
-        protocols::tearing::gate::gate::tearing(),
-    );
+    let mut frame_flags =
+        kms::scanout::plane::direct::direct::flags(protocols::tearing::gate::gate::tearing());
     // Pre-emptive rendering: never let a frame be reported empty, so the loop
     // flips every pass instead of parking — the tail of this function re-arms the
     // redraw latch only after a non-empty result. Default `Engaged` applies that
@@ -385,7 +404,11 @@ pub fn execute(
     // shared bevy context — never built mid-render. Its tap subscription, by
     // contrast, lives on this backend's render context (created during render),
     // so subscribe exactly once here: registry presence IS the tap (Law 5).
-    if state.inner.kernel.get(&world::driver::capture::base::CAPTURE_REGISTRY).is_some()
+    if state
+        .inner
+        .kernel
+        .get(&world::driver::capture::base::CAPTURE_REGISTRY)
+        .is_some()
         && !ctx_ref.tap_subscriptions.is_active(POST_SCENE)
     {
         ctx_ref.tap_subscriptions.subscribe(POST_SCENE);
@@ -464,8 +487,13 @@ pub fn execute(
     let mut pace: Option<std::time::Duration> = None;
     for output_idx in 0..ctx_ref.outputs.len() {
         let trace_output = if ledger::frame_trace::enabled() {
-            OutputId::from_key(&world::state::state::output_key(&ctx_ref.outputs[output_idx].output)).0
-        } else { 0 };
+            OutputId::from_key(&world::state::state::output_key(
+                &ctx_ref.outputs[output_idx].output,
+            ))
+            .0
+        } else {
+            0
+        };
         if ctx_ref.outputs[output_idx].drm_output.is_none() {
             let _skip = ledger::frame_trace::span("kms_skip_no_pipe", trace_output);
             continue;
@@ -566,13 +594,17 @@ pub fn execute(
                     } else {
                         // Without a wake-up the loop would stall; rendering one
                         // frame early is strictly better than freezing.
-                        warn!("rate-cap timer registration failed; compositing uncapped this frame");
+                        warn!(
+                            "rate-cap timer registration failed; compositing uncapped this frame"
+                        );
                         ctx_ref.outputs[output_idx].cap_wake = None;
                     }
                 }
                 if ctx_ref.outputs[output_idx].cap_wake.is_some() {
                     let _skip = ledger::frame_trace::span_with_detail(
-                        "kms_defer_rate_cap", trace_output, remaining.as_micros() as u64,
+                        "kms_defer_rate_cap",
+                        trace_output,
+                        remaining.as_micros() as u64,
                     );
                     continue;
                 }
@@ -608,9 +640,11 @@ pub fn execute(
         // coordinate accessors (`current_output()`) resolve THIS output's mode
         // size/scale. Cleared after the loop so the input path falls back to the
         // cursor's output.
-        let output_key =
-            world::state::state::output_key(&ctx_ref.outputs[output_idx].output);
-        let output_scale = ctx_ref.outputs[output_idx].output.current_scale().fractional_scale();
+        let output_key = world::state::state::output_key(&ctx_ref.outputs[output_idx].output);
+        let output_scale = ctx_ref.outputs[output_idx]
+            .output
+            .current_scale()
+            .fractional_scale();
         // Stable capture id for THIS monitor (EDID-derived, not the vec index) so
         // capture entries key the same way the rim's capture requests resolve them.
         let output_id = OutputId::from_key(&output_key);
@@ -622,253 +656,284 @@ pub fn execute(
         // read `current`); `render_output` above already drives the draw accessors.
         state.inner.output_views_mut().ensure(&output_key);
 
-    // ---- set_output_size: scoped borrow_mut ----
-    if let Some(registry) = &state.inner.kernel.get(&world::driver::capture::base::CAPTURE_REGISTRY) {
-        let mut r = gles_renderer.borrow_mut();
-        let _ = registry.set_output_size(
-            &state.inner.environment.GPU.as_str(),
-            r.as_mut(),
-            output_id,
-            size,
-        );
-        drop(r);
-    }
+        // ---- set_output_size: scoped borrow_mut ----
+        if let Some(registry) = &state
+            .inner
+            .kernel
+            .get(&world::driver::capture::base::CAPTURE_REGISTRY)
+        {
+            let mut r = gles_renderer.borrow_mut();
+            let _ = registry.set_output_size(
+                &state.inner.environment.GPU.as_str(),
+                r.as_mut(),
+                output_id,
+                size,
+            );
+            drop(r);
+        }
 
-    // The compositor decides what this frame contains (Law 5): the plan
-    // places the tap; the subscription set says whether anyone is listening.
-    // The session lock and picker passes are not part of this plan, and there is
-    // no shader pipeline: the plan is the scene pass (+ its tap) and the renderer
-    // keeps its default (no-bundle) facts.
-    let frame_plan = plan(&state.inner.status);
-    let render_scene = frame_plan.has_pass(FramePass::Scene);
-    if !render_scene {
-        let _skip = ledger::frame_trace::span("kms_skip_empty_plan", trace_output);
-    }
-    let tap_post_scene =
-        frame_plan.has_tap(POST_SCENE) && ctx_ref.tap_subscriptions.is_active(POST_SCENE);
+        // The compositor decides what this frame contains (Law 5): the plan
+        // places the tap; the subscription set says whether anyone is listening.
+        // The session lock and picker passes are not part of this plan, and there is
+        // no shader pipeline: the plan is the scene pass (+ its tap) and the renderer
+        // keeps its default (no-bundle) facts.
+        let frame_plan = plan(&state.inner.status);
+        let render_scene = frame_plan.has_pass(FramePass::Scene);
+        if !render_scene {
+            let _skip = ledger::frame_trace::span("kms_skip_empty_plan", trace_output);
+        }
+        let tap_post_scene =
+            frame_plan.has_tap(POST_SCENE) && ctx_ref.tap_subscriptions.is_active(POST_SCENE);
 
-    // Connector property pass: colorimetry + link bit depth, once per pipe, after
-    // smithay's first modeset has bound the connector (gated on a seen vblank so
-    // the prop-only atomic commit references an ACTIVE connector). A TEST commit
-    // validates first, so a rejected request can never blank the display.
-    //
-    // NOT gated on `hdr_active` any more. These are sticky properties inherited
-    // from whoever owned the connector last — another VT's compositor, or an
-    // earlier HDR session of our own. An SDR pipe must therefore actively reset
-    // `Colorspace` to Default and clear the HDR metadata; leaving them alone is
-    // what made SDR content render through BT.2020 (heavy red cast).
-    if !ctx_ref.outputs[output_idx].props_applied && (*state.inner.kernel.get(&drivers::resume::base::VBLANK_SEEN)) {
-        let depth = model::environment::config::base::get().depth;
-        let want_bpc: u64 = if depth == 10 { 10 } else { 8 };
-        let hdr_active = ctx_ref.outputs[output_idx].hdr_active;
-        let conn = ctx_ref.outputs[output_idx].connector;
-        let crtc = ctx_ref.outputs[output_idx].crtc;
-        match crate::render::execute::hdr::apply_connector_props(
-            &ctx_ref.drm_fd,
-            conn,
-            &ctx_ref.outputs[output_idx].hdr_caps,
-            hdr_active,
-            want_bpc,
-        ) {
-            Ok(o) => {
-                ctx_ref.outputs[output_idx].props_applied = true;
-                info!("connector properties applied (colorimetry + max bpc)");
-            }
-            Err(e) => {
-                ctx_ref.outputs[output_idx].props_applied = true; // don't retry every frame
-                if hdr_active {
-                    ctx_ref.outputs[output_idx].hdr_active = false;
-                    let c = &ctx_ref.outputs[output_idx].hdr_caps;
-                    model::stats::registry::base::set_hdr_info(
-                        false,
-                        c.hdr_capable(),
-                        "SDR",
-                        c.hdr.max_luminance.unwrap_or(0.0),
-                        c.colorimetry.bt2020_rgb,
-                        "8-bit sRGB",
-                    );
+        // Connector property pass: colorimetry + link bit depth, once per pipe, after
+        // smithay's first modeset has bound the connector (gated on a seen vblank so
+        // the prop-only atomic commit references an ACTIVE connector). A TEST commit
+        // validates first, so a rejected request can never blank the display.
+        //
+        // NOT gated on `hdr_active` any more. These are sticky properties inherited
+        // from whoever owned the connector last — another VT's compositor, or an
+        // earlier HDR session of our own. An SDR pipe must therefore actively reset
+        // `Colorspace` to Default and clear the HDR metadata; leaving them alone is
+        // what made SDR content render through BT.2020 (heavy red cast).
+        if !ctx_ref.outputs[output_idx].props_applied
+            && (*state.inner.kernel.get(&drivers::resume::base::VBLANK_SEEN))
+        {
+            let depth = model::environment::config::base::get().depth;
+            let want_bpc: u64 = if depth == 10 { 10 } else { 8 };
+            let hdr_active = ctx_ref.outputs[output_idx].hdr_active;
+            let conn = ctx_ref.outputs[output_idx].connector;
+            let crtc = ctx_ref.outputs[output_idx].crtc;
+            match crate::render::execute::hdr::apply_connector_props(
+                &ctx_ref.drm_fd,
+                conn,
+                &ctx_ref.outputs[output_idx].hdr_caps,
+                hdr_active,
+                want_bpc,
+            ) {
+                Ok(o) => {
+                    ctx_ref.outputs[output_idx].props_applied = true;
+                    info!("connector properties applied (colorimetry + max bpc)");
+                }
+                Err(e) => {
+                    ctx_ref.outputs[output_idx].props_applied = true; // don't retry every frame
+                    if hdr_active {
+                        ctx_ref.outputs[output_idx].hdr_active = false;
+                        let c = &ctx_ref.outputs[output_idx].hdr_caps;
+                        model::stats::registry::base::set_hdr_info(
+                            false,
+                            c.hdr_capable(),
+                            "SDR",
+                            c.hdr.max_luminance.unwrap_or(0.0),
+                            c.colorimetry.bt2020_rgb,
+                            "8-bit sRGB",
+                        );
+                    }
                 }
             }
         }
-    }
 
-    let mut last_result_empty = true;
-    // THIS frame's per-element render states, kept only so `collect_feedback` can
-    // report `ZeroCopy` per surface. Cloned out of the `RenderFrameResult` because
-    // that borrows the renderer and is dropped well before `present` runs; the map
-    // is one entry per element, so this is cheap next to the frame it describes.
-    let mut frame_states: Option<smithay::backend::renderer::element::RenderElementStates> = None;
-    let mut visible_window: Vec<_> = Vec::new();
+        let mut last_result_empty = true;
+        // THIS frame's per-element render states, kept only so `collect_feedback` can
+        // report `ZeroCopy` per surface. Cloned out of the `RenderFrameResult` because
+        // that borrows the renderer and is dropped well before `present` runs; the map
+        // is one entry per element, so this is cheap next to the frame it describes.
+        let mut frame_states: Option<smithay::backend::renderer::element::RenderElementStates> =
+            None;
+        let mut visible_window: Vec<_> = Vec::new();
 
-    // GLES composes and scans out; there is no Vulkan composite path.
-    {
-    // The scene is the only pass (no lock fade or lock-only pass).
-    if render_scene {
-            // ---- Build scene: scoped borrow_mut, dropped immediately. ----
-            let scene = {
+        // GLES composes and scans out; there is no Vulkan composite path.
+        {
+            // The scene is the only pass (no lock fade or lock-only pass).
+            if render_scene {
+                // ---- Build scene: scoped borrow_mut, dropped immediately. ----
+                let scene = {
+                    let mut r = gles_renderer.borrow_mut();
+                    let prepared =
+                        frames::scene::scene::prepare_kms(state, r.as_mut(), size, output_id.0);
+                    let _assembly = ledger::frame_trace::span("kms_scene_assembly", output_id.0);
+                    let scene = frames::scene::scene::scene(state, r.as_mut(), size, prepared);
+                    drop(r);
+                    scene
+                };
+
+                diagnostics::iced_elements(
+                    &ctx_ref.outputs[output_idx].output.name(),
+                    &scene.Element,
+                );
+                let wrapped: Vec<GlesElementWrapper<_>> =
+                    scene.Element.iter().map(GlesElementWrapper).collect();
+
+                // ---- render_frame: hold RefMut for the lifetime of scene_result. ----
                 let mut r = gles_renderer.borrow_mut();
-                let prepared =
-                    frames::scene::scene::prepare_kms(state, r.as_mut(), size, output_id.0);
-                let _assembly = ledger::frame_trace::span("kms_scene_assembly", output_id.0);
-                let scene =
-                    frames::scene::scene::scene(state, r.as_mut(), size, prepared);
-                drop(r);
-                scene
-            };
-
-            diagnostics::iced_elements(
-                &ctx_ref.outputs[output_idx].output.name(),
-                &scene.Element,
-            );
-            let wrapped: Vec<GlesElementWrapper<_>> =
-                scene.Element.iter().map(GlesElementWrapper).collect();
-
-            // ---- render_frame: hold RefMut for the lifetime of scene_result. ----
-            let mut r = gles_renderer.borrow_mut();
-            let diag_frame = diagnostics::frame(output_idx);
-            let frame_flags = if diag_frame.is_some() || screencopy::file::pending_output(&ctx_ref.outputs[output_idx].output) {
-                frame_flags | smithay::backend::drm::compositor::FrameFlags::FORCE_PRESENT
-            } else {
-                frame_flags
-            };
-            let drm_trace = ledger::frame_trace::span("kms_drm_render_frame", output_id.0);
-            let scene_result = ctx_ref
-                .outputs[output_idx]
-                .drm_output
-                .as_mut()
-                .unwrap()
-                .render_frame(&mut *r, &wrapped, [0.0, 0.0, 0.0, 1.0], frame_flags)
-                .unwrap();
-            drop(drm_trace);
-            let sync_trace = ledger::frame_trace::span("kms_render_sync", output_id.0);
-            honor_needs_sync(&scene_result);
-            drop(sync_trace);
-
-            let scene_is_empty = scene_result.is_empty;
-
-            if diagnostics::enabled() {
-                use smithay::backend::drm::compositor::PrimaryPlaneElement;
-                use smithay::backend::renderer::element::RenderElementPresentationState;
-                use smithay::backend::renderer::Texture;
-                for (order, element) in wrapped.iter().enumerate() {
-                    let Some(texture) = diagnostics::iced_texture(element.0) else {
-                        continue;
-                    };
-                    let id = element.id();
-                    let (dump_id, first) = diagnostics::surface(id, output_idx);
-                    if first {
-                        let geometry = element.geometry(Scale::from(output_scale));
-                        let render_state = scene_result.states.element_render_state(id.clone());
-                        let plane = if scene_result.cursor_element.is_some_and(|e| e.id() == id) {
-                            "cursor"
-                        } else if scene_result.overlay_elements.iter().any(|e| e.id() == id) {
-                            "overlay"
-                        } else if matches!(&scene_result.primary_element, PrimaryPlaneElement::Element(e) if e.id() == id) {
-                            "primary-scanout"
-                        } else if render_state.is_some_and(|s| matches!(s.presentation_state, RenderElementPresentationState::Rendering { .. })) {
-                            "primary-composited"
-                        } else {
-                            "unassigned"
-                        };
-                        info!(
-                            "KMS_DIAG iced id={id:?} dump_id={dump_id} output={output_key} geometry_px=({},{},{}x{}) texture={}x{} order={order}/{} plane={plane} state={render_state:?}",
-                            geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h,
-                            texture.width(), texture.height(), wrapped.len(),
-                        );
-                    }
-                    if let Some(frame) = diag_frame.as_ref() {
-                        diagnostics::iced(r.as_mut(), texture, id, dump_id, frame);
-                    }
-                }
-            }
-
-            if let Some(frame) = diag_frame.as_ref() {
-                // Same DRM primary-buffer + promoted-plane copy as screencopy,
-                // independent of whether a client requested a capture.
-                let copied = (|| -> Result<_, String> {
-                    let mut texture = screencopy::offscreen_texture(r.as_mut(), size)?;
-                    {
-                        let mut target = r.bind(&mut texture)
-                            .map_err(|err| format!("bind KMS diagnostic target: {err}"))?;
-                        scene_result.blit_frame_result(
-                            size, Transform::Normal, Scale::from(output_scale),
-                            &mut *r, &mut target, [Rectangle::from_size(size)],
-                            std::iter::empty::<Id>(),
-                        ).map_err(|err| format!("copy KMS diagnostic frame: {err:?}"))?;
-                    }
-                    Ok(texture)
-                })();
-                match copied {
-                    Ok(texture) => diagnostics::primary(r.as_mut(), &texture, frame),
-                    Err(err) => warn!("KMS_DIAG primary frame={} output={output_key} error={err}", frame.number),
-                }
-                if frame.number < 3 {
-                    state.state.redraw.request_gated(
-                        protocols::redraw::schedule::schedule::RedrawReason::Rearm,
-                    );
-                }
-            }
-
-            // ---- Tap (post-scene): capture blit, inline with r held. ----
-            // The safe pattern (carried from the original): extract everything
-            // we need from scene_result BEFORE dropping r, perform the capture
-            // INSIDE the same scope as r, then drop both together — a fresh
-            // borrow_mut while scene_result is alive would alias.
-            if tap_post_scene {
-                if let Some(job) =
-                    recorder::interface::render::window_render_job(state)
+                let diag_frame = diagnostics::frame(output_idx);
+                let frame_flags = if diag_frame.is_some()
+                    || screencopy::file::pending_output(&ctx_ref.outputs[output_idx].output)
                 {
-                    // Window / world-region capture: render the captured windows
-                    // directly into the entry (off-screen capable, chrome-free)
-                    // with the GLES renderer that holds their buffers.
-                    if let Some(mut dmabuf) = state
-                        .inner.kernel.get(&world::driver::capture::base::CAPTURE_REGISTRY)
-                        .as_ref()
-                        .and_then(|reg| reg.entry_dmabuf(job.entry_id))
-                    {
-                        recorder::interface::render::draw_windows_into(
-                            &mut *r,
-                            &mut dmabuf,
-                            job.size,
-                            &job.windows,
-                            job.scale,
-                        );
-                    }
-                } else if let Some(registry) = &mut state.inner.kernel.get(&world::driver::capture::base::CAPTURE_REGISTRY) {
-                    let entries = registry.entries_for_output(output_id);
-                    let full_src = Rectangle::<i32, Physical>::from_loc_and_size((0, 0), size);
+                    frame_flags | smithay::backend::drm::compositor::FrameFlags::FORCE_PRESENT
+                } else {
+                    frame_flags
+                };
+                let drm_trace = ledger::frame_trace::span("kms_drm_render_frame", output_id.0);
+                let scene_result = ctx_ref.outputs[output_idx]
+                    .drm_output
+                    .as_mut()
+                    .unwrap()
+                    .render_frame(&mut *r, &wrapped, [0.0, 0.0, 0.0, 1.0], frame_flags)
+                    .unwrap();
+                drop(drm_trace);
+                let sync_trace = ledger::frame_trace::span("kms_render_sync", output_id.0);
+                honor_needs_sync(&scene_result);
+                drop(sync_trace);
 
-                    for (entry_id, mut entry_tex, entry_size, src_override) in entries {
-                        // Region captures blit their sub-rect of the composed
-                        // scene; full captures blit the whole framebuffer.
-                        let src = src_override.unwrap_or(full_src);
-                        let result: Result<(), _> = (|| {
-                            let mut entry_fb = r.bind(&mut entry_tex).map_err(
-                                graphics::capture::registry::registry::BlitErr::Bind,
-                            )?;
-                            scene_result
-                                .blit_frame_result(
-                                    entry_size,
-                                    smithay::utils::Transform::Normal,
-                                    Scale::from(output_scale),
-                                    &mut *r,
-                                    &mut entry_fb,
-                                    [src],
-                                    std::iter::empty::<Id>(),
+                let scene_is_empty = scene_result.is_empty;
+
+                if diagnostics::enabled() {
+                    use smithay::backend::drm::compositor::PrimaryPlaneElement;
+                    use smithay::backend::renderer::Texture;
+                    use smithay::backend::renderer::element::RenderElementPresentationState;
+                    for (order, element) in wrapped.iter().enumerate() {
+                        let Some(texture) = diagnostics::iced_texture(element.0) else {
+                            continue;
+                        };
+                        let id = element.id();
+                        let (dump_id, first) = diagnostics::surface(id, output_idx);
+                        if first {
+                            let geometry = element.geometry(Scale::from(output_scale));
+                            let render_state = scene_result.states.element_render_state(id.clone());
+                            let plane = if scene_result.cursor_element.is_some_and(|e| e.id() == id)
+                            {
+                                "cursor"
+                            } else if scene_result.overlay_elements.iter().any(|e| e.id() == id) {
+                                "overlay"
+                            } else if matches!(&scene_result.primary_element, PrimaryPlaneElement::Element(e) if e.id() == id)
+                            {
+                                "primary-scanout"
+                            } else if render_state.is_some_and(|s| {
+                                matches!(
+                                    s.presentation_state,
+                                    RenderElementPresentationState::Rendering { .. }
                                 )
-                                .map(|_sync| ())
-                                .map_err(
-                                    graphics::capture::registry::registry::BlitErr::Blit,
-                                )
-                        })();
-                        if let Err(e) = result {
-                            warn!("capture blit failed: entry_id={entry_id:?} err={e:?}");
+                            }) {
+                                "primary-composited"
+                            } else {
+                                "unassigned"
+                            };
+                            info!(
+                                "KMS_DIAG iced id={id:?} dump_id={dump_id} output={output_key} geometry_px=({},{},{}x{}) texture={}x{} order={order}/{} plane={plane} state={render_state:?}",
+                                geometry.loc.x,
+                                geometry.loc.y,
+                                geometry.size.w,
+                                geometry.size.h,
+                                texture.width(),
+                                texture.height(),
+                                wrapped.len(),
+                            );
+                        }
+                        if let Some(frame) = diag_frame.as_ref() {
+                            diagnostics::iced(r.as_mut(), texture, id, dump_id, frame);
                         }
                     }
                 }
-            }
 
-            // Bus capture copies the real KMS result, including promoted planes.
+                if let Some(frame) = diag_frame.as_ref() {
+                    // Same DRM primary-buffer + promoted-plane copy as screencopy,
+                    // independent of whether a client requested a capture.
+                    let copied = (|| -> Result<_, String> {
+                        let mut texture = screencopy::offscreen_texture(r.as_mut(), size)?;
+                        {
+                            let mut target = r
+                                .bind(&mut texture)
+                                .map_err(|err| format!("bind KMS diagnostic target: {err}"))?;
+                            scene_result
+                                .blit_frame_result(
+                                    size,
+                                    Transform::Normal,
+                                    Scale::from(output_scale),
+                                    &mut *r,
+                                    &mut target,
+                                    [Rectangle::from_size(size)],
+                                    std::iter::empty::<Id>(),
+                                )
+                                .map_err(|err| format!("copy KMS diagnostic frame: {err:?}"))?;
+                        }
+                        Ok(texture)
+                    })();
+                    match copied {
+                        Ok(texture) => diagnostics::primary(r.as_mut(), &texture, frame),
+                        Err(err) => warn!(
+                            "KMS_DIAG primary frame={} output={output_key} error={err}",
+                            frame.number
+                        ),
+                    }
+                    if frame.number < 3 {
+                        state.state.redraw.request_gated(
+                            protocols::redraw::schedule::schedule::RedrawReason::Rearm,
+                        );
+                    }
+                }
+
+                // ---- Tap (post-scene): capture blit, inline with r held. ----
+                // The safe pattern (carried from the original): extract everything
+                // we need from scene_result BEFORE dropping r, perform the capture
+                // INSIDE the same scope as r, then drop both together — a fresh
+                // borrow_mut while scene_result is alive would alias.
+                if tap_post_scene {
+                    if let Some(job) = recorder::interface::render::window_render_job(state) {
+                        // Window / world-region capture: render the captured windows
+                        // directly into the entry (off-screen capable, chrome-free)
+                        // with the GLES renderer that holds their buffers.
+                        if let Some(mut dmabuf) = state
+                            .inner
+                            .kernel
+                            .get(&world::driver::capture::base::CAPTURE_REGISTRY)
+                            .as_ref()
+                            .and_then(|reg| reg.entry_dmabuf(job.entry_id))
+                        {
+                            recorder::interface::render::draw_windows_into(
+                                &mut *r,
+                                &mut dmabuf,
+                                job.size,
+                                &job.windows,
+                                job.scale,
+                            );
+                        }
+                    } else if let Some(registry) = &mut state
+                        .inner
+                        .kernel
+                        .get(&world::driver::capture::base::CAPTURE_REGISTRY)
+                    {
+                        let entries = registry.entries_for_output(output_id);
+                        let full_src = Rectangle::<i32, Physical>::from_loc_and_size((0, 0), size);
+
+                        for (entry_id, mut entry_tex, entry_size, src_override) in entries {
+                            // Region captures blit their sub-rect of the composed
+                            // scene; full captures blit the whole framebuffer.
+                            let src = src_override.unwrap_or(full_src);
+                            let result: Result<(), _> = (|| {
+                                let mut entry_fb = r.bind(&mut entry_tex).map_err(
+                                    graphics::capture::registry::registry::BlitErr::Bind,
+                                )?;
+                                scene_result
+                                    .blit_frame_result(
+                                        entry_size,
+                                        smithay::utils::Transform::Normal,
+                                        Scale::from(output_scale),
+                                        &mut *r,
+                                        &mut entry_fb,
+                                        [src],
+                                        std::iter::empty::<Id>(),
+                                    )
+                                    .map(|_sync| ())
+                                    .map_err(graphics::capture::registry::registry::BlitErr::Blit)
+                            })();
+                            if let Err(e) = result {
+                                warn!("capture blit failed: entry_id={entry_id:?} err={e:?}");
+                            }
+                        }
+                    }
+                }
+
+                // Bus capture copies the real KMS result, including promoted planes.
                 // It never replays a potentially different scene on the active VT.
                 let output = &ctx_ref.outputs[output_idx].output;
                 if screencopy::file::pending_picture(output, true) {
@@ -1022,18 +1087,23 @@ pub fn execute(
                     ));
                 }
                 drop(scene_result);
-            drop(r);
+                drop(r);
 
-            last_result_empty = scene_is_empty;
-            visible_window = scene.visible_window;
+                last_result_empty = scene_is_empty;
+                visible_window = scene.visible_window;
+            }
         }
 
-    }
-
-    // All RefMut guards on the renderer have been dropped by this point.
-    // ---- present THIS output: queue its page-flip (or send empty-frame callbacks).
+        // All RefMut guards on the renderer have been dropped by this point.
+        // ---- present THIS output: queue its page-flip (or send empty-frame callbacks).
         if !last_result_empty {
-            if present(ctx_ref, state, visible_window, output_idx, frame_states.as_ref()) {
+            if present(
+                ctx_ref,
+                state,
+                visible_window,
+                output_idx,
+                frame_states.as_ref(),
+            ) {
                 any_queued = true;
             }
             // Damage arrived: any hold on parking is settled.
@@ -1051,9 +1121,10 @@ pub fn execute(
             // (`Config::preemptive`). So the re-arm stays exactly while
             // pre-emptive presenting is in force — never on an ordinary desktop.
             if preemptive {
-                state.state.redraw.request_gated(
-                    protocols::redraw::schedule::schedule::RedrawReason::Rearm,
-                );
+                state
+                    .state
+                    .redraw
+                    .request_gated(protocols::redraw::schedule::schedule::RedrawReason::Rearm);
             }
         } else {
             let output = ctx_ref.outputs[output_idx].output.clone();
@@ -1090,10 +1161,20 @@ pub fn execute(
                     visible: visible_window.clone(),
                 });
             } else {
-                owe_frames(state, &mut ctx_ref.outputs[output_idx], visible_window.clone(), until_vblank);
+                owe_frames(
+                    state,
+                    &mut ctx_ref.outputs[output_idx],
+                    visible_window.clone(),
+                    until_vblank,
+                );
             }
             #[cfg(not(feature = "flip-estimate"))]
-            owe_frames(state, &mut ctx_ref.outputs[output_idx], visible_window.clone(), until_vblank);
+            owe_frames(
+                state,
+                &mut ctx_ref.outputs[output_idx],
+                visible_window.clone(),
+                until_vblank,
+            );
             // May this empty frame park the loop? Not while damage the
             // tracker cannot see yet is on its way; then ask for another frame at
             // the estimated vblank, bounded by the settlement cap.
@@ -1101,7 +1182,10 @@ pub fn execute(
                 dmabuf_import: !state.state.pending_dmabuf.is_empty(),
                 resuming: !*state.inner.kernel.get(&drivers::resume::base::VBLANK_SEEN),
             };
-            match ctx_ref.outputs[output_idx].settlement.observe(holds, std::time::Instant::now()) {
+            match ctx_ref.outputs[output_idx]
+                .settlement
+                .observe(holds, std::time::Instant::now())
+            {
                 crate::render::park::park::Verdict::Park => {}
                 crate::render::park::park::Verdict::Hold => {
                     let handle = state.loop_handle.clone();
@@ -1163,7 +1247,8 @@ pub fn execute(
             state.state.redraw.wake();
         } else {
             let handle = state.loop_handle.clone();
-            let at = std::time::Instant::now() + pace.unwrap_or(std::time::Duration::from_millis(16));
+            let at =
+                std::time::Instant::now() + pace.unwrap_or(std::time::Duration::from_millis(16));
             state.state.redraw.wake_at(&handle, at, schedule_of);
         }
     }
@@ -1216,20 +1301,25 @@ fn present(
     output_idx: usize,
     states: Option<&smithay::backend::renderer::element::RenderElementStates>,
 ) -> bool {
-    use kms::scanout::flip::queue::queue::{queue, QueueOutcome};
+    use kms::scanout::flip::queue::queue::{QueueOutcome, queue};
     let trace_output = if ledger::frame_trace::enabled() {
-        OutputId::from_key(&world::state::state::output_key(&ctx_ref.outputs[output_idx].output)).0
-    } else { 0 };
+        OutputId::from_key(&world::state::state::output_key(
+            &ctx_ref.outputs[output_idx].output,
+        ))
+        .0
+    } else {
+        0
+    };
 
     // Resolve which policy section governs this frame, from what is actually on
     // screen. Recomputed every frame off the drawn set, so panning away from a
     // target — even a frozen one — restores normal scheduling by itself; there
     // is no latched state to get stuck in.
     let active = {
+        use model::environment::tearing::select::select::{Exclusivity, Scene};
         use protocols::tearing::gate::gate;
         use protocols::tearing::liveness::liveness;
         use protocols::tearing::pacer::pacer;
-        use model::environment::tearing::select::select::{Exclusivity, Scene};
         use smithay::wayland::seat::WaylandFocus;
 
         // Both halves of the tag live on the SURFACE, and both are gathered over the
@@ -1247,7 +1337,7 @@ fn present(
         // Xwayland is not offered the protocol (`wire.tearing::can_view`), so the hint
         // is always absent for an X11 window and none here is ever second-hand.
         let tagged = |w: &smithay::desktop::Window| {
-            use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
+            use smithay::wayland::compositor::{TraversalAction, with_surface_tree_downward};
             let mut verdict = pacer::Verdict::default();
             if let Some(s) = w.wl_surface() {
                 with_surface_tree_downward(
@@ -1264,7 +1354,12 @@ fn present(
             }
             verdict.is_target()
         };
-        let focus = state.state.seat.seat.get_keyboard().and_then(|kb| kb.current_focus());
+        let focus = state
+            .state
+            .seat
+            .seat
+            .get_keyboard()
+            .and_then(|kb| kb.current_focus());
         let scene = Scene {
             target_visible: window_visible.iter().any(tagged),
             target_focused: focus.as_ref().is_some_and(|f| {
@@ -1299,7 +1394,9 @@ fn present(
             for w in &window_visible {
                 if let Some(s) = w.wl_surface() {
                     smithay::wayland::compositor::with_states(s.as_ref(), |states| {
-                        states.data_map.insert_if_missing(gate::VisibleSurface::default);
+                        states
+                            .data_map
+                            .insert_if_missing(gate::VisibleSurface::default);
                         if let Some(v) = states.data_map.get::<gate::VisibleSurface>() {
                             v.stamp(frame);
                         }
@@ -1327,22 +1424,15 @@ fn present(
             // The floor watchdog exists only to rescue a gated loop, so it lives
             // exactly as long as the gate does.
             if g == gate::Gate::Off {
-                crate::wire::watchdog::watchdog::disarm(
-                    &state.loop_handle,
-                    &mut ctx_ref.watchdog,
-                );
+                crate::wire::watchdog::watchdog::disarm(&state.loop_handle, &mut ctx_ref.watchdog);
             } else {
-                crate::wire::watchdog::watchdog::arm(
-                    &state.loop_handle,
-                    &mut ctx_ref.watchdog,
-                );
+                crate::wire::watchdog::watchdog::arm(&state.loop_handle, &mut ctx_ref.watchdog);
             }
         }
         // Publish for the NEXT frame's plane assignment, and carry this frame's
         // rate ceiling forward for the next frame's cap gate.
-        let refresh = kms::scanout::timing::vblank::vblank::interval(
-            &ctx_ref.outputs[output_idx].mode,
-        );
+        let refresh =
+            kms::scanout::timing::vblank::vblank::interval(&ctx_ref.outputs[output_idx].mode);
         ctx_ref.outputs[output_idx].cap_interval = active.min_interval(refresh);
         // The watchdog floor is a rate like any other, so it is resolved against
         // this output's refresh here — the layer that owns the timer knows
@@ -1357,7 +1447,11 @@ fn present(
         if gate::set_tearing(active.may_tear(refresh)) {
             info!(
                 "tearing: planes {} for the next frame",
-                if active.may_tear(refresh) { "OFF (composited)" } else { "ON (direct scanout)" }
+                if active.may_tear(refresh) {
+                    "OFF (composited)"
+                } else {
+                    "ON (direct scanout)"
+                }
             );
         }
         liveness::note_composite(&world::state::state::output_key(
@@ -1384,9 +1478,9 @@ fn present(
         // Time left in the current refresh interval, extrapolated from the last
         // anchored retrace. `None` until this pipe has flipped once, which
         // `tear_now` reads as "unknown timing → prefer the clean frame".
-        let until_vblank = pipe.last_vblank.map(|anchor| {
-            kms::scanout::timing::vblank::vblank::until_next(anchor, now, refresh)
-        });
+        let until_vblank = pipe
+            .last_vblank
+            .map(|anchor| kms::scanout::timing::vblank::vblank::until_next(anchor, now, refresh));
         // This frame is going out, so any armed cap wake-up is spent.
         pipe.cap_wake = None;
         // Gated on the SAME value that chose this frame's plane flags. They must
@@ -1394,8 +1488,8 @@ fn present(
         // planes and the kernel rejects it. On the frame a target first appears
         // the flags are still from the previous resolution, so this yields one
         // ordinary vsync'd frame rather than a rejected commit.
-        let tear = active.tear_now(until_vblank, refresh)
-            && protocols::tearing::gate::gate::tearing();
+        let tear =
+            active.tear_now(until_vblank, refresh) && protocols::tearing::gate::gate::tearing();
         pipe.last_tear = tear;
         tear
     };
@@ -1403,7 +1497,9 @@ fn present(
     let resuming = !(*state.inner.kernel.get(&drivers::resume::base::VBLANK_SEEN));
     // Scope the drm_output borrow so the `Failed` arm can tear the pipe down.
     let outcome = {
-        let Some(drm_output) = ctx_ref.outputs[output_idx].drm_output.as_mut() else { return false };
+        let Some(drm_output) = ctx_ref.outputs[output_idx].drm_output.as_mut() else {
+            return false;
+        };
         // Arm the flip mode for THIS commit. `queue_frame` submits synchronously
         // (the per-pipe `in_flight` guard keeps `pending_frame` empty), so the
         // set-then-queue ordering is race-free.
@@ -1417,7 +1513,8 @@ fn present(
         QueueOutcome::Queued => {
             if ledger::frame_trace::enabled() {
                 ctx_ref.outputs[output_idx].flip_trace = Some(ledger::frame_trace::wait_span(
-                    "kms_submit_to_flip", trace_output,
+                    "kms_submit_to_flip",
+                    trace_output,
                 ));
             }
             // In flight: the render loop skips this pipe until its own vblank scans
