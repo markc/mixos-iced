@@ -1,0 +1,181 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Real installer publication from owned, verified offline package bytes.
+if len(args()) != 2 then raise("ARGS","REPO MIX_BINARY") end
+$repo=realpath(args()[0])
+$mix=realpath(args()[1])
+$root=trim(run_argv_must(["mktemp","-d","/var/tmp/mixos-assets-install.XXXXXX"]))
+$installer=$repo .. "/share/assets/install.mix"
+$revision="1111111111111111111111111111111111111111"
+fn check($ok,$message)
+  if not $ok then raise("ASSETS_INSTALL_TEST",$message) end
+end
+fn entry($bundle,$path,$licence)
+  return {path:$path,url:"https://example.org/" .. $revision .. "/" .. $path,revision:$revision,
+    upstream:"https://example.org/assets",licence:$licence,bytes:stat($bundle .. "/" .. $path).size,
+    sha256:hash_file($bundle .. "/" .. $path,"sha256"),blake3:hash_file($bundle .. "/" .. $path,"blake3")}
+end
+fn manifest($path,$value)
+  write_file($path,json_encode($value))
+end
+fn invoke($extra)
+  return run_argv(concat([$mix,$installer],$extra),{timeout:30,max_output:16000,stderr:"stdout"})
+end
+fn refusal($base,$label,$value)
+  $path=$root .. "/bad-" .. $label .. ".conf.mix"
+  manifest($path,$value)
+  $r=invoke(["--manifest",$path,"--list"])
+  check(not $r.ok,"Invalid metadata accepted: " .. $label .. ": " .. $r.stdout)
+  check(read_file($base .. "/sets/v2/manifest.conf.mix") == read_file($root .. "/v2.conf.mix"),"Refusal changed installed metadata")
+  check(trim(run_argv_must(["readlink",$base .. "/current"])) == "sets/v2","Refusal changed activation")
+end
+try
+  $source=$root .. "/bundle"
+  for $directory in ["fonts","icons","licences"]
+    mkdir($source .. "/" .. $directory,{parents:true})
+  end
+  copy($repo .. "/vendor/cosmic-text/fonts/NotoSans-Regular.ttf",$source .. "/fonts/Sans.ttf")
+  copy($repo .. "/vendor/cosmic-text/fonts/NotoSans-LICENSE",$source .. "/licences/Font-OFL.txt")
+  copy($repo .. "/libs/toolkit/tests/fixtures/icon.png",$source .. "/icons/picture.png")
+  copy($repo .. "/libs/toolkit/tests/fixtures/fallback.svg",$source .. "/icons/folder.svg")
+  copy($repo .. "/LICENSE-APACHE",$source .. "/licences/Images-Apache.txt")
+  for $path in ["fonts/Sans.codepoints","icons/Rounded.codepoints","icons/Outlined.codepoints"]
+    write_file($source .. "/" .. $path,"home 41\nfolder 42\n")
+  end
+  $files=[]
+  for $path in ["fonts/Sans.ttf","fonts/Sans.codepoints","icons/Rounded.codepoints","icons/Outlined.codepoints","licences/Font-OFL.txt"]
+    push($files,entry($source,$path,"OFL-1.1"))
+  end
+  for $path in ["icons/picture.png","icons/folder.svg","licences/Images-Apache.txt"]
+    push($files,entry($source,$path,"Apache-2.0"))
+  end
+  $v2={schema:"mixos.static-assets.v2",set_id:"v2",fonts:{sans:"fonts/Sans.ttf"},font_families:{sans:"Noto Sans"},
+    files:$files,web_css:"/* exact fixture stylesheet */\n",icon_default:{family:"Noto Sans",style:"rounded",weight:400},
+    icon_catalogues:[{family:"Noto Sans",style:"rounded",font:"fonts/Sans.ttf",codepoints:"icons/Rounded.codepoints",face_index:0},
+      {family:"Noto Sans",style:"outlined",font:"fonts/Sans.ttf",codepoints:"icons/Outlined.codepoints"}],
+    icon_assets:[{name:"picture",style:"rounded",path:"icons/picture.png",symbolic:false},
+      {name:"folder",style:"outlined",path:"icons/folder.svg",symbolic:true}]}
+  manifest($root .. "/v2.conf.mix",$v2)
+  manifest($source .. "/manifest.conf.mix",$v2)
+  write_file($source .. "/fonts.css",$v2.web_css)
+  $installed=$root .. "/installed"
+  $r=invoke(["--manifest",$root .. "/v2.conf.mix","--root",$installed,"--source",$source])
+  check($r.ok,"Fresh v2 publication: " .. $r.stdout)
+  check(trim(run_argv_must(["readlink",$installed .. "/current"])) == "sets/v2","Wrong fresh activation")
+  $before=stat($installed .. "/sets/v2/manifest.conf.mix")
+  $r=invoke(["--manifest",$root .. "/v2.conf.mix","--root",$installed,"--source",$source])
+  check($r.ok,"Idempotent v2 reuse: " .. $r.stdout)
+  check(stat($installed .. "/sets/v2/manifest.conf.mix").ino == $before.ino,"Reuse replaced immutable set")
+  check(invoke(["--manifest",$root .. "/v2.conf.mix","--root",$installed,"--verify"]).ok,"Installed v2 verification")
+  for $file in $files
+    check(hash_file($installed .. "/sets/v2/" .. $file.path,"blake3") == $file.blake3,"Published bytes/licence differ")
+  end
+  for $label in ["missing-default","unknown","unknown-default","null-assets","null-families","wrong-default","weight-zero","fractional-weight",
+    "face-limit","null-face","duplicate-catalogue","unlocked-catalogue","duplicate-image","null-symbolic","unlocked-image","style-escape",
+    "family-control","path-escape","duplicate-path","bad-hash","bad-licence","file-budget","total-budget","catalogue-budget",
+    "catalogue-count","asset-count","file-count","role-count","manifest-budget","bad-pin","bad-url"]
+    $bad=json_parse(json_encode($v2))
+    if $label == "missing-default" then $bad=delete($bad,"icon_default")
+    elif $label == "unknown" then $bad.extra=true
+    elif $label == "unknown-default" then $bad.icon_default.extra=true
+    elif $label == "null-assets" then $bad.icon_assets=nil
+    elif $label == "null-families" then $bad.font_families=nil
+    elif $label == "wrong-default" then $bad.icon_default.style="absent"
+    elif $label == "weight-zero" then $bad.icon_default.weight=0
+    elif $label == "fractional-weight" then $bad.icon_default.weight=400.5
+    elif $label == "face-limit" then $bad.icon_catalogues[0].face_index=65536
+    elif $label == "null-face" then $bad.icon_catalogues[0].face_index=nil
+    elif $label == "duplicate-catalogue" then $bad.icon_catalogues=concat($bad.icon_catalogues,[$bad.icon_catalogues[0]])
+    elif $label == "unlocked-catalogue" then $bad.icon_catalogues[0].codepoints="icons/missing.codepoints"
+    elif $label == "duplicate-image" then $bad.icon_assets=concat($bad.icon_assets,[$bad.icon_assets[0]])
+    elif $label == "null-symbolic" then $bad.icon_assets[0].symbolic=nil
+    elif $label == "unlocked-image" then $bad.icon_assets[0].path="icons/missing.png"
+    elif $label == "style-escape" then $bad.icon_assets[0].style="../bad"
+    elif $label == "family-control" then $bad.icon_default.family="bad\nfamily"
+    elif $label == "path-escape" then $bad.files[0].path="fonts/../outside.ttf"
+    elif $label == "duplicate-path" then $bad.files=concat($bad.files,[$bad.files[0]])
+    elif $label == "bad-hash" then $bad.files[0].blake3="bad"
+    elif $label == "bad-licence" then $bad.files[0].licence="unknown"
+    elif $label == "file-budget" then $bad.files[0].bytes=268435457
+    elif $label == "total-budget" then $bad.files[0].bytes=268435456; $bad.files[5].bytes=268435456; $bad.files[6].bytes=268435456
+    elif $label == "catalogue-budget" then $bad.files[2].bytes=1048577
+    elif $label == "catalogue-count" then
+      $bad.icon_catalogues=[]
+      for $index=1 to 33
+        $row=merge($v2.icon_catalogues[0],{style:"style-" .. to_string($index)})
+        $bad.icon_catalogues=concat($bad.icon_catalogues,[$row])
+      end
+    elif $label == "asset-count" then
+      $bad.icon_assets=[]
+      for $index=1 to 4097
+        $row=merge($v2.icon_assets[0],{name:"image-" .. to_string($index)})
+        $bad.icon_assets=concat($bad.icon_assets,[$row])
+      end
+    elif $label == "file-count" then
+      $bad.files=[]
+      for $index=1 to 257
+        $bad.files=concat($bad.files,[merge($files[0],{path:"fonts/font-" .. to_string($index) .. ".ttf"})])
+      end
+    elif $label == "role-count" then
+      $bad.fonts={}
+      for $index=1 to 33
+        $bad.fonts["role-" .. to_string($index)]="fonts/Sans.ttf"
+      end
+    elif $label == "manifest-budget" then
+      $large="x"
+      for $index=1 to 19
+        $large=$large .. $large
+      end
+      $bad.web_css=$large
+    elif $label == "bad-pin" then $bad.files[0].revision="unversioned"
+    elif $label == "bad-url" then $bad.files[0].url="file:///outside"
+    end
+    refusal($installed,$label,$bad)
+  end
+  -- An otherwise valid same-ID replacement may not overwrite the old set.
+  $replacement=json_parse(json_encode($v2))
+  $replacement.web_css="/* changed immutable identity */"
+  manifest($root .. "/replacement.conf.mix",$replacement)
+  check(not invoke(["--manifest",$root .. "/replacement.conf.mix","--root",$installed]).ok,"Same-ID replacement accepted")
+  check(read_file($installed .. "/sets/v2/fonts.css") == $v2.web_css,"Failed replacement changed bytes")
+  -- Verified metadata alone cannot hide bad bytes, invalid codepoints or extras.
+  for $label in ["tampered","incomplete","symlink","extra","invalid-catalogue","invalid-scalar"]
+    $bundle=$root .. "/bundle-" .. $label
+    copy_tree($source,$bundle)
+    $value=json_parse(json_encode($v2))
+    $value.set_id="bad-" .. $label
+    if $label == "tampered" then write_file($bundle .. "/icons/folder.svg","wrong")
+    elif $label == "incomplete" then remove($bundle .. "/icons/picture.png")
+    elif $label == "symlink" then remove($bundle .. "/icons/picture.png"); symlink($source .. "/icons/picture.png",$bundle .. "/icons/picture.png")
+    elif $label == "extra" then write_file($bundle .. "/icons/unlocked.txt","unlocked")
+    elif $label == "invalid-catalogue" then
+      write_file($bundle .. "/icons/Outlined.codepoints","home 41\nhome 42\n")
+      $value.files[3]=entry($bundle,"icons/Outlined.codepoints","OFL-1.1")
+    elif $label == "invalid-scalar" then
+      write_file($bundle .. "/icons/Outlined.codepoints","home D800\n")
+      $value.files[3]=entry($bundle,"icons/Outlined.codepoints","OFL-1.1")
+    end
+    manifest($bundle .. "/manifest.conf.mix",$value)
+    $lock=$root .. "/source-" .. $label .. ".conf.mix"
+    manifest($lock,$value)
+    $r=invoke(["--manifest",$lock,"--root",$installed,"--source",$bundle])
+    check(not $r.ok,"Invalid source published: " .. $label)
+    check(not exists($installed .. "/sets/" .. $value.set_id),"Invalid source retained a published set")
+    check(trim(run_argv_must(["readlink",$installed .. "/current"])) == "sets/v2","Failed source changed activation")
+  end
+  symlink($installed,$root .. "/root-link")
+  check(not invoke(["--manifest",$root .. "/v2.conf.mix","--root",$root .. "/root-link","--verify"]).ok,"Symlink destination accepted")
+  symlink($source,$root .. "/source-link")
+  check(not invoke(["--manifest",$root .. "/v2.conf.mix","--root",$installed,"--source",$root .. "/source-link"]).ok,"Symlink source accepted")
+  -- The legacy package shape and derived catalogue keep working unchanged.
+  $v1={schema:"mixos.static-assets.v1",set_id:"v1",fonts:{sans:"fonts/Sans.ttf",serif:"fonts/Sans.ttf",mono:"fonts/Sans.ttf",icons:"fonts/Sans.ttf",emoji:"fonts/Sans.ttf"},
+    files:$files,web_css:$v2.web_css}
+  manifest($source .. "/manifest.conf.mix",$v1)
+  manifest($root .. "/v1.conf.mix",$v1)
+  check(invoke(["--manifest",$root .. "/v1.conf.mix","--root",$installed,"--source",$source]).ok,"Legacy fresh publication")
+  check(invoke(["--manifest",$root .. "/v1.conf.mix","--root",$installed,"--verify"]).ok,"Legacy verification")
+  check(trim(run_argv_must(["readlink",$installed .. "/current"])) == "sets/v1","Legacy activation")
+  print("PASS assets installer: v1/v2 offline publication, immutable reuse, metadata/bytes/catalogue/budget/path refusals and preserved activation")
+finally
+  remove_dir($root)
+end

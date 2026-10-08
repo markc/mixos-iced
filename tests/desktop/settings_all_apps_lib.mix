@@ -1,0 +1,54 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Pure canonical owner/resource checks for the simultaneous native gate.
+$h=require("settings_host_lib.mix")
+fn check($condition,$message)
+  if not $condition then raise("ALL_APPS",$message) end
+end
+fn canonical($description,$owner,$snapshot,$binding,$manifest,$digest)
+  check($description.describe_contract == "application.describe.v1" and
+    $description.pid == $owner.pid and $description.service == $owner.context.service and
+    $description.transport == "native" and $description.version == $owner.version,
+    "Wrong actual " .. $owner.name .. " description owner")
+  if $owner.name == "quoin" then
+    check($description.schema == "quoin.v1" and $description.embedded and $description.app_id == nil,"Wrong embedded Quoin owner")
+  else
+    check($description.app_id == "dev.mixos." .. $owner.name,"Wrong canonical app ID")
+  end
+  $s=$description.settings
+  check($s != nil and $s.kind == "current" and $s.confirmed and
+    $s.context == $owner.settings_context and deep_eq($s.binding,$binding) and
+    deep_eq($s.current,$h.identity($snapshot)) and deep_eq($s.applied,$h.identity($snapshot)),
+    "Wrong canonical current/applied identity: " .. $owner.name)
+  check($description.preparation.current and $description.preparation.applied != nil and
+    $description.preparation.fault == nil,"Resources not installed: " .. $owner.name)
+  $resources=$description.resources
+  check($resources != nil and $resources.set_id == $manifest.set_id and
+    $resources.manifest_blake3 == $digest and len($resources.text) > 0,
+    "Missing exact complete-core manifest: " .. $owner.name)
+  for each $text in $resources.text
+    check(len(filter($manifest.files,fn($file)=$file.blake3 == $text.source_blake3)) == 1,
+      "Text source not locked to complete core: " .. $owner.name .. "/" .. $text.record)
+  end
+  return $description
+end
+fn current($context,$pid,$snapshot,$binding,$settings_context,$budget)
+  $f=require("settings_fixture_lib.mix")
+  $deadline=time()+$budget
+  $last=nil
+  while time() < $deadline
+    check(process_alive($pid),"Actual owner exited while observing " .. $context.service)
+    $reply=$f.call($context,"app.describe",{})
+    if $reply.rc == 0 then
+      $last=$reply.result
+      check($last.pid == $pid and $last.service == $context.service,"RPC reached a different owner")
+      $s=$last.settings
+      if ($s != nil and $s.kind == "current" and $s.confirmed and $s.context == $settings_context and
+        deep_eq($s.binding,$binding) and deep_eq($s.current,$h.identity($snapshot)) and
+        deep_eq($s.applied,$h.identity($snapshot)) and $last.preparation.current and
+        $last.preparation.applied != nil and $last.preparation.fault == nil) then return $last end
+    end
+    sleep(0.05)
+  end
+  raise("ALL_APPS_CURRENT","Shared authority did not settle: " .. json_encode($last))
+end

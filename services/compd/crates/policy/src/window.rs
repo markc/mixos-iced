@@ -75,7 +75,8 @@ pub struct WindowFacts {
     pub requested_fullscreen: bool,
     pub committed_maximized: bool,
     pub committed_fullscreen: bool,
-    /// A window-state configure awaits its ack.
+    /// Requested maximise or fullscreen differs from client-committed state.
+    /// An xdg ACK alone does not clear this: the acknowledged state must commit.
     pub configure_pending: bool,
     /// The client's size hints (0 = unset).
     pub min_size: (i32, i32),
@@ -128,8 +129,14 @@ pub fn set_state<H: Clone + Eq + Hash>(
         ),
         None => None,
     };
-    if !matches!(record.role(), SurfaceRole::Toplevel | SurfaceRole::X11 { .. }) {
-        return Err(ControlReply::refused("unsupported_state", json!({"id": id})));
+    if !matches!(
+        record.role(),
+        SurfaceRole::Toplevel | SurfaceRole::X11 { .. }
+    ) {
+        return Err(ControlReply::refused(
+            "unsupported_state",
+            json!({"id": id}),
+        ));
     }
     let id = record.id();
     let mut effects = vec![Effect::MarkDirty {
@@ -137,14 +144,21 @@ pub fn set_state<H: Clone + Eq + Hash>(
         cause: "comp.window",
     }];
     if state == WindowState::Fullscreen && (output.is_some() || !enabled) {
-        effects.push(Effect::SetFullscreenOutput { id, output: selected });
+        effects.push(Effect::SetFullscreenOutput {
+            id,
+            output: selected,
+        });
     }
     effects.push(Effect::RequestWindowState { id, state, enabled });
     Ok(effects)
 }
 
 /// The state verbs' success body, read after the configure went out.
-pub fn state_reply<H>(record: &SurfaceRecord<H>, changed: bool, facts: &WindowFacts) -> ControlReply {
+pub fn state_reply<H>(
+    record: &SurfaceRecord<H>,
+    changed: bool,
+    facts: &WindowFacts,
+) -> ControlReply {
     ControlReply::Body(merged(
         window_reply(record, changed).wire_json(),
         json!({
@@ -253,7 +267,8 @@ pub fn focus<H: Clone + Eq + Hash>(
         }
     }
     let on_screen = switched
-        || (facts.visible && workspaces::on_workspace(record, workspace_state.current(default_output)));
+        || (facts.visible
+            && workspaces::on_workspace(record, workspace_state.current(default_output)));
     let reason = if scene.exclusive_layer {
         Some("exclusive_layer")
     } else if record.minimized() {
@@ -281,7 +296,12 @@ pub fn focus<H: Clone + Eq + Hash>(
 
 /// The focus verb's body: `focused` as read back; a `reason` when a gate
 /// held, else `refused` when the focus did not take.
-pub fn focus_reply(id: u64, generation: u64, focused: bool, reason: Option<&'static str>) -> ControlReply {
+pub fn focus_reply(
+    id: u64,
+    generation: u64,
+    focused: bool,
+    reason: Option<&'static str>,
+) -> ControlReply {
     let mut body = json!({"id": id, "generation": generation, "focused": focused});
     if let Some(reason) = reason.or((!focused).then_some("refused")) {
         body["reason"] = json!(reason);
@@ -434,7 +454,10 @@ pub fn kill_reply(
 
 /// `comp.window.wait` at admission: an id never handed out would read as
 /// `gone` at once, hiding a typo.
-pub fn start_wait<H: Clone + Eq + Hash>(registry: &Registry<H>, spec: &WaitSpec) -> Result<(), ControlReply> {
+pub fn start_wait<H: Clone + Eq + Hash>(
+    registry: &Registry<H>,
+    spec: &WaitSpec,
+) -> Result<(), ControlReply> {
     match spec.window.id {
         Some(id) if !registry.issued(id) => Err(ControlReply::WindowTarget {
             id,
@@ -454,11 +477,10 @@ pub fn names_match<H>(filter: &WindowMatch, record: &SurfaceRecord<H>) -> bool {
             .title
             .as_deref()
             .is_none_or(|title| record.title().map(|value| &**value) == Some(title))
-        && filter.title_contains.as_deref().is_none_or(|needle| {
-            record
-                .title()
-                .is_some_and(|title| title.contains(needle))
-        })
+        && filter
+            .title_contains
+            .as_deref()
+            .is_none_or(|needle| record.title().is_some_and(|title| title.contains(needle)))
 }
 
 /// How a wait resolved.
@@ -481,7 +503,8 @@ pub fn wait_outcome<H: Clone + Eq + Hash>(
     facts: impl Fn(SurfaceId) -> WindowFacts,
 ) -> Option<WaitResolution> {
     if session_lock
-        && !(spec.window.id.is_some() && matches!(spec.until, WaitUntil::Gone | WaitUntil::Unmapped))
+        && !(spec.window.id.is_some()
+            && matches!(spec.until, WaitUntil::Gone | WaitUntil::Unmapped))
     {
         return None;
     }
@@ -609,9 +632,16 @@ pub fn place<H: Clone + Eq + Hash>(
     }
     let origin = facts.window_origin;
     let current = facts.geometry_size;
-    let (key, row) = place_output(outputs, spec.output.as_deref(), window_output, default_output)?;
+    let (key, row) = place_output(
+        outputs,
+        spec.output.as_deref(),
+        window_output,
+        default_output,
+    )?;
     let (old_x, old_y) = place_output(outputs, None, window_output, default_output)
-        .map_or((row.x as f32, row.y as f32), |(_, old)| (old.x as f32, old.y as f32));
+        .map_or((row.x as f32, row.y as f32), |(_, old)| {
+            (old.x as f32, old.y as f32)
+        });
     let target = (
         row.x as f32 + spec.x.map_or(origin.0 - old_x, |x| x as f32),
         row.y as f32 + spec.y.map_or(origin.1 - old_y, |y| y as f32),
@@ -736,7 +766,10 @@ pub fn source_target(
     current: Option<u64>,
 ) -> Result<u64, ControlReply> {
     let Some(current) = current else {
-        return Err(ControlReply::refused("unknown_source", json!({"source": id})));
+        return Err(ControlReply::refused(
+            "unknown_source",
+            json!({"source": id}),
+        ));
     };
     if let Some(requested) = registration
         && requested != current

@@ -1,10 +1,53 @@
 #!/opt/mixos/bin/mix
--- version: 0.1.0
+-- version: 0.2.0
 -- Install a pinned, complete static asset set. No daemon or runtime downloads.
 -- Default system root: $MIXOS_SHARE/assets, otherwise /opt/mixos/share/assets.
 -- Use --user for XDG data, --root for a sandbox, --list or --verify to inspect.
 
+fn unknown_fields($value,$allowed,$label)
+  for $key in keys($value)
+    if not contains($allowed,$key) then raise("ASSET_MANIFEST","Unknown " .. $label .. " field: " .. $key) end
+  end
+end
+fn family_valid($family)
+  return (type($family) == "string" and trim($family) != "" and bytes_len(string_to_bytes($family)) <= 128 and
+    not re_match($family,"[\\x{0}-\\x{1f}\\x{7f}-\\x{9f}]"))
+end
+fn regular_directories($path)
+  if not starts_with($path,"/") then raise("ASSET_ROOT","Expected absolute directory") end
+  $current=""
+  for $part in split($path,"/")
+    if $part != "" then
+      if $part == "." or $part == ".." then raise("ASSET_ROOT","Dot directory component") end
+      $current=$current .. "/" .. $part
+      if exists($current,{follow_symlinks:false}) then
+        $info=stat($current,{follow_symlinks:false})
+        if not $info.is_dir or $info.is_symlink then raise("ASSET_ROOT","Directory component is not regular: " .. $current) end
+      end
+    end
+  end
+end
+fn check_tree($directory,$relative,$allowed)
+  for $name in ls($directory)
+    $relative_path=if $relative == "" then $name else $relative .. "/" .. $name end
+    $path=$directory .. "/" .. $name
+    $info=stat($path,{follow_symlinks:false})
+    if $info.is_symlink then raise("ASSET_SET","Symlink in package: " .. $relative_path) end
+    if $info.is_dir then
+      if not any($allowed,fn($entry)=starts_with($entry,$relative_path .. "/")) then raise("ASSET_SET","Unlocked directory: " .. $relative_path) end
+      check_tree($path,$relative_path,$allowed)
+    elif not $info.is_file or not contains($allowed,$relative_path) then
+      raise("ASSET_SET","Unlocked component: " .. $relative_path)
+    end
+  end
+end
+fn check_catalogues($directory,$catalogues)
+  for $catalogue in $catalogues
+    check_catalogue($directory,$catalogue)
+  end
+end
 fn check_file($directory, $file)
+  regular_directories(dirname($directory .. "/" .. $file.path))
   $path = $directory .. "/" .. $file.path
   if not exists($path, {follow_symlinks: false}) then
     raise("ASSET_MISSING", $path)
@@ -19,6 +62,7 @@ fn check_file($directory, $file)
 end
 
 fn check_set($directory, $manifest, $text)
+  regular_directories($directory)
   if not is_dir($directory) or stat($directory, {follow_symlinks: false}).is_symlink then
     raise("ASSET_SET", "Expected a regular set directory: " .. $directory)
   end
@@ -39,6 +83,11 @@ fn check_set($directory, $manifest, $text)
   for $file in $manifest.files
     check_file($directory, $file)
   end
+  $allowed=["manifest.conf.mix","fonts.css"]
+  for $file in $manifest.files
+    push($allowed,$file.path)
+  end
+  check_tree($directory,"",$allowed)
   if not is_file($directory .. "/fonts.css") or read_file($directory .. "/fonts.css") != $manifest.web_css then
     raise("ASSET_CSS", "Missing or changed stylesheet: " .. $directory)
   end
@@ -79,41 +128,48 @@ fn check_catalogue($directory, $catalogue)
   if len($names) == 0 then raise("ASSET_CATALOGUE", "Empty icon catalogue") end
 end
 
-$g = getopt(args(), {help: {short: "h"}, list: {}, verify: {}, user: {}, system: {}, root: {arg: true}, manifest: {arg: true}})
+$g = getopt(args(), {help: {short: "h"}, list: {}, verify: {}, user: {}, system: {}, root: {arg: true}, manifest: {arg: true}, source: {arg: true}})
 if len($g.errors) != 0 or len($g.rest) != 0 then
   raise("ASSET_ARGS", "Unexpected arguments: " .. join(concat($g.errors, $g.rest), "; "))
 end
 $opts = $g.opts
 if $opts.help then
-  print("usage: mix share/assets/install.mix [--system | --user | --root /absolute/assets] [--list | --verify] [--manifest /path/lock.conf.mix]")
+  print("usage: mix share/assets/install.mix [--system | --user | --root /absolute/assets] [--list | --verify] [--manifest /path/lock.conf.mix] [--source /absolute/bundle]")
   print("Default: system installation; no automatic sudo. --list makes no filesystem changes. --verify makes no network requests.")
   exit(0)
 end
 if ($opts.user and $opts.system) or ($opts.root != nil and ($opts.user or $opts.system)) or ($opts.list and $opts.verify) then
   raise("ASSET_ARGS", "Choose one destination and one inspection mode")
 end
+if $opts.source != nil and ($opts.list or $opts.verify) then raise("ASSET_ARGS","--source is for installation") end
 $manifest_path = if $opts.manifest != nil then $opts.manifest else dirname(realpath($0)) .. "/core.conf.mix" end
 if stat($manifest_path).size > 262144 then raise("ASSET_MANIFEST", "Manifest exceeds the native reader limit") end
 $text = read_file($manifest_path)
 $manifest = validate(load_data($manifest_path), {
-  schema: {enum: ["mixos.static-assets.v1"]},
+  schema: {enum: ["mixos.static-assets.v1","mixos.static-assets.v2"]},
   set_id: {type: "string", nonblank: true},
-  fonts: {type: "map", schema: {sans: {type: "string"}, serif: {type: "string"}, mono: {type: "string"}, icons: {type: "string"}, emoji: {type: "string"}}},
+  fonts: {type: "map"},
   font_families: {required: false, type: "map"},
+  icon_default: {required: false, type: "map"},
+  icon_catalogues: {required: false, type: "list"},
+  icon_assets: {required: false, type: "list"},
   web_css: {type: "string", nonblank: true},
   files: {type: "list", min_length: 1, max_length: 256, items: {type: "map", schema: {
     path: {type: "string"}, url: {type: "string"}, revision: {type: "string"}, upstream: {type: "string"},
-    licence: {enum: ["OFL-1.1", "Apache-2.0"]}, bytes: {type: "integer", min: 1, max: 25000000},
+    licence: {enum: ["OFL-1.1", "Apache-2.0"]}, bytes: {type: "integer", min: 1, max: 268435456},
     sha256: {type: "string"}, blake3: {type: "string"}
   }}}
 })
-for $key in keys($manifest)
-  if not contains(["schema", "set_id", "fonts", "font_families", "files", "web_css"], $key) then
-    raise("ASSET_MANIFEST", "Unknown manifest field: " .. $key)
-  end
+$v2=$manifest.schema == "mixos.static-assets.v2"
+$top=["schema","set_id","fonts","font_families","files","web_css"]
+if $v2 then
+  $top=concat($top,["icon_default","icon_catalogues","icon_assets"])
+else
+  validate($manifest.fonts,{sans:{type:"string"},serif:{type:"string"},mono:{type:"string"},icons:{type:"string"},emoji:{type:"string"}})
 end
-if len($manifest.fonts) > 32 then raise("ASSET_ROLE", "Too many font roles") end
-if not re_match($manifest.set_id, "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$") then
+unknown_fields($manifest,$top,"manifest")
+if len($manifest.fonts) == 0 or len($manifest.fonts) > 32 then raise("ASSET_ROLE", "Invalid font role count") end
+if not re_match($manifest.set_id,if $v2 then "^[a-zA-Z0-9_-]{1,96}$" else "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$" end) then
   raise("ASSET_ID", "Invalid set ID")
 end
 $paths = []
@@ -124,9 +180,14 @@ for $file in $manifest.files
       raise("ASSET_MANIFEST", "Unknown file field: " .. $key)
     end
   end
-  if not re_match($file.path, "^(fonts|icons|emoji|web|licences)/[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$") or contains($paths, $file.path) then
+  $safe=if $v2 then bytes_len(string_to_bytes($file.path)) <= 256 and re_match($file.path,"^[a-zA-Z0-9._/-]+$") else re_match($file.path,"^(fonts|icons|emoji|web|licences)/[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$") end
+  for $part in split($file.path,"/")
+    if $part == "" or $part == "." or $part == ".." or len($part) > 96 then $safe=false end
+  end
+  if not $safe or contains(["manifest.conf.mix","fonts.css"],$file.path) or contains($paths, $file.path) then
     raise("ASSET_PATH", "Unsafe or duplicate path: " .. $file.path)
   end
+  if not $v2 and $file.bytes > 25000000 then raise("ASSET_BUDGET","Legacy file exceeds 25 MB") end
   if not re_match($file.sha256, "^[0-9a-f]{64}$") or not re_match($file.blake3, "^[0-9a-f]{64}$") or not re_match($file.revision, "^[0-9a-f]{40}$") then
     raise("ASSET_PIN", "Missing or invalid pin: " .. $file.path)
   end
@@ -135,6 +196,7 @@ for $file in $manifest.files
   end
   push($paths, $file.path)
   $bytes = $bytes + $file.bytes
+  if $bytes > 536870912 then raise("ASSET_BUDGET","Package exceeds 512 MiB") end
 end
 for $role in keys($manifest.fonts)
   $font_path = $manifest.fonts[$role]
@@ -145,8 +207,51 @@ for $role in keys($manifest.fonts)
     raise("ASSET_ROLE", "Native role must name a font: " .. $role)
   end
 end
-$catalogue = dirname($manifest.fonts.icons) .. "/" .. path_parts($manifest.fonts.icons).stem .. ".codepoints"
-if not contains($paths, $catalogue) then raise("ASSET_CATALOGUE", "Matching icon codepoints must be locked") end
+$catalogues=[]
+if $v2 then
+  $default=validate($manifest.icon_default,{family:{type:"string"},style:{type:"string"},weight:{type:"integer",min:1,max:1000}})
+  unknown_fields($default,["family","style","weight"],"icon_default")
+  if not family_valid($default.family) or not re_match($default.style,"^[a-zA-Z0-9_-]{1,96}$") then raise("ASSET_ICON","Invalid icon default") end
+  $rows=validate({rows:$manifest.icon_catalogues},{rows:{type:"list",min_length:1,max_length:32,items:{type:"map",schema:{
+    family:{type:"string"},style:{type:"string"},font:{type:"string"},codepoints:{type:"string"},
+    face_index:{required:false,type:"integer",min:0,max:65535}}}}}).rows
+  $pairs=[]
+  $found=false
+  for $row in $rows
+    unknown_fields($row,["family","style","font","codepoints","face_index"],"icon catalogue")
+    if has_key($row,"face_index") and $row.face_index == nil then raise("ASSET_ICON","Null face index") end
+    $pair=json_encode([$row.family,$row.style])
+    if not family_valid($row.family) or not re_match($row.style,"^[a-zA-Z0-9_-]{1,96}$") or contains($pairs,$pair) then raise("ASSET_ICON","Invalid/duplicate icon catalogue") end
+    push($pairs,$pair)
+    if (not contains($paths,$row.font) or (not ends_with($row.font,".ttf") and not ends_with($row.font,".otf")) or
+      not contains($paths,$row.codepoints) or not ends_with($row.codepoints,".codepoints")) then raise("ASSET_ICON","Unlocked font/catalogue") end
+    push($catalogues,$row.codepoints)
+    if $row.family == $default.family and $row.style == $default.style then $found=true end
+  end
+  if not $found then raise("ASSET_ICON","Default names no declared catalogue") end
+  if $manifest.icon_assets != nil then
+    $images=validate({images:$manifest.icon_assets},{images:{type:"list",max_length:4096,items:{type:"map",schema:{
+      name:{type:"string"},style:{type:"string"},path:{type:"string"},symbolic:{required:false,type:"bool"}}}}}).images
+    $names=[]
+    for $image in $images
+      unknown_fields($image,["name","style","path","symbolic"],"icon asset")
+      if has_key($image,"symbolic") and $image.symbolic == nil then raise("ASSET_ICON","Null symbolic flag") end
+      $pair=json_encode([$image.name,$image.style])
+      if (not re_match($image.name,"^[a-zA-Z0-9_-]{1,96}$") or not re_match($image.style,"^[a-zA-Z0-9_-]{1,96}$") or
+        contains($names,$pair) or not contains($paths,$image.path)) then raise("ASSET_ICON","Invalid/duplicate/unlocked icon asset") end
+      push($names,$pair)
+    end
+  end
+  if has_key($manifest,"icon_assets") and $manifest.icon_assets == nil then raise("ASSET_ICON","Null icon assets") end
+  if has_key($manifest,"font_families") and $manifest.font_families == nil then raise("ASSET_FAMILY","Null families") end
+else
+  $catalogue = dirname($manifest.fonts.icons) .. "/" .. path_parts($manifest.fonts.icons).stem .. ".codepoints"
+  if not contains($paths,$catalogue) then raise("ASSET_CATALOGUE","Matching icon codepoints must be locked") end
+  push($catalogues,$catalogue)
+end
+for $file in $manifest.files
+  if contains($catalogues,$file.path) and $file.bytes > 1048576 then raise("ASSET_CATALOGUE","Declared catalogue exceeds 1 MiB") end
+end
 if $manifest.font_families != nil then
   for $role in keys($manifest.font_families)
     $family = $manifest.font_families[$role]
@@ -184,10 +289,16 @@ end
 $set_path = $asset_root .. "/sets/" .. $manifest.set_id
 if $opts.verify then
   check_set($set_path, $manifest, $text)
-  check_catalogue($set_path, $catalogue)
+  check_catalogues($set_path, $catalogues)
   print("Verified " .. $set_path)
   exit(0)
 end
+if $opts.source != nil then
+  regular_directories($opts.source)
+  check_set($opts.source,$manifest,$text)
+  check_catalogues($opts.source,$catalogues)
+end
+regular_directories($asset_root)
 -- The installed prefix parent must already exist and be traversable. Create
 -- only its missing share directory; never chmod arbitrary existing ancestors.
 if $share_root != nil and not exists($share_root, {follow_symlinks: false}) then
@@ -214,7 +325,7 @@ try
   if exists($set_path, {follow_symlinks: false}) then
     if stat($set_path, {follow_symlinks: false}).is_symlink then raise("ASSET_SET", "Set directory must not be a symlink") end
     check_set($set_path, $manifest, $text)
-    check_catalogue($set_path, $catalogue)
+    check_catalogues($set_path, $catalogues)
     set_permissions($set_path, $manifest)
     print("Reusing verified set " .. $manifest.set_id)
   else
@@ -225,10 +336,15 @@ try
     for $file in $manifest.files
       $destination = $stage .. "/" .. $file.path
       mkdir(dirname($destination))
-      print("Downloading " .. $file.path)
-      $response = http_get_file($file.url, $destination, {expect_blake3: $file.blake3, max_bytes: $file.bytes, deadline: 180})
-      if not $response.published or $response.status != 200 then
-        raise("ASSET_DOWNLOAD", $file.path .. ": " .. json_encode($response))
+      if $opts.source != nil then
+        check_file($opts.source,$file)
+        copy($opts.source .. "/" .. $file.path,$destination)
+      else
+        print("Downloading " .. $file.path)
+        $response = http_get_file($file.url, $destination, {expect_blake3: $file.blake3, max_bytes: $file.bytes, deadline: 180})
+        if not $response.published or $response.status != 200 then
+          raise("ASSET_DOWNLOAD", $file.path .. ": " .. json_encode($response))
+        end
       end
       check_file($stage, $file)
       chmod($destination, 0o644)
@@ -237,7 +353,7 @@ try
     write_new($stage .. "/manifest.conf.mix", $text, 0o644)
     write_new($stage .. "/fonts.css", $manifest.web_css, 0o644)
     check_set($stage, $manifest, $text)
-    check_catalogue($stage, $catalogue)
+    check_catalogues($stage, $catalogues)
     set_permissions($stage, $manifest)
     rename($stage, $set_path)
     $stage = nil

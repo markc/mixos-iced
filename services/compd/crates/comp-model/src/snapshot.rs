@@ -685,7 +685,14 @@ flat_snapshot!(
     explicit_sync_healthy,
 );
 #[cfg(feature = "xwayland")]
-flat_snapshot!(XwaylandSnapshot, enabled, persist_path, display, state, failures);
+flat_snapshot!(
+    XwaylandSnapshot,
+    enabled,
+    persist_path,
+    display,
+    state,
+    failures
+);
 flat_snapshot!(DmabufLedgerSnapshot, accepted, failed, failures);
 flat_snapshot!(OutputWorkspaceSnapshot, current);
 
@@ -845,7 +852,10 @@ impl InputSnapshot {
     fn select(&self, path: &[&str]) -> Option<Value> {
         match path {
             [] => serialise_selected(self),
-            ["seats", tail @ ..] => self.seats.as_ref().and_then(|seats| select_serialised(seats, tail)),
+            ["seats", tail @ ..] => self
+                .seats
+                .as_ref()
+                .and_then(|seats| select_serialised(seats, tail)),
             ["last_origin"] => serialise_selected(&self.last_origin),
             ["corners", tail @ ..] => self.corners.select(tail),
             ["host"] => self.host.as_ref().and_then(serialise_selected),
@@ -860,7 +870,10 @@ impl InputSnapshot {
     fn node_kind(&self, path: &[&str]) -> Option<SnapshotNodeKind> {
         match path {
             [] | ["corners"] => Some(SnapshotNodeKind::Object),
-            ["seats", tail @ ..] => self.seats.as_ref().and_then(|seats| serialised_node_kind(seats, tail)),
+            ["seats", tail @ ..] => self
+                .seats
+                .as_ref()
+                .and_then(|seats| serialised_node_kind(seats, tail)),
             ["last_origin"] => Some(SnapshotNodeKind::Leaf),
             ["corners", tail @ ..] => self.corners.node_kind(tail),
             ["host"] => self.host.map(|_| SnapshotNodeKind::Object),
@@ -1009,7 +1022,10 @@ pub fn presentation_flag_names(mask: u32) -> Vec<&'static str> {
 
 /// `outputs.<key>.presentation.*` from the output's stats row (none yet:
 /// zeroes counted from `epoch_us`).
-pub fn output_presentation(stats: Option<&OutputStats>, epoch_us: u64) -> OutputPresentationSnapshot {
+pub fn output_presentation(
+    stats: Option<&OutputStats>,
+    epoch_us: u64,
+) -> OutputPresentationSnapshot {
     let intervals = stats
         .map(|stats| stats.intervals_us.summary())
         .unwrap_or_default();
@@ -1168,19 +1184,83 @@ macro_rules! volatile {
 use PatternSegment::{Literal as L, OutputKey as O, SeatKey as K, SourceKey as C, SurfaceKey as S};
 
 pub static DESCRIPTORS: &[DescribeEntry] = &[
-    volatile!([L("input"), L("seats"), K, L("name")], String, "Advertised wl_seat name"),
-    volatile!([L("input"), L("seats"), K, L("keyboard_focus")], Object, "Keyboard focus identity and generation, or null"),
-    volatile!([L("input"), L("seats"), K, L("keyboard_focus"), L("id")], Number, "Keyboard focus surface id"),
-    volatile!([L("input"), L("seats"), K, L("keyboard_focus"), L("generation")], Number, "Keyboard focus surface generation"),
-    volatile!([L("input"), L("seats"), K, L("pointer_focus")], Object, "Pointer focus identity and generation, or null"),
-    volatile!([L("input"), L("seats"), K, L("pointer_focus"), L("id")], Number, "Pointer focus surface id"),
-    volatile!([L("input"), L("seats"), K, L("pointer_focus"), L("generation")], Number, "Pointer focus surface generation"),
-    volatile!([L("input"), L("seats"), K, L("pointer")], Object, "Output-local pointer position, or null when unknown or locked"),
-    volatile!([L("input"), L("seats"), K, L("pointer"), L("output")], String, "Raw protocol output name"),
-    volatile!([L("input"), L("seats"), K, L("pointer"), L("x")], Number, "Output-local logical pointer x"),
-    volatile!([L("input"), L("seats"), K, L("pointer"), L("y")], Number, "Output-local logical pointer y"),
-    volatile!([L("input"), L("seats"), K, L("last_input_us")], Number, "Last input CLOCK_MONOTONIC microseconds, or null before input"),
-    volatile!([L("input"), L("last_origin")], String, "human, agent, or null before input"),
+    volatile!(
+        [L("input"), L("seats"), K, L("name")],
+        String,
+        "Advertised wl_seat name"
+    ),
+    volatile!(
+        [L("input"), L("seats"), K, L("keyboard_focus")],
+        Object,
+        "Keyboard focus identity and generation, or null"
+    ),
+    volatile!(
+        [L("input"), L("seats"), K, L("keyboard_focus"), L("id")],
+        Number,
+        "Keyboard focus surface id"
+    ),
+    volatile!(
+        [
+            L("input"),
+            L("seats"),
+            K,
+            L("keyboard_focus"),
+            L("generation")
+        ],
+        Number,
+        "Keyboard focus surface generation"
+    ),
+    volatile!(
+        [L("input"), L("seats"), K, L("pointer_focus")],
+        Object,
+        "Pointer focus identity and generation, or null"
+    ),
+    volatile!(
+        [L("input"), L("seats"), K, L("pointer_focus"), L("id")],
+        Number,
+        "Pointer focus surface id"
+    ),
+    volatile!(
+        [
+            L("input"),
+            L("seats"),
+            K,
+            L("pointer_focus"),
+            L("generation")
+        ],
+        Number,
+        "Pointer focus surface generation"
+    ),
+    volatile!(
+        [L("input"), L("seats"), K, L("pointer")],
+        Object,
+        "Output-local pointer position, or null when unknown or locked"
+    ),
+    volatile!(
+        [L("input"), L("seats"), K, L("pointer"), L("output")],
+        String,
+        "Raw protocol output name"
+    ),
+    volatile!(
+        [L("input"), L("seats"), K, L("pointer"), L("x")],
+        Number,
+        "Output-local logical pointer x"
+    ),
+    volatile!(
+        [L("input"), L("seats"), K, L("pointer"), L("y")],
+        Number,
+        "Output-local logical pointer y"
+    ),
+    volatile!(
+        [L("input"), L("seats"), K, L("last_input_us")],
+        Number,
+        "Last input CLOCK_MONOTONIC microseconds, or null before input"
+    ),
+    volatile!(
+        [L("input"), L("last_origin")],
+        String,
+        "human, agent, or null before input"
+    ),
     descriptor!(
         &[L("surfaces"), S, L("occluded")],
         Bool,
@@ -2216,6 +2296,7 @@ pub fn dispatch_read_with_limit(
                         "version": snapshot.info.version,
                         "backend": snapshot.info.backend,
                         "engine": snapshot.info.engine,
+                        "instance": snapshot.info.instance,
                         "output_count": snapshot.outputs.len(),
                         "surface_count": snapshot.surfaces.len(),
                         "event_seq": snapshot.port.event_seq,
@@ -2513,4 +2594,3 @@ fn describe(snapshot: &CompSnapshot, path: &PropPath) -> Option<String> {
 #[cfg(test)]
 #[path = "snapshot_tests.rs"]
 mod tests;
-

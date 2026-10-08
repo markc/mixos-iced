@@ -17,7 +17,6 @@ use wayland_protocols::xdg::shell::client::{
 };
 use world::camera::transform::translate::{fit::window_fit, slot};
 use world::comp::usable::Reserved;
-use world::window::interface::data::data::WindowFullscreen;
 use world::window::interface::record::window::LoopWindow;
 
 fn window(h: &Harness, surface: &WlSurface) -> (SurfaceId, Window) {
@@ -312,6 +311,79 @@ fn only_the_owning_output_reconfigures_and_restore_survives_output_loss() {
 }
 
 #[test]
+fn native_fullscreen_uses_selected_output_and_restores_the_decided_rectangle() {
+    let mut h = Harness::new();
+    let secondary = output("secondary", (1280, 800));
+    h.wire.inner.space.state.map_output(&secondary, (1920, 0));
+    let (surface, xdg, top) = h.mapped_toplevel(640, 480);
+    let (id, window) = window(&h, &surface);
+    h.wire
+        .inner
+        .space
+        .state
+        .map_element(window.clone(), (32, 24), false);
+    slot::set_expected_size(&window, (800, 600).into());
+    h.wire
+        .inner
+        .comp
+        .fullscreen
+        .select(id, Some("secondary".into()));
+    h.client.state.hold_xdg_configures = true;
+    top.set_fullscreen(None);
+    h.roundtrip();
+    configured(&h, &top, (1280, 800), false);
+    assert_eq!(
+        h.wire.inner.space.state.element_location(&window),
+        Some((1920, 0).into())
+    );
+    assert_eq!(slot::decided_size(&window), Some((1280, 800).into()));
+    assert_eq!(
+        window.geometry().size,
+        Size::from((640, 480)),
+        "old client buffer is retained"
+    );
+    assert_eq!(
+        window.fullscreen().unwrap().restore_size,
+        Size::from((800, 600))
+    );
+    assert!(protocols::window::ident::ident::states(&window).fullscreen);
+    assert!(!protocols::window::ident::ident::committed_fullscreen(
+        &window
+    ));
+    xdg.ack_configure(serial(&h, &xdg));
+    h.roundtrip();
+    assert!(!protocols::window::ident::ident::committed_fullscreen(
+        &window
+    ));
+    h.client.attach(&surface, 1280, 800);
+    h.roundtrip();
+    assert!(protocols::window::ident::ident::committed_fullscreen(
+        &window
+    ));
+    top.unset_fullscreen();
+    h.roundtrip();
+    configured(&h, &top, (800, 600), false);
+    assert_eq!(
+        h.wire.inner.space.state.element_location(&window),
+        Some((32, 24).into())
+    );
+    assert_eq!(slot::decided_size(&window), Some((800, 600).into()));
+    assert!(protocols::window::ident::ident::committed_fullscreen(
+        &window
+    ));
+    xdg.ack_configure(serial(&h, &xdg));
+    h.roundtrip();
+    assert!(protocols::window::ident::ident::committed_fullscreen(
+        &window
+    ));
+    h.client.attach(&surface, 800, 600);
+    h.roundtrip();
+    assert!(!protocols::window::ident::ident::committed_fullscreen(
+        &window
+    ));
+}
+
+#[test]
 fn fullscreen_holds_geometry_until_exit_commit_then_uses_latest_work_area() {
     let mut h = Harness::new();
     let (surface, xdg, top) = h.mapped_toplevel(640, 480);
@@ -322,21 +394,22 @@ fn fullscreen_holds_geometry_until_exit_commit_then_uses_latest_work_area() {
     h.client.attach(&surface, 1920, 1080);
     h.roundtrip();
     let restore = h.comp().maximize_restore(id).unwrap();
-    window.set_fullscreen(Some(WindowFullscreen {
-        restore_loc: (0, 0).into(),
-        restore_size: (1920, 1080).into(),
-    }));
+    h.client.state.hold_xdg_configures = true;
+    top.set_fullscreen(None);
+    h.roundtrip();
+    assert!(
+        window.is_fullscreen(),
+        "native request reached production geometry"
+    );
+    assert!(protocols::window::ident::ident::states(&window).fullscreen);
+    assert!(!protocols::window::ident::ident::committed_fullscreen(
+        &window
+    ));
     bottom(&mut h, 40);
     assert!(
         !refresh(&mut h, id, &window).windows,
-        "compositor fullscreen record owns slot before protocol intent"
+        "compositor fullscreen record owns slot before client commit"
     );
-    // Stage the real protocol fullscreen ownership. Loop-owned restore data is
-    // separately fenced by the same production helper; no fake Loop is built.
-    shell::set_fullscreen(&window, true);
-    shell::send(&window);
-    h.client.state.hold_xdg_configures = true;
-    h.roundtrip();
     let before = count(&h, &top);
     bottom(&mut h, 80);
     assert!(
@@ -346,12 +419,23 @@ fn fullscreen_holds_geometry_until_exit_commit_then_uses_latest_work_area() {
     h.roundtrip();
     assert_eq!(count(&h, &top), before);
     xdg.ack_configure(serial(&h, &xdg));
+    h.roundtrip();
+    assert!(
+        !protocols::window::ident::ident::committed_fullscreen(&window),
+        "ACK alone does not commit fullscreen"
+    );
     h.client.attach(&surface, 1920, 1080);
     h.roundtrip();
-    shell::set_fullscreen(&window, false);
-    window.set_fullscreen(None);
-    shell::send(&window);
+    assert!(protocols::window::ident::ident::committed_fullscreen(
+        &window
+    ));
+    top.unset_fullscreen();
     h.roundtrip();
+    assert!(!window.is_fullscreen());
+    assert!(!protocols::window::ident::ident::states(&window).fullscreen);
+    assert!(protocols::window::ident::ident::committed_fullscreen(
+        &window
+    ));
     let before = count(&h, &top);
     bottom(&mut h, 160);
     assert!(
@@ -362,8 +446,16 @@ fn fullscreen_holds_geometry_until_exit_commit_then_uses_latest_work_area() {
     assert_eq!(count(&h, &top), before);
     assert_eq!(slot::decided_size(&window), Some((1920, 1080).into()));
     xdg.ack_configure(serial(&h, &xdg));
+    h.roundtrip();
+    assert!(
+        protocols::window::ident::ident::committed_fullscreen(&window),
+        "exit ACK alone retains committed ownership"
+    );
     h.client.attach(&surface, 1920, 1080);
     h.roundtrip();
+    assert!(!protocols::window::ident::ident::committed_fullscreen(
+        &window
+    ));
     assert!(
         refresh(&mut h, id, &window).windows,
         "unchanged usable map must still reconcile exit"

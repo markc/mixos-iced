@@ -4,16 +4,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="The initial native session profile builds compd with backend-all and without desktop-dbus. ABP/noded carries application requests, discovery, session grants…">
+    <meta name="description" content="share/assets/install.mix 0.2.0 publishes pinned font, icon, image and licence files into an immutable sets/&lt;set_id&gt; directory. It changes current only after…">
     <!-- Favicons from share/brand: the SVG follows the visitor's light/dark preference. -->
     <link rel="icon" href="/favicon.ico?v=c34fdc68c4" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/web/favicon.svg?v=51993ccf9f">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-light.png?v=b7dd291dfa" media="(prefers-color-scheme: light)">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-dark.png?v=e6873d12a3" media="(prefers-color-scheme: dark)">
     <link rel="apple-touch-icon" sizes="180x180" href="/web/brand/apple-touch-icon.png?v=d578c3d9bb">
-    <title>Native session without D-Bus — MixOS</title>
-    <link rel="canonical" href="https://mixos.dev/native-session/">
-    <link rel="alternate" type="text/markdown" href="/native-session.md" title="Markdown source">
+    <title>Installing immutable asset packages — MixOS</title>
+    <link rel="canonical" href="https://mixos.dev/assets/">
+    <link rel="alternate" type="text/markdown" href="/assets.md" title="Markdown source">
     <meta name="mixos-build" content="87a61ef09456">
     <link rel="preload" href="/web/fonts/icons.woff2?v=3a1086a40a" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="/web/fonts/sans.woff2?v=22f05185ef" as="font" type="font/woff2" crossorigin>
@@ -214,7 +214,7 @@
                 <div class="panel-title">On this page</div>
                 <div class="panel-content">
                     <nav id="toc-nav">
-                        <a href="#fullscreen-state-evidence">Fullscreen state evidence</a>
+                        <div class="toc-empty">No sections on this page</div>
                     </nav>
                 </div>
             </div>
@@ -239,60 +239,71 @@
 <main id="content" tabindex="-1">
     <div id="doc-view" class="content-section">
         <article id="content-doc" class="prose" data-pagefind-body>
-<h1 id="native-session-without-d-bus">Native session without D-Bus</h1>
-<p>The initial native session profile builds <code>compd</code> with <code>backend-all</code> and
-without <code>desktop-dbus</code>. ABP/noded carries application requests, discovery,
-session grants and mesh routing. The session owns its seatd instance and XDG
-runtime directory. It inherits no session bus or host activation environment.</p>
-<p><code>desktop-dbus</code> is an explicit compatibility feature for RTKit, logind, MPRIS,
-portal Save As and systemd user scopes. It is disabled by default. The native
-profile retains direct CPU scheduling, DRM output control, native audio volume
-and ordinary capture Save. Player transport, system suspend and portal Save As
-report unavailable until their native owners/adapters are connected.</p>
-<p>Applications receive the session environment directly at launch. No user-wide
-environment is published or retracted by the native profile.</p>
-<p>The image carries its own Material Symbols Rounded SVG icon theme and the
-canonical M launcher mark. Install both into the session's shared data tree;
-no host icon package or runtime download is needed:</p>
-<pre><code class="language-text">mix share/icons/install.mix --root /opt/mixos/share
-mix share/brand/install.mix --root /opt/mixos/share
-mix share/icons/install.mix --root /opt/mixos/share --verify
+<h1 id="installing-immutable-asset-packages">Installing immutable asset packages</h1>
+<p><code>share/assets/install.mix</code> 0.2.0 publishes pinned font, icon, image and licence
+files into an immutable <code>sets/&lt;set_id&gt;</code> directory. It changes <code>current</code> only
+after the complete package passes validation. Reinstalling the same manifest
+verifies and reuses its directory; different bytes or metadata under an existing
+ID are refused. Publish changed packages under a new ID.</p>
+<p>The installer accepts <code>mixos.static-assets.v1</code> and <code>mixos.static-assets.v2</code> strict
+data manifests. V1 retains its five required font roles and derived icons
+catalogue. V2 permits a nonempty declared font-role map and adds:</p>
+<ul>
+<li><code>icon_default</code>: family, style and exact integer weight, 1–1000.</li>
+<li><code>icon_catalogues</code>: unique family/style pairs referring to locked font and
+<code>.codepoints</code> files, with optional <code>face_index</code> defaulting to zero.</li>
+<li><code>icon_assets</code>: optional named SVG/raster files, unique by name/style, with
+optional <code>symbolic</code> defaulting to false.</li>
+</ul>
+<p>The default must name a declared catalogue. All catalogue files are checked,
+including nondefault styles; duplicate names, malformed rows and invalid Unicode
+scalars are refused. Metadata does not establish a font's intrinsic family,
+supported weight or face index, nor an image's safe decoded dimensions. Native
+resource preparation verifies those claims before application activation.</p>
+<p>Every locked file carries its exact byte count, SHA-256, BLAKE3, upstream HTTPS
+URL, URL pinned to a 40-hex upstream revision, and an <code>OFL-1.1</code> or <code>Apache-2.0</code>
+licence declaration. Include the corresponding locked licence texts in the
+package. The installer preserves their bytes; it does not grant a licence or
+infer legal provenance from a file extension.</p>
+<p>Bounds are 256 KiB of manifest text, 256 files, 32 font roles, 32 icon catalogues,
+4096 named icon assets and 512 MiB of total locked payload. V2 permits at most
+256 MiB per file; V1 retains the installer limit of 25 MB per file. Catalogue
+files are limited to 1 MiB. Family names are bounded to 128 UTF-8 bytes and
+catalogue face indexes to 65535. Unknown fields, explicit null typed metadata,
+unlocked references, traversal paths, symlinks and unlocked package components
+are refused. V2 relative paths have at most 256 ASCII bytes, with components of
+at most 96 bytes; empty, <code>.</code> and <code>..</code> components are forbidden. V1 retains its
+existing flat category layout. The installer never executes manifest contents.</p>
+<p>Install the default downloaded package, inspect its lock, or verify the complete
+installed set without downloading:</p>
+<pre><code class="language-text">mix share/assets/install.mix --root /opt/mixos/share/assets
+mix share/assets/install.mix --list
+mix share/assets/install.mix --root /opt/mixos/share/assets --verify
 </code></pre>
-<p>Include that root in <code>XDG_DATA_DIRS</code>. The apps registry selects the installed
-MixOS theme; symbolic SVGs take the foreground colour and scale with the output.
-<code>apps.reload</code> rescans entries and clears icon-theme misses after an asset update.</p>
-<p>For complete child cleanup, the OS supervisor delegates the session's cgroup
-and sets <code>MIXOS_CONTAIN_CHILDREN=1</code>. compd creates a fresh apps subgroup and
-attaches children before exec. Kernel <code>cgroup.kill</code> collects the entire subtree,
-including descendants that double-fork or change process group. Missing
-delegation or kernel support is a launch failure. The supervisor must also use
-<code>KillMode=control-group</code> for crash and timeout cleanup.</p>
-<p>Build and dependency gates run on a build worker:</p>
-<pre><code class="language-text">cargo build --locked --profile release-fast -p compd --no-default-features --features backend-all
-mix tools/native_session_gate.mix
-cargo build --locked -p slots --example containment-probe
+<p>An offline package directory must already contain exactly its locked files,
+<code>manifest.conf.mix</code> and the matching <code>fonts.css</code>. Use the same reviewed lock as
+the installation input:</p>
+<pre><code class="language-text">mix share/assets/install.mix --manifest /tmp/package/manifest.conf.mix \
+  --source /tmp/package --root /tmp/installed-assets
 </code></pre>
-<p>Run <code>containment-probe</code> inside a delegated test service with containment enabled
-to verify actual descendant cleanup. Graph checks and nested rendering do not
-prove VT handover: GPU acquisition, physical input, scan-out, audio and rollback
-are separate hardware acceptance gates.</p>
-<h2 id="fullscreen-state-evidence">Fullscreen state evidence</h2>
-<p>Window projections report client-committed fullscreen. A fullscreen or
-unfullscreen request stages compositor intent; <code>configure_pending</code> remains true
-while requested maximise or fullscreen differs from committed state. For xdg
-clients, acknowledging a configure alone does not commit it: a subsequent
-surface commit applies the acknowledged state. Native fullscreen state waits
-use this same fence. X11 has no xdg ACK fence and reports its server-side state.</p>
-<p>Run <code>mix tests/desktop/fullscreen_state_gate.mix REPO BUILD_BIN_DIR</code> against a
-matching compd and testkit build. The gate owns its nested host and native
-broker, checks delayed entry and exit ACKs against state-wait timeouts, then
-verifies committed geometry, exact restore, pixels, input and stale-generation
-refusal. The probe's <code>--delay-state-commit WxH:MS</code> leaves ACKed state uncommitted
-until its replacement buffer; <code>--delay-size-commit</code> retains its existing policy
-of committing ACKed state immediately with the old buffer. These nested checks
-do not replace physical VT, GPU, input or seat acceptance.</p>
+<p><code>--source</code> verifies the whole source package before copying its files into the
+installer's private stage. Copied bytes are verified again before publication.
+It performs no network requests and does not relax hashes, provenance or resource
+limits. <code>--source</code> is an installation option, separate from <code>--list</code>/<code>--verify</code>.
+<code>--user</code> chooses the user's isolated XDG data root; system installation uses
+<code>MIXOS_SHARE/assets</code>, defaulting to <code>/opt/mixos/share/assets</code>. Neither mode adds a
+daemon, runtime downloader or alternative settings authority.</p>
+<p>Run the real Mix packaging acceptance gate on a worker:</p>
+<pre><code class="language-text">mix tests/assets/install_test.mix /absolute/repository /absolute/candidate/mix
+</code></pre>
+<p>The gate uses cleared bytes already in the repository. It checks fresh v1/v2
+publication, idempotent immutable reuse, exact payload/licence hashes, all-style
+catalogue validation, limits, malformed metadata, tampering, symlinks and retained
+activation after refusal. These packaging tests do not certify untouched-core
+mono 300 rendering or any application's presented frames; those require their
+separate native resource and GUI gates.</p>
         </article>
-        <p class="doc-source"><a href="/native-session.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
+        <p class="doc-source"><a href="/assets.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
     </div>
 </main>
 <script src="/web/base.js?v=2652b9bc10"></script>
