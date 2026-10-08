@@ -137,16 +137,17 @@ fn participant_presentations($batch,$label)
   write_file($R.run.path .. "/authority-get-" .. $label .. ".json",json_encode(rpc("settingsd","settings.get",{binding:$binding})))
   write_file($R.run.path .. "/native-inventory-" .. $label .. ".json",json_encode(rpc("noded","noded.inventory",{})))
   write_file($R.run.path .. "/native-services-" .. $label .. ".json",json_encode(rpc("noded","noded.list",{})))
+  write_file($R.run.path .. "/native-incarnations-" .. $label .. ".json",json_encode(rpc("noded","noded.props.get",{path:"services.incarnations"})))
   write_file($R.run.path .. "/native-topics-" .. $label .. ".json",json_encode(rpc("noded","topic.list",{})))
   for each $app in $R.owners
     if $app.name != "quoin" then comp("comp.window.focus",$app.window) end
     $live=shell("app.describe",{}).participants
+    write_file($R.run.path .. "/participant-live-" .. $label .. "-" .. $app.name .. ".json",json_encode($live))
     $matches=filter($live.participants,fn($row)=$row.service == $app.context.service and $row.pid == $app.pid
       and ($app.name != "quoin" or $row.key == $app.context.service .. "/all-apps-control")
       and $row.state != "hidden" and $row.state != "closed")
     check(len($matches) == 1,"Actual single visible participant not available: " .. $app.name)
     $key=$matches[0].key
-    write_file($R.run.path .. "/participant-live-" .. $label .. "-" .. $app.name .. ".json",json_encode($live))
     write_file($R.run.path .. "/participant-owner-" .. $label .. "-" .. $app.name .. ".json",json_encode($f.rpc($app.context,"app.describe",{})))
     $receipt=shell("app.participants.wait",{operation_id:$batch.operation_id,services:[$app.context.service],keys:[$key],until:"presented",timeout_ms:3000})
     write_file($R.run.path .. "/participant-" .. $label .. "-" .. $app.name .. ".json",json_encode($receipt))
