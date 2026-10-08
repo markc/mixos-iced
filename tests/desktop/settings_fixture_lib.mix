@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- version: 0.1.0
+-- version: 0.1.1
 -- Shared observations over the owner's existing native fixture protocol.
 -- Context is {mix,bus,root,service}. Callers own launch, mutation and teardown.
 $host=require("settings_host_lib.mix")
@@ -18,6 +18,18 @@ fn fixture($context,$verb,$body)
   $reply=rpc($context,"app.acceptance." .. $verb,$body)
   check(type($reply) == "map" and $reply.ok == true,$verb .. ": " .. json_encode($reply))
   return $reply
+end
+fn ordinary($context,$description)
+  for each $entry in $description.verbs
+    $name=if type($entry) == "string" then $entry else $entry.name end
+    check(not starts_with($name,"app.acceptance."),"Ordinary inventory advertises fixture")
+  end
+  for each $verb in ["describe","layout","barrier.arm","barrier.wait","barrier.release","barrier.state","frame.state","frame.wait"]
+    $reply=call($context,"app.acceptance." .. $verb,{})
+    write_file($context.root .. "/ordinary-" .. $verb .. ".json",json_encode($reply))
+    check($reply.rc != 0 and $reply.rc != -9 and
+      contains(lower(json_encode($reply.result)),"unknown"),"Ordinary launch exposes fixture: " .. json_encode($reply))
+  end
 end
 fn target($context,$identity,$applied)
   $state=fixture($context,"frame.state",$identity)

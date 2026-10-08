@@ -136,15 +136,7 @@ try
   $description=current($snapshot)
   check($description.pid == $ordinary.pid and $description.service == $service and
     $description.app_id == "dev.mixos.cap" and $description.transport == "native","Wrong canonical owner")
-  for each $entry in $description.verbs
-    check(not starts_with($entry,"app.acceptance."),"Ordinary inventory advertises fixture")
-  end
-  for each $verb in ["describe","layout","barrier.arm","barrier.wait","barrier.release","barrier.state","frame.state","frame.wait"]
-    $reply=$f.call(fixture_context(),"app.acceptance." .. $verb,{})
-    $unknown=(type($reply.result) == "string" and contains(lower($reply.result),"unknown")) or
-      (type($reply.result) == "map" and $reply.result.error == "unknown operation")
-    check($reply.rc == 10 and $unknown,"Ordinary launch exposes fixture: " .. json_encode($reply))
-  end
+  $f.ordinary(fixture_context(),$description)
   app("cap.quit",{})
   $deadline=time()+4
   while process_alive($ordinary.pid) and time() < $deadline
