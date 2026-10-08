@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Real shared GLES/wgpu Backing lifecycle acceptance. No presentation receipts
+//! Compd testkit's real shared GLES/wgpu Backing lifecycle acceptance. No presentation receipts
 //! are synthesised: FrameBinding is inspected beside the actual published pixels.
 use graphics::surface::{
     surface::IcedSurface,

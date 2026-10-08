@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- Explicit owned render-only hardware gate; does not acquire a VT or seat.
+-- Explicit testkit-owned render-only hardware gate; does not acquire a VT or seat.
 if len(args()) != 4 then raise("ARGS","REPO FIXTURE_BINARY RENDER_NODE FRESH_ARTIFACT_DIRECTORY") end
 $repo=args()[0]; $binary=args()[1]; $node=args()[2]; $directory=args()[3]
 if not is_file($binary) then raise("BACKING_FIXTURE","Built renderer-owning fixture missing") end

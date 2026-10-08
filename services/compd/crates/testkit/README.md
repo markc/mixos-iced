@@ -1,8 +1,8 @@
-# Graphics backing lifecycle acceptance
+# Compd testkit backing lifecycle acceptance
 
 `examples/backing_lifecycle.rs` exercises the real `IcedSurface` and
 `Ring<Backing>` using a hardware EGL device and the production shared GLES/wgpu
-context. Build `cargo build -p graphics --example backing_lifecycle` on the
+context. Build `cargo build -p testkit --example backing_lifecycle` on the
 designated build worker. Run the built fixture on an owned hardware render node
 through `tests/desktop/settings_backing_lifecycle_gate.mix`, with four arguments:
 the exact source checkout, built fixture binary, discovered render-node path and
@@ -33,3 +33,8 @@ This deliberately calls the existing `sync_depth` API. Ordinary GLES UI policy
 continues to use depth one; changing a preference is insufficient to exercise
 the backing ring. This gate proves shared-device pixel/metadata ownership, not
 Wayland/KMS presentation, VT readiness, or performance latency.
+
+The normal testkit library remains headless. GPU dependencies belong only to
+the explicit example's dev-dependency graph. Strict Clippy checks the primary
+testkit library and example with `--no-deps`; existing graphics-library warning
+debt is recorded separately and is not waived by this fixture's acceptance.
