@@ -104,6 +104,15 @@ mix tests/desktop/suite.mix [--only a,b] [--skip a,b] [--scales 1,2.5] [--bin PA
 
 Each script's header documents its checks and exit codes.
 
+`ime_world_ownership_gate.mix REPO BUILD_BIN_DIR` starts an actual authorised
+input-method-v2 client on the human seat. Server keymap/repeat receipts and a
+display roundtrip establish the keyboard grab; the client destroys that grab
+after one bounded lifetime and confirms release by another roundtrip. Native
+world activation must refuse while this keyboard owner is live, with no pointer
+grab or changed world/window facts, then succeed after protocol release. This
+uses production default-open manager authorisation. It does not bypass or claim
+coverage of the configured-IME launch restriction.
+
 `window_tiling_gate.mix REPO BUILD_BIN_DIR` owns a native broker, settingsd,
 nested compositor and three distinct-colour Wayland probes. It checks public
 tile/untile routes, two-to-three allocation, real ACK without a surface commit,
