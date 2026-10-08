@@ -173,7 +173,7 @@ impl Harness {
         let output = self.wire.inner.output.clone();
         let (w, h) = crate::host::OUTPUT_SIZE;
         let paint = |pixel: &dyn Fn(i32, i32) -> u32| {
-            let mut image =
+            let image =
                 Image::new(FormatCode::X8R8G8B8, w as usize, h as usize, true).expect("pixman image");
             let stride = image.stride() / 4;
             // SAFETY: the image owns `stride * h` u32s, alive while `image` is.
