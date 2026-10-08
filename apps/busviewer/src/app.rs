@@ -75,6 +75,7 @@ struct Call {
     reply: Option<bus::Request>,
 }
 pub struct App {
+    window: Option<window::Id>,
     settings: Settings,
     bus: Handle,
     bootstrap: appearance::settings::Prepared,
@@ -121,7 +122,14 @@ fn deliveries() -> impl iced::futures::Stream<Item = Delivery> {
     }))
 }
 pub fn run(settings: Settings) -> Result<(), String> {
+    #[cfg(feature = "acceptance")]
+    let (fixture, initial_task) = crate::acceptance::setup()?;
+    #[cfg(feature = "acceptance")]
+    let (bus, mut settings_ui, bootstrap, rx) = bus::start_fixture(&settings.service, &settings.url, fixture)?;
+    #[cfg(not(feature = "acceptance"))]
     let (bus, mut settings_ui, bootstrap, rx) = bus::start(&settings.service, &settings.url)?;
+    #[cfg(not(feature = "acceptance"))]
+    let initial_task = Task::none();
     let result = (|| {
         STREAM
             .set(Mutex::new(Some(rx)))
@@ -137,7 +145,7 @@ pub fn run(settings: Settings) -> Result<(), String> {
         // the worker's Connected delivery, which also arrives when the
         // supervisor registered before this window subscribed.
         application::start(
-            (app, Task::none()),
+            (app, initial_task),
             App::update,
             App::view,
             application::Window::new(APP_ID, iced::Size::new(1100.0, 760.0), font)
@@ -146,11 +154,13 @@ pub fn run(settings: Settings) -> Result<(), String> {
         )
         .title(|_: &App| label("title"))
         .theme(|app: &App| app.look().theme())
+        .frame_presentation(App::frame_binding)
         .subscription(App::subscription)
         .run()
         .map_err(|e| e.to_string())
     })();
     bus.quit();
+    bus.frames.close();
     let stopped = bus.wait_done();
     result.and(stopped)
 }
@@ -162,6 +172,7 @@ impl App {
         settings_ui: Ui<()>,
     ) -> Self {
         Self {
+            window: None,
             settings,
             bus,
             bootstrap,
@@ -207,6 +218,25 @@ impl App {
             .typography()
             .get(role)
             .expect("prepared typography role")
+    }
+    fn frame_binding(&self) -> Option<application::frames::FrameBinding> {
+        self.settings_ui.session().frame_stamp().map(|stamp| self.bus.frames.binding(stamp))
+    }
+    fn publish_frame_target(&self) {
+        #[cfg(feature = "acceptance")]
+        if let (Some(endpoint), Some(window)) = (&self.bus.fixture_frames, self.window)
+            && let Err(error) = endpoint.publish(application::acceptance::frames::Target {
+                window, stamp: self.settings_ui.session().frame_stamp(),
+            }) {
+            eprintln!("busviewer: fixture frame target: {error}");
+        }
+    }
+    fn fixture_root<'a>(&self, content: Element<'a, Message, Theme>) -> Element<'a, Message, Theme> {
+        #[cfg(feature = "acceptance")]
+        if self.bus.fixture_frames.is_some() {
+            return container(content).width(iced::Fill).height(iced::Fill).id(crate::acceptance::ROOT_ID).into();
+        }
+        content
     }
     fn text<'a>(
         &self,
@@ -291,6 +321,7 @@ impl App {
                 })
             );
         }
+        self.publish_frame_target();
     }
     fn refresh(&mut self, reply: Option<bus::Request>) -> Task<Message> {
         if self.busy() || !self.connected || self.quitting {
@@ -600,6 +631,7 @@ impl App {
             ),
             "busviewer.info" => {
                 self.settings_ui.reconcile(self.bus.settings_generation());
+                self.publish_frame_target();
                 let mut info = self.info();
                 info["settings"] = json!(self.settings_ui.session().host().consumer().evidence());
                 info["settings_cache"] = json!(self.settings_ui.session().cache_evidence());
@@ -608,6 +640,7 @@ impl App {
             "HELP" => self.bus.reply(id, 0, model::describe()["verbs"].clone()),
             "app.describe" => {
                 self.settings_ui.reconcile(self.bus.settings_generation());
+                self.publish_frame_target();
                 let mut describe = model::describe();
                 let identity = application::describe::Identity {
                     app_id: Some(APP_ID),
@@ -930,7 +963,20 @@ impl App {
                 }
                 self.followup()
             }
-            Message::Window(_, window::Event::CloseRequested) => {
+            Message::Window(id, window::Event::Opened { .. }) => {
+                if self.window.is_some_and(|window| window != id) {
+                    self.bus.frames.close();
+                } else {
+                    self.window = Some(id);
+                    self.publish_frame_target();
+                }
+                Task::none()
+            }
+            Message::Window(id, window::Event::Closed) if self.window == Some(id) => {
+                self.bus.frames.close();
+                Task::none()
+            }
+            Message::Window(id, window::Event::CloseRequested) if self.window == Some(id) => {
                 self.dialog = None;
                 self.quit()
             }
@@ -964,6 +1010,7 @@ impl App {
                 Row::Peers => label("peers"),
             })
         })
+        .expanders(toolkit::tree::Expanders::new(None, None))
         .on_toggle(Message::Toggle)
         .on_select(Message::Select)
         .selection(&selected)
@@ -1075,7 +1122,7 @@ impl App {
         .height(iced::Fill)
         .into();
         let Some(dialog) = &self.dialog else {
-            return toolkit::dialog::Modal::host(base, None).into();
+            return self.fixture_root(toolkit::dialog::Modal::host(base, None).into());
         };
         let contents = column![
             self.text(label(if *dialog == Action::About {
@@ -1095,7 +1142,7 @@ impl App {
             ]
         ]
         .spacing(gap);
-        toolkit::dialog::Modal::new(
+        self.fixture_root(toolkit::dialog::Modal::new(
             base,
             widget::opaque(
                 container(
@@ -1111,7 +1158,7 @@ impl App {
             (*key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape))
                 .then_some(Message::Cancel)
         })
-        .into()
+        .into())
     }
 }
 

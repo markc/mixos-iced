@@ -17,6 +17,9 @@ contract = "public"
 [lints.clippy]
 mod_module_files = "deny"
 
+[features]
+acceptance = ["application/acceptance"]
+
 [dependencies]
 application = { workspace = true, features = ["tiny-skia", "settings-cache", "describe"] }
 toolkit = { workspace = true, features = ["tiny-skia"] }

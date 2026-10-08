@@ -2,6 +2,11 @@
 
 ## 0.1.3
 
+- Observe installed frames through the shared application owner; opt-in
+  fixtures use its inspector and preparation barrier on the existing actor,
+  with bounded waits and separate control headroom.
+- Retire installed-font discovery. The shared resource host owns text
+  preparation; tree expanders use their explicit geometric fallback.
 - Complete canonical descriptions from the shared presentation owner, including
   installed resource, preparation and cache evidence and actual native identity.
 - Validate raw description requests before actor admission or whitespace
