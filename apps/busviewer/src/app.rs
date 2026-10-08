@@ -300,12 +300,20 @@ impl App {
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             Subscription::run(deliveries).map(Message::Bus),
-            iced::event::listen_with(|event, status, id| match event {
+            iced::event::listen_with(|event, status, id| {
+                #[cfg(feature = "acceptance")]
+                if std::env::var_os("MIXOS_ACCEPTANCE_RUN").is_some()
+                    && matches!(&event, iced::Event::Mouse(_) | iced::Event::Keyboard(_))
+                {
+                    eprintln!("BUSVIEWER_FIXTURE_INPUT window={id:?} status={status:?} event={event:?}");
+                }
+                match event {
                 iced::Event::Window(event) => Some(Message::Window(id, event)),
                 iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
                     key, modifiers, ..
                 }) if status == iced::event::Status::Ignored => Some(Message::Key(key, modifiers)),
                 _ => None,
+                }
             }),
         ])
     }
@@ -716,6 +724,10 @@ impl App {
         Task::none()
     }
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        #[cfg(feature = "acceptance")]
+        if self.bus.fixture_frames.is_some() && matches!(&message, Message::Body(_)) {
+            eprintln!("BUSVIEWER_FIXTURE_BODY {message:?}");
+        }
         if matches!(
             &message,
             Message::Action(_)
