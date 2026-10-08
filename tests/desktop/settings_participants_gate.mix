@@ -346,6 +346,7 @@ try
   write_file($root .. "/cfg/preferences.json",json_encode({scene_host:true,scene_service:"all-apps-fallback",decorations_ssd:false}))
   $R.session=$n.start({bin:$bin .. "/compd",tag:"all-apps",run:$R.run,config:$root .. "/cfg/settings.json",
     host_renderer:"pixman",software:true,scale:$requested_scale,max_secs:900,
+    width:1280*$requested_scale,height:800*$requested_scale,
     env:merge(env_for($root .. "/compositor-home"),{COMPD_FRAME_TRACE:"1",COMPD_FRAME_TRACE_FILE:$root .. "/frame-trace.log",COMPD_FRAME_TRACE_LIMIT:"1000000"})})
   check($n.wait_ready($R.session,30),"Owned compositor did not register")
   ready("shell","shell.info",$R.session.comp_pid)
