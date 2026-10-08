@@ -1536,7 +1536,7 @@ mod tests {
     #[test]
     fn panel_has_square_pager_two_clock_lines_and_full_task_hit_targets() {
         let renderer = LayoutRenderer::new();
-        let ui = test_ui(include_str!("../tests/fixtures/panel-render.scene.md"));
+        let ui = test_ui(include_str!("../tests/fixtures/panel-render.scene.mix"));
         let mut element = ui.build_view::<LayoutRenderer>();
         // Match UserInterface::build: diff populates the child states.
         let mut state = iced_core::widget::Tree::empty();
@@ -1580,7 +1580,7 @@ mod tests {
     #[test]
     fn panel_pager_digits_are_drawn_at_the_centre_of_their_hit_targets() {
         let mut renderer = LayoutRenderer::new();
-        let ui = test_ui(include_str!("../tests/fixtures/panel-render.scene.md"));
+        let ui = test_ui(include_str!("../tests/fixtures/panel-render.scene.mix"));
         let mut element = ui.build_view::<LayoutRenderer>();
         let mut state = iced_core::widget::Tree::empty();
         state.diff(element.as_widget_mut());
@@ -1757,7 +1757,7 @@ mod tests {
     fn every_calendar_node_has_visible_non_zero_bounds_including_the_footer() {
         let renderer = LayoutRenderer::new();
         let tree = scene::resolve(
-            &scene::parse(include_str!("../tests/fixtures/calendar.scene.md")).unwrap(),
+            &scene::parse(include_str!("../tests/fixtures/calendar.scene.mix")).unwrap(),
         )
         .unwrap();
         let palette = decor::ChromeTheme::from_source(decor::ChromeStyle::Mac, None).palette;
@@ -1828,7 +1828,7 @@ mod tests {
         use design::{DesignCompileResult, DesignContext, Mode, SourceIdentity};
 
         let tree = scene::resolve(
-            &scene::parse(include_str!("../tests/fixtures/colours.scene.md")).unwrap(),
+            &scene::parse(include_str!("../tests/fixtures/colours.scene.mix")).unwrap(),
         )
         .unwrap();
         let document = design::parse_design_source(
@@ -1911,7 +1911,7 @@ mod tests {
     #[test]
     fn scene_row_fills_preserve_the_bottom_panel_overlay_and_calendar_hover() {
         let tree = scene::resolve(
-            &scene::parse(include_str!("../tests/fixtures/colours.scene.md")).unwrap(),
+            &scene::parse(include_str!("../tests/fixtures/colours.scene.mix")).unwrap(),
         )
         .unwrap();
         let design = compile_scene_design("{scheme: \"ocean\", mode: \"light\"}", false).unwrap();
@@ -1965,7 +1965,7 @@ mod tests {
         let design = compile_scene_design(&overridden, false).unwrap();
         let original = compile_scene_design(source, false).unwrap();
         let tree = scene::resolve(
-            &scene::parse(include_str!("../tests/fixtures/colours.scene.md")).unwrap(),
+            &scene::parse(include_str!("../tests/fixtures/colours.scene.mix")).unwrap(),
         )
         .unwrap();
         let node = &tree.nodes["cal_open"];
