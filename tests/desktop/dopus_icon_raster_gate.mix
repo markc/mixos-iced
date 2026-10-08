@@ -130,7 +130,7 @@ fn click_alias($alias,$owner,$identity,$target,$label)
   write_file($R.run.path .. "/input-" .. $label .. ".json",json_encode({alias:$alias,geometry:$geometry,
     layout:$layout,point:$point,focus:$focus,move:$move,press:$press,release:$release}))
 end
-fn verify_pixels($label,$owner,$identity,$target,$snapshot,$expanded,$back,$forward)
+fn verify_pixels($label,$owner,$identity,$target,$snapshot,$expanded)
   $before=app("app.describe",{})
   check($before.pid == $owner.pid and $before.service == $service and $before.app_id == "dev.mixos.dopus",
     "Raster fixture is not the launched native application owner")
@@ -145,6 +145,7 @@ fn verify_pixels($label,$owner,$identity,$target,$snapshot,$expanded,$back,$forw
     $aliases=concat($aliases,["toolbar-" .. to_string($index)])
   end
   $state=app("dopus.state",{})
+  write_file($R.run.path .. "/model-" .. $label .. ".json",json_encode($state))
   if $state.places.open then
     for each $name in ["Home","Filesystem","Desktop","Documents","Downloads","Music","Pictures","Videos"]
       $aliases=concat($aliases,["place-" .. $name])
@@ -209,8 +210,8 @@ fn verify_pixels($label,$owner,$identity,$target,$snapshot,$expanded,$back,$forw
   $has_selection=$state.panes[0].selected != nil
   for $index=0 to 13
     $enabled=true
-    if $index == 0 then $enabled=$back end
-    if $index == 1 then $enabled=$forward end
+    if $index == 0 then $enabled=$state.panes[0].can_go_back end
+    if $index == 1 then $enabled=$state.panes[0].can_go_forward end
     if contains([5,7,8,9,10],$index) then $enabled=$has_selection end
     $panel=$index >= 12
     $open=if $index == 12 then $state.places.open else $state.properties.open end
@@ -349,7 +350,7 @@ try
   check($state.panes[0].rows == 8 and $state.panes[0].path == $root .. "/left","Owned real listing did not settle")
   -- Put the real pointer outside the rows, keeping hover tooltips absent.
   comp("comp.input.pointer.move",{seat:"human",x:1,y:1,corners:false})
-  verify_pixels("dark",$dopus,$identity,$initial.target,$snapshot,false,false,false)
+  verify_pixels("dark",$dopus,$identity,$initial.target,$snapshot,false)
   -- Real navigation establishes each history state, then returns to the
   -- original owned listing before comparing the toolbar's glyph/tint.
   click_alias("left-entry-0",$dopus,$identity,$initial.target,"select-folder")
@@ -359,34 +360,40 @@ try
   wait_path($root .. "/left/0-folder",0)
   app("dopus.action",{id:"nav.parent",pane:0})
   wait_path($root .. "/left",8)
-  verify_pixels("history-back",$dopus,$identity,$initial.target,$snapshot,false,true,false)
+  verify_pixels("history-back",$dopus,$identity,$initial.target,$snapshot,false)
   app("dopus.action",{id:"nav.back",pane:0})
   wait_path($root .. "/left/0-folder",0)
   app("dopus.action",{id:"nav.back",pane:0})
   wait_path($root .. "/left",8)
-  verify_pixels("history-forward",$dopus,$identity,$initial.target,$snapshot,false,false,true)
+  verify_pixels("history-forward",$dopus,$identity,$initial.target,$snapshot,false)
   app("dopus.action",{id:"selection.first",pane:0})
   click_alias("left-chevron-0",$dopus,$identity,$initial.target,"expand-folder")
-  verify_pixels("expanded",$dopus,$identity,$initial.target,$snapshot,true,false,true)
+  verify_pixels("expanded",$dopus,$identity,$initial.target,$snapshot,true)
   app("dopus.action",{id:"view.toggle-hidden",pane:0})
   wait_path($root .. "/left",8)
   -- Changing hidden-file policy reloads the root listing and clears its tree.
-  verify_pixels("hidden",$dopus,$identity,$initial.target,$snapshot,false,false,true)
+  verify_pixels("hidden",$dopus,$identity,$initial.target,$snapshot,false)
   app("dopus.action",{id:"view.toggle-places"})
   app("dopus.action",{id:"view.toggle-properties"})
-  verify_pixels("panel-toggles",$dopus,$identity,$initial.target,$snapshot,false,false,true)
+  verify_pixels("panel-toggles",$dopus,$identity,$initial.target,$snapshot,false)
   app("dopus.action",{id:"view.toggle-places"})
+  $navigation_before=app("dopus.state",{}).panes[0]
   $snapshot=apply($snapshot,"icon-light",{"appearance.mode":"light","ui.text_scale":1.25})
   $description=current($snapshot)
+  $navigation_after=app("dopus.state",{}).panes[0]
+  write_file($root .. "/navigation-settings-retention.json",json_encode({before:$navigation_before,after:$navigation_after}))
+  check($navigation_before.can_go_back == $navigation_after.can_go_back and
+    $navigation_before.can_go_forward == $navigation_after.can_go_forward,
+    "Settings activation changed retained navigation history availability")
   $changed=$f.target(fixture_context(),$identity,$description.preparation.applied)
   check($changed.target.stamp.activation_epoch == $initial.target.stamp.activation_epoch+1,"Unexpected native install epoch")
-  verify_pixels("light-scaled",$dopus,$identity,$changed.target,$snapshot,false,false,true)
+  verify_pixels("light-scaled",$dopus,$identity,$changed.target,$snapshot,false)
   click_alias("left-chevron-0",$dopus,$identity,$changed.target,"expand-light-folder")
-  verify_pixels("light-expanded",$dopus,$identity,$changed.target,$snapshot,true,false,true)
+  verify_pixels("light-expanded",$dopus,$identity,$changed.target,$snapshot,true)
   click_alias("left-chevron-0",$dopus,$identity,$changed.target,"collapse-folder")
   app("dopus.action",{id:"view.toggle-hidden",pane:0})
   wait_path($root .. "/left",8)
-  verify_pixels("light-collapsed",$dopus,$identity,$changed.target,$snapshot,false,false,true)
+  verify_pixels("light-collapsed",$dopus,$identity,$changed.target,$snapshot,false)
   $unused=["expand_less","info","view_list","logout","menu","push_pin","keep_off","search"]
   for each $name in keys($R.package.icon_catalogue.glyphs)
     check(contains($unused,$name) or contains($R.covered,$name),"Reachable catalogue glyph lacks native raster proof: " .. $name)

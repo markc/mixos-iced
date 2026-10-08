@@ -1,5 +1,11 @@
 # DOpus Bus contract
 
+## 0.4.11
+
+- Report actual per-pane back/forward history availability in `dopus.state`.
+  Native glyph acceptance derives enabled toolbar colours from this model
+  evidence instead of assuming a particular startup history.
+
 ## 0.4.10
 
 - Extend the optional native acceptance layout inventory with realised file

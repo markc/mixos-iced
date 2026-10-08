@@ -109,6 +109,11 @@ pub struct PaneState {
     pub path: String,
     pub active: bool,
     pub show_hidden: bool,
+    /// Actual navigation history availability, matching the native toolbar.
+    #[serde(default)]
+    pub can_go_back: bool,
+    #[serde(default)]
+    pub can_go_forward: bool,
     /// `name | size | modified`.
     pub sort: String,
     pub ascending: bool,
@@ -760,6 +765,8 @@ fn pane_state(core: &DopusCore, pane_id: PaneId) -> PaneState {
         path: dopus_core::sanitise_display_path(&pane.path),
         active: core.active() == pane_id,
         show_hidden: pane.show_hidden,
+        can_go_back: !pane.history.back.is_empty(),
+        can_go_forward: !pane.history.forward.is_empty(),
         sort: match pane.sort {
             dopus_core::SortColumn::Name => "name",
             dopus_core::SortColumn::Size => "size",
