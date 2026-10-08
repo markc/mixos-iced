@@ -284,14 +284,17 @@ pub(super) async fn worker(
     mut handoff: Option<Vec<String>>,
     mut send: mpsc::Sender<Delivery>,
     mut effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
-    ready: Ready,
-    frames: application::frames::Handle,
-    #[cfg(feature = "acceptance")] fixture_frames: Option<
-        application::acceptance::frames::Endpoint,
-    >,
-    #[cfg(feature = "acceptance")] mut fixture: Option<application::acceptance::Fixture>,
+    boot: WorkerBoot,
     #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
 ) {
+    let WorkerBoot {
+        ready,
+        frames,
+        #[cfg(feature = "acceptance")]
+        fixture_frames,
+        #[cfg(feature = "acceptance")]
+        mut fixture,
+    } = boot;
     let consumer = match settings::session::binding()
         .and_then(|binding| settings::consumer::Consumer::for_app(binding, "cap"))
     {

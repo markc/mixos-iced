@@ -476,12 +476,14 @@ fn start_configured_channels(
                         handoff,
                         send,
                         rx,
-                        ready_send,
-                        worker_frames,
-                        #[cfg(feature = "acceptance")]
-                        worker_fixture_frames,
-                        #[cfg(feature = "acceptance")]
-                        fixture,
+                        WorkerBoot {
+                            ready: ready_send,
+                            frames: worker_frames,
+                            #[cfg(feature = "acceptance")]
+                            fixture_frames: worker_fixture_frames,
+                            #[cfg(feature = "acceptance")]
+                            fixture,
+                        },
                         #[cfg(test)]
                         probe,
                     ));
@@ -518,6 +520,15 @@ fn start_configured_channels(
         receive,
     ))
 }
+struct WorkerBoot {
+    ready: Ready,
+    frames: application::frames::Handle,
+    #[cfg(feature = "acceptance")]
+    fixture_frames: Option<application::acceptance::frames::Endpoint>,
+    #[cfg(feature = "acceptance")]
+    fixture: Option<application::acceptance::Fixture>,
+}
+
 type Ready = std::sync::mpsc::Sender<
     Result<
         (
