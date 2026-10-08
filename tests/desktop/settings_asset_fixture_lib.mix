@@ -1,0 +1,82 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.1
+-- Owned complete-core installation through the native installer and reader.
+$recovery=require("settings_recovery_lib.mix")
+fn prepare($repo,$data_home,$mix)
+  $root=$data_home .. "/mixos/assets"
+  $installer=$repo .. "/share/assets/install.mix"
+  $source=$repo .. "/share/assets/core.conf.mix"
+  print(run_argv_must([$mix,$installer,"--root",$root,"--manifest",$source],{timeout:300}))
+  print(run_argv_must([$mix,$installer,"--root",$root,"--manifest",$source,"--verify"],{timeout:120}))
+  $manifest=data_parse(read_file($source))
+  $directory=$root .. "/sets/" .. $manifest.set_id
+  $locked=read_file($directory .. "/manifest.conf.mix")
+  $recovery.check($locked == read_file($source),"Native installer changed locked core manifest bytes")
+  $catalogue=dirname($manifest.fonts.icons) .. "/" .. path_parts($manifest.fonts.icons).stem .. ".codepoints"
+  $needed=["archive","arrow_back","arrow_forward","arrow_upward","expand_more","chevron_right","expand_less",
+    "content_copy","download","visibility","visibility_off","draft","code","image","audio_file","description",
+    "video_file","folder","folder_open","grid_view","hard_drive","home","info","view_list","logout","menu",
+    "swap_horiz","music_note","left_panel_open","right_panel_open","push_pin","keep_off","refresh","search","delete"]
+  $glyphs={}
+  for each $line in read_lines($directory .. "/" .. $catalogue)
+    if trim($line) != "" then
+      $parts=re_split(trim($line),"\\s+")
+      $recovery.check(len($parts) == 2 and re_match($parts[1],"^[0-9a-fA-F]{1,6}$"),"Invalid installed native catalogue row")
+      if contains($needed,$parts[0]) then
+        $scalar=0
+        $hex=lower($parts[1])
+        for $index=0 to len($hex)-1
+          $scalar=$scalar*16+index_of("0123456789abcdef",substr($hex,$index,1))
+        end
+        $recovery.check(not has_key($glyphs,$parts[0]),"Duplicate required native catalogue name")
+        $glyphs[$parts[0]]=chr($scalar)
+      end
+    end
+  end
+  $recovery.check(len(keys($glyphs)) == len($needed),"Complete core catalogue lacks actual Dopus icon names")
+  return {data_home:$data_home,root:$root,set_id:$manifest.set_id,
+    manifest_blake3:hash_file($directory .. "/manifest.conf.mix","blake3"),manifest:$manifest,files:$manifest.files,
+    icon_catalogue:{path:$catalogue,font:$manifest.fonts.icons,family:$manifest.font_families.icons,
+      style:"default",weight:400,glyphs:$glyphs},native_installer_verified:true}
+end
+fn locked_file($package,$path)
+  $found=filter($package.files,fn($file)=$file.path == $path)
+  $recovery.check(len($found) == 1,"Selected core source is not uniquely locked: " .. $path)
+  return $found[0]
+end
+fn verified($description,$package,$icons_required)
+  $resources=$description.resources
+  $recovery.check($resources.set_id == $package.set_id and $resources.manifest_blake3 == $package.manifest_blake3,
+    "Actual GUI did not install owned verified complete core")
+  -- The matrix changes mode/text scale, retaining default packaged records.
+  $roles={ui:"sans",ui_display:"display",small:"sans",mono:"mono",terminal:"mono",
+    "button.md":"ui","button.sm":"ui"}
+  $recovery.check(len($resources.text) == len(keys($roles)),"Actual GUI lacks complete verified text receipt")
+  $seen=[]
+  for each $text in $resources.text
+    $recovery.check(has_key($roles,$text.record) and not contains($seen,$text.record),"Unknown or duplicate typography record")
+    $role=$roles[$text.record]
+    $file=locked_file($package,$package.manifest.fonts[$role])
+    $recovery.check($text.family == $package.manifest.font_families[$role] and $text.face_index == 0 and
+      $text.source_blake3 == $file.blake3,"Installed text selection differs from locked core font: " .. $text.record)
+    $recovery.check($text.requested_weight == $text.effective_weight,"Core substituted actual requested font weight")
+    $seen=concat($seen,[$text.record])
+  end
+  $catalogue=$package.icon_catalogue
+  $icon_font=locked_file($package,$catalogue.font)
+  for each $icon in $resources.icons
+    $recovery.check(has_key($catalogue.glyphs,$icon.name),"Installed icon is not a required native catalogue name")
+    $recovery.check($icon.family == $catalogue.family and $icon.style == $catalogue.style and
+      $icon.glyph == $catalogue.glyphs[$icon.name] and $icon.weight == $catalogue.weight and
+      $icon.source_blake3 == $icon_font.blake3 and $icon.asset == nil,
+      "Installed named glyph differs from locked native font/catalogue: " .. $icon.name)
+    $recovery.check(re_replace($icon.key,":rgba:[0-9a-f]{32}$","") == $icon.name,
+      "Installed icon key does not name its selected catalogue glyph")
+  end
+  if $icons_required then
+    for each $name in keys($catalogue.glyphs)
+      $selected=filter($resources.icons,fn($icon)=$icon.name == $name)
+      $recovery.check(len($selected) > 0,"Actual file pane omitted required native catalogue glyph: " .. $name)
+    end
+  end
+end
