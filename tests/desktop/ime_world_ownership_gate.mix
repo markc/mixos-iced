@@ -7,6 +7,7 @@ if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
 $repo=args()[0]
 $bin=args()[1]
 $n=require("nested_host_lib.mix")
+$host=require("settings_host_lib.mix")
 $R={run:nil,bus:nil,session:nil,children:[],ok:false}
 fn check($condition,$message)
   if not $condition then raise("IME_OWNER",$message) end
@@ -74,11 +75,14 @@ try
 catch $message
   print("FAIL " .. $message)
 finally
-  if $R.session != nil then $n.stop($R.session,not $R.ok); $n.restore_env($R.session) end
   for each $pid in reverse($R.children)
-    if process_alive($pid) then $n.stop_owned($pid) end
+    $host.stop($pid)
   end
-  if $R.bus != nil then $n.restore_bus($R.bus) end
+  if $R.session != nil then
+    $n.stop($R.session)
+    for each $pid in $R.session.pids $host.stop($pid) end
+  end
+  if $R.bus != nil then $host.stop($R.bus.pid) end
   if $R.run != nil then $n.finish_run($R.run,$R.ok) end
 end
 if not $R.ok then exit(1) end
