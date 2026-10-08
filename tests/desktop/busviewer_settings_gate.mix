@@ -113,7 +113,8 @@ try
   $ordinary=launch("ordinary",nil)
   $describe=current($snapshot)
   check($describe.pid == $ordinary.pid and $describe.service == $service and
-    $describe.app_id == "dev.mixos.busviewer" and $describe.transport == "native","Wrong canonical owner")
+    $describe.app_id == "dev.mixos.busviewer" and $describe.describe_contract == "application.describe.v1",
+    "Wrong canonical owner: " .. json_encode($describe))
   for each $entry in $describe.verbs
     check(not starts_with($entry.name,"app.acceptance."),"Ordinary inventory advertises fixture")
   end
