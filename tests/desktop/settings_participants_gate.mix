@@ -494,7 +494,11 @@ fn capture_palette($app,$snapshot,$label,$width,$sample_x)
 end
 fn quoin_capture($snapshot,$label,$scene)
   $layout=shell("shell.scene.layout",{scene:$scene})
-  check($layout.visible and $layout.nodes.go != nil,"Actual Quoin button missing")
+  write_file($R.run.path .. "/quoin-layout-" .. $label .. ".json",json_encode({scene:$scene,layout:$layout,expected:$h.identity($snapshot)}))
+  write_file($R.run.path .. "/quoin-owner-" .. $label .. ".json",json_encode(shell("app.describe",{})))
+  write_file($R.run.path .. "/quoin-windows-" .. $label .. ".json",json_encode(comp("comp.windows.list",{})))
+  check($layout.visible,"Actual Quoin scene is not visible: " .. $scene)
+  check($layout.nodes.go != nil,"Actual Quoin Go node missing: " .. $scene)
   $token=nil
   for each $candidate in $snapshot.effective.desktop.design.buttons
     if $candidate.variant == "primary" and $candidate.size == "md" and $candidate.interaction == "resting" and not $candidate.focus_visible then $token=$candidate end
@@ -686,8 +690,10 @@ try
   $late_frame=$recovery.observe($late.context,$late.identity,$late_description,"late")
   $late_citizen=own(spawn([$mix,"--serve",$root .. "/controls.mix","--name","all-apps-late-controls"],{env:env_for($root .. "/late-controls-home"),stdout:{file:$root .. "/late-controls.log"},stderr:"stdout",detach:true}),false)
   ready("all-apps-late-controls","HELP",$late_citizen)
-  shell("shell.scene.load",{source:scene_document("all-apps-late-control","all-apps-late-controls")})
-  shell("shell.panel.page.set",{edge:"bottom",id:"scene-all-apps-late-control"})
+  $late_scene_load=shell("shell.scene.load",{source:scene_document("all-apps-late-control","all-apps-late-controls")})
+  write_file($R.run.path .. "/quoin-late-load.json",json_encode($late_scene_load))
+  $late_scene_page=shell("shell.panel.page.set",{edge:"bottom",id:"scene-all-apps-late-control"})
+  write_file($R.run.path .. "/quoin-late-page.json",json_encode($late_scene_page))
   $late_control=quoin_capture($changed,"late","all-apps-late-control")
   $offset=bytes_len(string_to_bytes(read_file($root .. "/controls-events.jsonl")))
   $go=$late_control.layout.nodes.go
