@@ -1045,24 +1045,24 @@ impl SupervisorOutgoing {
                 match sender.try_send_retaining(command) {
                     Ok(()) => true,
                     Err(error) => match *error {
-                    mpsc::error::TrySendError::Closed(_) => false,
-                    mpsc::error::TrySendError::Full(command) => {
-                        if command.id.is_none() {
-                            sender.record_overflow(1);
-                            true
-                        } else {
-                            connection
-                                .respond_parts(
-                                    &command.from,
-                                    &command.command,
-                                    command.id.as_deref(),
-                                    crate::RC_ERROR,
-                                    r#"{"error":"overloaded","error_code":"OVERLOADED"}"#,
-                                )
-                                .await
-                                .is_ok()
+                        mpsc::error::TrySendError::Closed(_) => false,
+                        mpsc::error::TrySendError::Full(command) => {
+                            if command.id.is_none() {
+                                sender.record_overflow(1);
+                                true
+                            } else {
+                                connection
+                                    .respond_parts(
+                                        &command.from,
+                                        &command.command,
+                                        command.id.as_deref(),
+                                        crate::RC_ERROR,
+                                        r#"{"error":"overloaded","error_code":"OVERLOADED"}"#,
+                                    )
+                                    .await
+                                    .is_ok()
+                            }
                         }
-                    }
                     },
                 }
             }
