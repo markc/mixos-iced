@@ -78,6 +78,8 @@ async fn supervised_unix_preserves_principals_verbs_and_bounded_retirement() {
             panic!("TCP command")
         };
         assert!(untrusted.header(PRINCIPAL_HEADER).is_none());
+        caller.client().send("supervised-unix", "probe.event", serde_json::Value::String("x".repeat(65537))).await.unwrap();
+        assert!(matches!(incoming.recv().await, Some(BoundedIncomingEvent::Overflow { .. })), "oversized idle notice wakes lifecycle invalidation");
         // Hold the outward lane full. Its owner must settle correlated requests,
         // while the socket reader continues servicing unrelated RPC replies.
         caller
@@ -115,6 +117,29 @@ async fn supervised_unix_preserves_principals_verbs_and_bounded_retirement() {
     })
     .await
     .expect("supervised Unix acceptance deadline");
+}
+
+#[tokio::test]
+async fn verified_native_refusal_exhaustion_closes_and_settles_every_correlation() {
+    use bus::native_client::{NodedClient, UnixConnectOutcome};
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let broker = Broker::start().await;
+        let mut options = client_options(&broker);
+        options.incoming_capacity = Some(1);
+        let UnixConnectOutcome::VerifiedUnix(owner) = NodedClient::connect_unix("stalled-verified", &broker.url, &options, None).await.unwrap() else { panic!("verified owner") };
+        let caller = NodedClient::connect("saturation-caller", &broker.url).await.unwrap();
+        // No receive owner drains commands/refusals. The bounded native reader
+        // must close at refusal exhaustion, so noded retires every forwarded ID.
+        let calls = (0..20).map(|index| caller.call_typed("stalled-verified", "probe.echo", serde_json::json!({"index":index})));
+        let results = futures_util::future::join_all(calls).await;
+        assert!(!owner.client().is_connected());
+        for result in results {
+            assert!(matches!(result.unwrap(), bus::PortReply::AppError { .. }), "broker settles refused/retired target");
+        }
+        assert_eq!(caller.call("noded", "noded.ping", serde_json::Value::Null).await.unwrap()["pong"], true);
+        owner.client().close().await;
+        caller.close().await;
+    }).await.expect("bounded native retirement deadline");
 }
 
 struct Broker {

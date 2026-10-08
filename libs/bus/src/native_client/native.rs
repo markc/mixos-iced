@@ -57,7 +57,7 @@ enum NativeIncomingSender {
     VerifiedBounded {
         commands: mpsc::Sender<crate::native_client::unix::VerifiedCommand>,
         refusals: mpsc::Sender<crate::native_client::unix::VerifiedCommand>,
-        gap: Arc<AtomicBool>,
+        gap: Arc<crate::native_client::unix::VerifiedGap>,
     },
     Unbounded(mpsc::UnboundedSender<IncomingCommand>),
     Bounded(BoundedIncomingSender),
@@ -98,7 +98,7 @@ impl NativeIncomingSender {
                 // exactly as it would for a broker lifecycle gap.
                 if command.id.is_none() {
                     if bytes > 65536 {
-                        gap.store(true, Ordering::Release);
+                        gap.record();
                         return true;
                     }
                     return match commands.try_send(
@@ -106,7 +106,7 @@ impl NativeIncomingSender {
                     ) {
                         Ok(()) => true,
                         Err(mpsc::error::TrySendError::Full(_)) => {
-                            gap.store(true, Ordering::Release);
+                            gap.record();
                             true
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => false,
@@ -122,11 +122,14 @@ impl NativeIncomingSender {
                         Err(mpsc::error::TrySendError::Full(event)) => event,
                     }
                 };
-                // A full refusal queue means the owner has not drained the ones
-                // already handed over, so writing more cannot help; the caller
-                // still has its own deadline.
-                let _ = refusals.try_send(refused.refusal());
-                true
+                // Correlation is bounded too. Exhaustion terminates this native
+                // connection; the broker settles outstanding forwarded calls on
+                // transport retirement rather than silently losing correlations.
+                if refused.command().from.len().saturating_add(refused.command().command.len())
+                    .saturating_add(refused.command().id.as_ref().map_or(0, String::len)) > 65536 {
+                    return false;
+                }
+                refusals.try_send(refused.refusal()).is_ok()
             }
             Self::Unbounded(sender) => sender.send(command).is_ok(),
             Self::Bounded(sender) => sender.try_send(command),
@@ -416,7 +419,9 @@ impl NodedClient {
         let pending = Arc::new(StdMutex::new(HashMap::new()));
         let connected = Arc::new(AtomicBool::new(true));
         let service_name = Arc::new(RwLock::new(service_name.to_string()));
-        let verbs = Arc::new(RwLock::new(declared_verbs));
+        let verbs = Arc::new(RwLock::new(declared_verbs.map(|verbs| {
+            serde_json::to_string(&verbs).expect("verb descriptors serialize")
+        })));
         let (tx, rx) = match incoming_capacity {
             Some(capacity @ 1..=1024) => {
                 let (tx, commands) = mpsc::channel(capacity);
@@ -424,7 +429,7 @@ impl NodedClient {
                 // ordinary work, so a short queue is enough to keep the reader
                 // from ever having to wait.
                 let (refusal_tx, refusals) = mpsc::channel(capacity.min(8));
-                let gap = Arc::new(AtomicBool::new(false));
+                let gap = Arc::new(crate::native_client::unix::VerifiedGap::new());
                 (
                     NativeIncomingSender::VerifiedBounded {
                         commands: tx,
@@ -435,6 +440,7 @@ impl NodedClient {
                         commands,
                         refusals,
                         gap,
+                        deferred: None,
                     },
                 )
             }
@@ -1411,6 +1417,9 @@ impl NodedClient {
 
         // Resolve all pending requests with an error
         pending.lock().expect("pending mutex poisoned").clear();
+        // The reader is now terminal, with no pending reply owner remaining.
+        // Closing the write half retires forwarded broker correlations too.
+        let _ = sink.lock().await.close().await;
     }
 }
 
@@ -1492,7 +1501,7 @@ mod verified_bound_tests {
     async fn overflow_hands_off_refusals_and_reports_dropped_notices_as_a_gap() {
         let (tx, mut commands) = mpsc::channel(1);
         let (refusal_tx, mut refusals) = mpsc::channel(4);
-        let gap = Arc::new(AtomicBool::new(false));
+        let gap = Arc::new(crate::native_client::unix::VerifiedGap::new());
         let sender = NativeIncomingSender::VerifiedBounded {
             commands: tx,
             refusals: refusal_tx,
@@ -1517,11 +1526,11 @@ mod verified_bound_tests {
             crate::native_client::unix::Delivery::Refuse
         );
         assert_eq!(refused.command().id.as_deref(), Some("2"));
-        assert!(!gap.load(Ordering::Acquire));
+        assert!(!gap.take());
         // A dropped id-less notice is a delivery gap, not a refusal: nothing is
         // queued for reply and the reader still does not block on a full lane.
         assert!(sender.send(command(None), None).await);
-        assert!(gap.swap(false, Ordering::AcqRel));
+        assert!(gap.take());
         assert!(refusals.try_recv().is_err(), "notices are never refused");
         assert_eq!(
             commands.recv().await.unwrap().command().id.as_deref(),
@@ -1529,7 +1538,7 @@ mod verified_bound_tests {
         );
         assert!(sender.send(command(None), None).await);
         assert!(commands.recv().await.unwrap().command().id.is_none());
-        assert!(!gap.load(Ordering::Acquire));
+        assert!(!gap.take());
     }
 }
 
