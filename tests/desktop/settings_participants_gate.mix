@@ -523,7 +523,11 @@ try
   $replacement_receipt=shell("app.participants.wait",{operation_id:$quoin_batch.operation_id,services:[$replacement.context.service],keys:[$replacement.context.service],until:"presented",timeout_ms:3000})
   write_file($root .. "/participant-recreate-new.json",json_encode($replacement_receipt))
   $replacement_rows=filter($replacement_receipt.observations.participants,fn($row)=$row.service == $replacement.context.service and $row.pid == $replacement.pid and $row.state != "closed")
-  check(len($replacement_rows) == 1 and $replacement_rows[0].registration_incarnation != $late_rows[0].registration_incarnation and $replacement_rows[0].frame_owner != $late_rows[0].frame_owner,"Recreated same-service native owner reused retired identity")
+  check(len($replacement_rows) == 1 and $replacement_rows[0].pid != $late_rows[0].pid
+    and $replacement_rows[0].registration_incarnation != $late_rows[0].registration_incarnation
+    and $replacement_rows[0].surface_incarnation != $late_rows[0].surface_incarnation
+    and $replacement_rows[0].native_window != nil and $late_rows[0].native_window != nil
+    and not deep_eq($replacement_rows[0].native_window,$late_rows[0].native_window),"Recreated same-service native owner reused retired scoped identity")
   $participants.exact_presented($replacement_receipt,$quoin_batch.operation_id,$replacement.context.service,$replacement_rows[0].key,$replacement.pid,$h.identity($quoin_batch.snapshot))
   $broker_before=shell("app.describe",{}).participants
   $R.bus=$n.restart_private_bus(merge($R.bus,{restart_record:"restart.json"}))
