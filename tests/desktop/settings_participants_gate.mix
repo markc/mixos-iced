@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
--- version: 0.1.0
+-- version: 0.2.0
 -- One real owned broker/session, six simultaneous native apps plus Quoin.
 -- Four exact acceptance frame/layout stamps; Ced/Scene Editor/Quoin capture
 -- palette/boundary evidence remains explicitly different. No KMS claim.
@@ -158,6 +158,51 @@ fn participant_presentations($batch,$label)
     environment:"owned nested compositor; all owners concurrent; sequential native reveal after authority change",
     applied:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_applied_ns != nil),fn($row)=$row.accepted_to_applied_ns)),
     presented:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_presented_ns != nil),fn($row)=$row.accepted_to_presented_ns))}
+end
+fn preparation_failure_recovery()
+  $before=shell("app.describe",{}).participants
+  $keys=[]; $owners={}; $retained={}; $services=[]
+  for each $app in $R.owners
+    $rows=filter($before.participants,fn($row)=$row.service == $app.context.service and $row.pid == $app.pid and $row.state != "closed" and ($app.name != "quoin" or $row.key == $app.context.service .. "/all-apps-control"))
+    check(len($rows) == 1,"Failure wait needs one exact admitted owner")
+    $admitted_row=$rows[0]; push($keys,$admitted_row.key); push($services,$app.context.service)
+    $owners[$admitted_row.key]={pid:$admitted_row.pid,connection_generation:$admitted_row.connection_generation,registration_incarnation:$admitted_row.registration_incarnation,surface_incarnation:$admitted_row.surface_incarnation,native_window:$admitted_row.native_window,frame_owner:$admitted_row.frame_owner}
+    $retained[$app.context.service]=$f.rpc($app.context,"app.describe",{})
+  end
+  check(len($keys) == 7 and len(unique($keys)) == 7,"Seven genuine failure owners required")
+  $bad=apply({"appearance.resources":{schema:1,set_id:"native-absent-resource",manifest_blake3:$manifest_digest}},"preparation-failed")
+  $failure_out=$R.run.path .. "/preparation-failure-wait.log"
+  $failure_child=own($h.call_async($mix,$R.bus,$R.run.path,"shell","app.participants.wait",{operation_id:$bad.operation_id,services:$services,keys:$keys,owners:$owners,until:"preparation_failed",timeout_ms:20000},$failure_out,25),false)
+  $failure_deadline=time()+30
+  while process_alive($failure_child) and time() < $failure_deadline sleep(0.05) end
+  check(not process_alive($failure_child),"Native failure wait child exceeded outer budget")
+  $failure_reply=$h.collect($failure_out,$failure_child)
+  check($failure_reply != nil and $failure_reply.rc == 0,"Native failure wait failed")
+  $wait=$failure_reply.result
+  check($wait.until == "preparation_failed" and not $wait.deadline_elapsed,"Genuine seven-owner preparation failure did not arrive")
+  $failure_descriptions=[]
+  for each $app in $R.owners
+    $actual=$f.rpc($app.context,"app.describe",{})
+    $old=$retained[$app.context.service]
+    $failed_evidence=$actual.settings.preparation_failure
+    $failed_rows=filter($wait.observations.participants,fn($observed)=$observed.service == $app.context.service and contains($keys,$observed.key))
+    check(len($failed_rows) == 1 and deep_eq($failed_rows[0].preparation_failure,$failed_evidence),"Selected participant and owner describe report different consumer failures")
+    check($actual.pid == $app.pid and $failed_evidence != nil and deep_eq($failed_evidence.identity,$h.identity($bad.snapshot)) and deep_eq($actual.settings.current,$failed_evidence.identity),"Failure belongs to another authority/owner")
+    check($failed_evidence.generation == $actual.settings.generation and deep_eq($failed_evidence.fault,$actual.settings.fault),"Typed failure is not the consumer's actual fault")
+    check(deep_eq($actual.settings.applied,$old.settings.applied) and deep_eq($actual.resources,$old.resources),"Failed preparation changed last-good installed resources")
+    push($failure_descriptions,{service:$app.context.service,before:$old,failed:$actual})
+  end
+  retained("preparation-failed")
+  $good=apply({"appearance.resources":{schema:1,set_id:$manifest.set_id,manifest_blake3:$manifest_digest}},"preparation-recovered")
+  $recovered_frames=participant_presentations($good,"preparation-recovered")
+  for each $app in $R.owners
+    $actual=$f.rpc($app.context,"app.describe",{})
+    check($actual.settings.preparation_failure == nil and $actual.settings.fault == nil and deep_eq($actual.settings.applied,$h.identity($good.snapshot)),"Recovery retained stale failure or unapplied authority")
+  end
+  retained("preparation-recovered")
+  $receipt={before:$before,owners:$owners,failed:$bad,wait:$wait,descriptions:$failure_descriptions,recovered:$good,frames:$recovered_frames,hardware:false}
+  write_file($R.run.path .. "/preparation-failure-recovery.json",json_encode($receipt))
+  return $receipt
 end
 fn native_states()
   $receipts=[]
@@ -464,6 +509,7 @@ try
   $participant_idle=native_idle()
   write_file($root .. "/participants-native-idle.json",json_encode($participant_idle))
   $participant_samples=native_samples()
+  $preparation_failure=preparation_failure_recovery()
   write_file($root .. "/participants-native-samples.json",json_encode($participant_samples))
   -- A newly created app/control resolves the changed authority while all
   -- original citizens remain alive and retain their genuine product state.
@@ -560,7 +606,7 @@ try
     all_six_simultaneous:true,quoin:true,core_set:$manifest.set_id,core_manifest_blake3:$manifest_digest,rounds:$R.rounds,participant_states:$participant_states,participant_idle:$participant_idle,participant_samples:$participant_samples,
     new_app:{pid:$late.pid,description:$late_description,frame:$late_frame,closed:$closed,recreated:$replacement_receipt},new_control:$late_control,
     quoin_lifecycle:{hidden:$quoin_hidden,revealed:$quoin_revealed,retired:$quoin_closed},
-    broker_replacement:{before:$broker_before,after:$broker_after},
+    broker_replacement:{before:$broker_before,after:$broker_after},preparation_failure:$preparation_failure,
     hardware:false,actual_output_scale:$output.scale,quantile_population:"actual monotonic durations across current operation participants; small measured sample count explicit",exact_frame_participants:["term","busviewer","cap","dopus"],
     palette_boundary_participants:["ced","scene-editor"],quoin_palette_layout:true}))
   $R.ok=true

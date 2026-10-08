@@ -394,6 +394,18 @@ impl Participants {
             let current_operation = owner.operation.as_ref().filter(|operation| {
                 operation.changed && observed.accepted.as_ref() == Some(&operation.identity)
             });
+            let preparation_failure = serde_json::from_value::<settings::consumer::PreparationFailure>(
+                owner.value["settings"]["preparation_failure"].clone(),
+            )
+            .ok()
+            .filter(|failure| {
+                owner.value["settings"]["confirmed"] == true
+                    && failure.generation > 0
+                    && owner.value["settings"]["generation"].as_u64() == Some(failure.generation)
+                    && observed.accepted.as_ref() == Some(&failure.identity)
+                    && current_operation.is_some()
+                    && observed.state != State::Closed
+            });
             let phase = match observed.phase {
                 Phase::Pending => "pending",
                 Phase::Accepted => "accepted",
@@ -421,6 +433,7 @@ impl Participants {
                 "state":state,"phase":phase,"context":owner.value["settings"]["context"],
                 "current":observed.accepted,"applied":observed.applied,"resources":owner.value["settings"]["resources"],
                 "operation_id":current_operation.map(|operation|&operation.operation_id),
+                "preparation_failure":preparation_failure,
                 "accepted_to_applied_ns":current_operation.and(observed.accepted_to_applied_ns),
                 "accepted_to_presented_ns":current_operation.and(observed.accepted_to_presented_ns),
                 "presentation":observed.presentation.map(frames::observation_json)}));
@@ -487,6 +500,58 @@ mod tests {
                     flags: 0,
                 },
             );
+    }
+    #[test]
+    fn remote_and_quoin_failures_keep_settings_generation_separate_and_retire() {
+        let identity = json!({"incarnation":"authority","revision":"1","design_revision":"1","source_digest":"source"});
+        let failure = json!({"identity":identity,"generation":11,"fault":{"code":"resource_missing","path":"resources","message":"Missing set"}});
+        let handle = frames::Handle::new();
+        handle.set_live_generation(Some(1));
+        let mut participants = Participants::default();
+        participants.registrations(BTreeMap::from([
+            ("term".into(), "registered".into()), ("shell".into(), "shell-registration".into())
+        ]));
+        let mut remote = notice(&handle, 1);
+        remote.value["settings"]["confirmed"] = json!(true);
+        remote.value["settings"]["generation"] = json!(11);
+        remote.value["settings"]["applied"] = Value::Null;
+        remote.value["settings"]["preparation_failure"] = failure.clone();
+        let local = remote.value.clone();
+        participants.notice(remote.clone());
+        let local_handle = frames::Handle::new();
+        local_handle.set_live_generation(Some(1));
+        let rows = participants.sync(&[window(10)], false, Some("shell"), local,
+            vec![("control".into(), 20, local_handle.snapshot(), true)], false);
+        assert_eq!(rows["participants"].as_array().unwrap().len(), 2);
+        for row in rows["participants"].as_array().unwrap() {
+            assert_eq!(row["connection_generation"], 1);
+            assert_eq!(row["preparation_failure"], failure);
+            assert!(row["applied"].is_null());
+        }
+        remote.sequence = 2;
+        remote.value["settings"]["preparation_failure"]["generation"] = json!(12);
+        participants.notice(remote.clone());
+        let stale = sync(&mut participants, &[window(10)]);
+        let term = stale["participants"].as_array().unwrap().iter().find(|row| row["service"] == "term").unwrap();
+        assert!(term["preparation_failure"].is_null());
+        remote.sequence = 3;
+        remote.value["settings"]["preparation_failure"] = failure.clone();
+        remote.value["settings"]["preparation_failure"]["identity"]["revision"] = json!("2");
+        participants.notice(remote.clone());
+        assert!(sync(&mut participants, &[window(10)])["participants"].as_array().unwrap().iter().all(|row| row["preparation_failure"].is_null()));
+        remote.sequence = 4;
+        remote.value["settings"]["preparation_failure"] = failure.clone();
+        remote.value["settings"]["preparation_failure"]["generation"] = json!(0);
+        remote.value["settings"]["generation"] = json!(0);
+        participants.notice(remote.clone());
+        assert!(sync(&mut participants, &[window(10)])["participants"].as_array().unwrap().iter().all(|row| row["preparation_failure"].is_null()));
+        remote.sequence = 5;
+        remote.value["settings"]["preparation_failure"] = failure;
+        remote.value["settings"]["generation"] = json!(11);
+        remote.value["settings"]["confirmed"] = json!(false);
+        participants.notice(remote);
+        assert!(sync(&mut participants, &[window(10)])["participants"].as_array().unwrap().iter().all(|row| row["preparation_failure"].is_null()));
+        assert!(sync(&mut participants, &[])["participants"].as_array().unwrap().iter().all(|row| row["state"] == "closed" && row["preparation_failure"].is_null()));
     }
     #[test]
     fn retired_receipt_and_late_callback_cannot_certify_same_pid_replacement() {

@@ -88,6 +88,39 @@ must exist and each requested service must have a selected row. This selects
 one real Quoin scene without claiming that its hidden sibling scenes presented.
 The reply echoes the selected keys and criterion.
 
+### Preparation failure (wait contract 0.2.0)
+
+The additive `until:"preparation_failed"` criterion observes a failed current
+authority preparation. It does not classify a transport error, hidden buffer or
+presentation deadline as a preparation failure. Existing criteria are unchanged.
+The request requires exact `keys` and an `owners` object with precisely those
+keys. Each value contains PID, native connection generation, registration and
+surface incarnation, nullable native-window identity and nullable frame owner:
+The two nullable fields may be omitted, with the same meaning as `null`; all
+other owner fields are required. An absent handle cannot match a live handle.
+
+```json
+{"operation_id":"failed-operation","services":["shell"],"keys":["shell/control"],"owners":{"shell/control":{"pid":42,"connection_generation":7,"registration_incarnation":"native-registration","surface_incarnation":3,"native_window":null,"frame_owner":null}},"until":"preparation_failed","timeout_ms":1000}
+```
+
+Every selected record must retain that exact live owner, the requested accepted
+operation and an actual typed `preparation_failure` whose `identity` equals its
+current accepted snapshot. Closed, replaced, stale-operation and unrelated
+local-context faults cannot complete the wait. Failure evidence contains
+`identity`, settings consumer `generation` and `fault:{code,path,message}`.
+The consumer generation is distinct from the native owner connection generation.
+Cold owners may have no applied data; callers testing recovery additionally
+verify their exact prior applied identity, resources and retained product state.
+
+The shared consumer captures failure only for its current authority update and
+clears it on supersession, disconnection or success. Existing native application
+publications carry it in `settings.preparation_failure`; Quoin supplies the same
+consumer evidence through its existing owner observation. Participant changes
+retain the field and wake the existing finite native wait. No polling, extra
+connection, authority or redraw is introduced. The reply retains the v1 envelope
+and echoes `until:"preparation_failed"`; unsupported implementations refuse the
+new criterion rather than silently treating it as settled.
+
 Authority observation uses the optional bounded `settings_observation` header
 on the existing protected settings snapshot topic. The snapshot body, digest
 and schema are unchanged. New durable changed operations may carry original

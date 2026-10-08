@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0
+
+- Carry shared typed authority preparation-failure evidence through existing
+  retained native owner observations, including embedded Quoin participants.
+- Add exact typed participant owner fences for the event-driven
+  `preparation_failed` wait criterion. Existing presentation and visibility
+  criteria remain unchanged; cold failure does not require last-good data.
+
 ## 0.1.27
 
 - Keep offline observation watches dormant until native connection, preserving

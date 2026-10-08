@@ -103,6 +103,22 @@ fn read_event_race_keeps_newest_and_fences_old_renderer_completion() {
         Diagnostic::new("resource_failed", "font", "Missing face")
     ));
     assert_eq!(state.applied().unwrap().revision, Revision(3));
+    let failure = state.evidence().preparation_failure.unwrap();
+    assert_eq!(failure.identity, consumer::SnapshotIdentity::from(current.snapshot()));
+    assert_eq!(failure.generation, 1);
+    assert_eq!(failure.fault.code, "resource_failed");
+    let mut sixth = snapshot(6, "a");
+    sixth.effective.get_mut("app:ced").unwrap().ui.density = 1.7;
+    state.observe(1, sixth);
+    assert!(state.evidence().preparation_failure.is_none());
+    assert!(!state.failed(&current, Diagnostic::new("stale", "font", "Old capture")));
+    assert!(state.evidence().preparation_failure.is_none());
+    let fresh = state.pending().unwrap().clone();
+    assert!(state.failed(&fresh, Diagnostic::new("new_failure", "font", "New capture")));
+    assert!(state.evidence().preparation_failure.is_some());
+    state.disconnected();
+    assert!(state.evidence().preparation_failure.is_none());
+    assert_eq!(state.applied().unwrap().revision, Revision(3));
 }
 #[test]
 fn reconnect_loss_and_foreign_consumer_tickets_are_fenced_and_coalesced() {
@@ -134,6 +150,28 @@ fn reconnect_loss_and_foreign_consumer_tickets_are_fenced_and_coalesced() {
     state.disconnected();
     assert!(!state.acknowledge(&update));
     assert!(state.retry_delay().is_none());
+}
+
+#[test]
+fn cold_preparation_failure_preserves_absent_applied_and_success_clears_failure() {
+    let mut state = consumer();
+    let read = read_work(&mut state, 4);
+    state.complete(&read, Ok(Some(snapshot(1, "cold"))));
+    let first = state.pending().unwrap().clone();
+    assert!(state.failed(&first, Diagnostic::new("resource_missing", "resources", "Missing set")));
+    let failed = state.evidence();
+    assert!(failed.applied.is_none());
+    assert_eq!(failed.preparation_failure.as_ref().unwrap().generation, 4);
+    assert_eq!(failed.preparation_failure.as_ref().unwrap().identity, failed.current.unwrap());
+    let mut next = snapshot(2, "cold");
+    next.effective.get_mut("app:ced").unwrap().ui.density = 1.2;
+    state.observe(4, next);
+    assert!(state.evidence().preparation_failure.is_none());
+    let recovered = state.pending().unwrap().clone();
+    assert!(state.acknowledge(&recovered));
+    assert!(state.evidence().preparation_failure.is_none());
+    assert!(state.evidence().fault.is_none());
+    assert_eq!(state.evidence().current, state.evidence().applied);
 }
 #[test]
 fn retained_new_incarnation_requires_read_and_confirmed_contradiction_does_not_loop() {

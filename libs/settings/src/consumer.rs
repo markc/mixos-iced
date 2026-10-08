@@ -52,7 +52,18 @@ pub struct Evidence {
     pub current: Option<SnapshotIdentity>,
     pub applied: Option<SnapshotIdentity>,
     pub fault: Option<Diagnostic>,
+    pub preparation_failure: Option<PreparationFailure>,
     pub fallback_fault: Option<Diagnostic>,
+}
+
+/// A failed current authority preparation, captured by its existing consumer.
+/// This generation is the settings delivery generation, not a frame-owner scope.
+#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparationFailure {
+    pub identity: SnapshotIdentity,
+    pub generation: u64,
+    pub fault: Diagnostic,
 }
 
 /// Event-time evidence captured by the existing consumer owner. `received`
@@ -169,6 +180,7 @@ pub struct Consumer {
     applied_binding: Option<crate::ResourceBinding>,
     fallback_serial: u64,
     fault: Option<Diagnostic>,
+    preparation_failure: Option<PreparationFailure>,
     fallback_fault: Option<Diagnostic>,
     #[cfg(feature = "observation")]
     received_observation: Option<ObservationPoint>,
@@ -230,6 +242,7 @@ impl Consumer {
             applied_binding: None,
             fallback_serial: 0,
             fault: None,
+            preparation_failure: None,
             fallback_fault: None,
             #[cfg(feature = "observation")]
             received_observation: None,
@@ -266,6 +279,11 @@ impl Consumer {
             current: self.current().map(SnapshotIdentity::from),
             applied: self.applied().map(SnapshotIdentity::from),
             fault: self.fault.clone(),
+            preparation_failure: self.preparation_failure.clone().filter(|failure| {
+                self.confirmed
+                    && self.generation == Some(failure.generation)
+                    && self.current().map(SnapshotIdentity::from).as_ref() == Some(&failure.identity)
+            }),
             fallback_fault: self.fallback_fault.clone(),
         }
     }
@@ -508,6 +526,7 @@ impl Consumer {
         self.failures = 0;
         self.fault = None;
         self.fallback_fault = None;
+        self.preparation_failure = None;
         // Last usable applied/current data remains available, labelled offline
         // by the absent connection generation; it is not current read evidence.
     }
@@ -803,6 +822,7 @@ impl Consumer {
         let Some(snapshot) = self.reducer.current().cloned() else {
             return;
         };
+        self.preparation_failure = None;
         #[cfg(feature = "observation")]
         {
             let identity = SnapshotIdentity::from(&snapshot);
@@ -905,6 +925,7 @@ impl Consumer {
         self.pending = None;
         if update.kind == PresentationKind::Current {
             self.fault = None;
+            self.preparation_failure = None;
         }
         self.fallback_fault = None;
         #[cfg(feature = "observation")]
@@ -917,6 +938,11 @@ impl Consumer {
         }
         self.pending = None;
         if update.kind == PresentationKind::Current {
+            self.preparation_failure = update.generation.map(|generation| PreparationFailure {
+                identity: SnapshotIdentity::from(update.snapshot()),
+                generation,
+                fault: fault.clone(),
+            });
             self.fault = Some(fault);
         } else {
             self.fallback_fault = Some(fault);

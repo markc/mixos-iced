@@ -1,5 +1,14 @@
 # settings contract changes
 
+## 0.4.0
+
+Add optional typed `preparation_failure` consumer evidence for a failed current
+authority preparation. The captured snapshot identity and settings delivery
+generation accompany the actual diagnostic. Supersession, disconnection and
+successful activation clear it; failed preparation preserves last-good data.
+Transport errors and fallback failures cannot manufacture this evidence.
+Snapshot bytes and the ABP wire protocol remain unchanged.
+
 ## 0.3.10
 
 Retain the bounded authenticated authority receipt alongside a buffered native

@@ -28,6 +28,26 @@ pub struct Scope {
     pub surface_incarnation: u64,
 }
 
+/// Copied native owner identity admitted before an operation is observed.
+/// Nullable windows and handles describe genuine windowless/cold owners.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnerFence {
+    pub pid: u64,
+    pub connection_generation: u64,
+    pub registration_incarnation: String,
+    pub surface_incarnation: u64,
+    pub native_window: Option<NativeWindow>,
+    pub frame_owner: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeWindow {
+    pub id: u64,
+    pub generation: u64,
+}
+
 /// Minted by this observer, never accepted from a Bus request body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Token(u64);

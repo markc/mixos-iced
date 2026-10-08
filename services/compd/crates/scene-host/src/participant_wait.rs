@@ -2,9 +2,10 @@
 //! Finite native requests over copied owner receipts. No periodic reads.
 use application::native_actor::Accepted;
 use application::native_queue::Permit;
+use application::participants::OwnerFence;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
     time::{Duration, Instant},
 };
@@ -93,7 +94,9 @@ pub(crate) struct Spec {
     timeout: Duration,
     presented: bool,
     closed: bool,
+    preparation_failed: bool,
     keys: Option<BTreeSet<String>>,
+    owners: Option<BTreeMap<String, OwnerFence>>,
 }
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,16 +108,19 @@ struct WireSpec {
     until: Option<String>,
     #[serde(default)]
     keys: Option<Vec<String>>,
+    #[serde(default)]
+    owners: Option<BTreeMap<String, OwnerFence>>,
 }
 pub(crate) fn parse(body: &str) -> Option<Spec> {
     if body.len() > 16 * 1024 {
         return None;
     }
     let value: WireSpec = serde_json::from_str(body).ok()?;
-    let (presented, closed) = match value.until.as_deref() {
-        None | Some("settled") => (false, false),
-        Some("presented") => (true, false),
-        Some("closed") => (false, true),
+    let (presented, closed, preparation_failed) = match value.until.as_deref() {
+        None | Some("settled") => (false, false, false),
+        Some("presented") => (true, false, false),
+        Some("closed") => (false, true, false),
+        Some("preparation_failed") => (false, false, true),
         _ => return None,
     };
     let keys = if let Some(rows) = value.keys {
@@ -131,6 +137,22 @@ pub(crate) fn parse(body: &str) -> Option<Spec> {
     } else {
         None
     };
+    if preparation_failed {
+        let keys = keys.as_ref()?;
+        let owners = value.owners.as_ref()?;
+        if owners.len() != keys.len()
+            || owners.keys().any(|key| !keys.contains(key))
+            || owners.values().any(|owner| {
+                owner.pid == 0 || owner.connection_generation == 0
+                    || owner.registration_incarnation.is_empty()
+                    || owner.registration_incarnation.len() > 256
+            })
+        {
+            return None;
+        }
+    } else if value.owners.is_some() {
+        return None;
+    }
     let operation = value.operation_id;
     if operation.is_empty() || operation.len() > 128 {
         return None;
@@ -155,7 +177,9 @@ pub(crate) fn parse(body: &str) -> Option<Spec> {
         timeout: Duration::from_millis(timeout),
         presented,
         closed,
+        preparation_failed,
         keys,
+        owners: value.owners,
     })
 }
 
@@ -166,6 +190,14 @@ fn complete(value: &Value, spec: &Spec) -> bool {
     if spec.keys.as_ref().is_some_and(|keys| {
         keys.iter()
             .any(|key| !rows.iter().any(|row| row["key"] == key.as_str()))
+    }) {
+        return false;
+    }
+    if spec.preparation_failed && spec.keys.as_ref().is_some_and(|keys| {
+        keys.iter().any(|key| {
+            let matching: Vec<_> = rows.iter().filter(|row| row["key"] == key.as_str()).collect();
+            matching.len() != 1 || matching[0]["service"].as_str().is_none_or(|service| !spec.services.contains(service))
+        })
     }) {
         return false;
     }
@@ -181,6 +213,22 @@ fn complete(value: &Value, spec: &Spec) -> bool {
             .collect();
         !selected.is_empty()
             && selected.iter().all(|row| {
+                if spec.preparation_failed {
+                    let Some(key) = row["key"].as_str() else { return false; };
+                    let Some(expected) = spec.owners.as_ref().and_then(|owners| owners.get(key)) else { return false; };
+                    let actual = serde_json::from_value::<OwnerFence>(json!({
+                        "pid":row["pid"],"connection_generation":row["connection_generation"],
+                        "registration_incarnation":row["registration_incarnation"],
+                        "surface_incarnation":row["surface_incarnation"],
+                        "native_window":row["native_window"],"frame_owner":row["frame_owner"]
+                    })).ok();
+                    let failure = serde_json::from_value::<settings::consumer::PreparationFailure>(row["preparation_failure"].clone()).ok();
+                    let current = serde_json::from_value::<settings::consumer::SnapshotIdentity>(row["current"].clone()).ok();
+                    return row["state"] != "closed"
+                        && row["operation_id"] == spec.operation
+                        && actual.as_ref() == Some(expected)
+                        && failure.as_ref().is_some_and(|failure| failure.generation > 0 && current.as_ref() == Some(&failure.identity));
+                }
                 if spec.closed {
                     return row["state"] == "closed";
                 }
@@ -276,7 +324,7 @@ pub(crate) fn run(
         }
     }
     let body=json!({"contract":"application.participants.wait.v1","operation_id":spec.operation,
-        "services":spec.services,"keys":spec.keys,"until":if spec.presented {"presented"} else if spec.closed {"closed"} else {"settled"},"deadline_elapsed":elapsed,"observations":value}).to_string();
+        "services":spec.services,"keys":spec.keys,"until":if spec.preparation_failed {"preparation_failed"} else if spec.presented {"presented"} else if spec.closed {"closed"} else {"settled"},"deadline_elapsed":elapsed,"observations":value}).to_string();
     tokio::time::timeout(Duration::from_secs(1),client.respond_parts(command.generation,&command.from,&command.command,command.id.as_deref(),0,&body))
         .await.map_err(|_|"participant reply timed out".to_owned())?
         .map_err(|error|error.to_string())
@@ -286,6 +334,76 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preparation_failure_is_operation_and_owner_fenced_and_allows_cold_owners() {
+        let identity = json!({"incarnation":"authority","revision":"2","design_revision":"1","source_digest":"digest"});
+        let fence = json!({"pid":42,"connection_generation":7,"registration_incarnation":"native-registration","surface_incarnation":3,"native_window":null,"frame_owner":null});
+        let body = json!({"operation_id":"failed-op","services":["shell"],"keys":["shell/control"],"owners":{"shell/control":fence},"until":"preparation_failed","timeout_ms":100});
+        let spec = parse(&body.to_string()).unwrap();
+        let mut row = fence.clone();
+        row["key"] = json!("shell/control");
+        row["service"] = json!("shell");
+        row["operation_id"] = json!("failed-op");
+        row["state"] = json!("applying");
+        row["current"] = identity.clone();
+        row["applied"] = Value::Null;
+        row["preparation_failure"] = json!({"identity":identity,"generation":11,"fault":{"code":"resource_failed","path":"resources","message":"Missing resource"}});
+        let receipt = |row: &Value| json!({"participants":[row]});
+        assert!(complete(&receipt(&row), &spec));
+        for (field, replacement) in [
+            ("operation_id", json!("wrong-operation")),
+            ("state", json!("closed")),
+            ("pid", json!(43)),
+            ("connection_generation", json!(8)),
+            ("registration_incarnation", json!("replacement")),
+            ("surface_incarnation", json!(4)),
+            ("frame_owner", json!(99)),
+            ("native_window", json!({"id":1,"generation":1})),
+            ("preparation_failure", Value::Null),
+        ] {
+            let mut wrong = row.clone();
+            wrong[field] = replacement;
+            assert!(!complete(&receipt(&wrong), &spec), "{field}");
+        }
+        let mut stale = row.clone();
+        stale["preparation_failure"]["identity"]["revision"] = json!("1");
+        assert!(!complete(&receipt(&stale), &spec));
+        stale = row.clone();
+        stale["preparation_failure"]["generation"] = json!(0);
+        assert!(!complete(&receipt(&stale), &spec));
+        let mut cold_body = body.clone();
+        cold_body["owners"]["shell/control"]["surface_incarnation"] = json!(0);
+        let cold_spec = parse(&cold_body.to_string()).unwrap();
+        let mut cold_row = row.clone();
+        cold_row["surface_incarnation"] = json!(0);
+        assert!(complete(&receipt(&cold_row), &cold_spec));
+        let mut outside = body.clone();
+        outside["keys"] = json!(["shell/control", "term/main"]);
+        outside["owners"]["term/main"] = fence.clone();
+        let outside_spec = parse(&outside.to_string()).unwrap();
+        let mut other = row.clone();
+        other["key"] = json!("term/main");
+        other["service"] = json!("term");
+        assert!(!complete(&json!({"participants":[row.clone(),other]}), &outside_spec));
+        let mut missing = body.clone();
+        missing.as_object_mut().unwrap().remove("owners");
+        assert!(parse(&missing.to_string()).is_none());
+        missing = body.clone();
+        missing["owners"] = json!({});
+        assert!(parse(&missing.to_string()).is_none());
+        missing = body.clone();
+        missing["until"] = json!("settled");
+        assert!(parse(&missing.to_string()).is_none());
+        let mut history = History::default();
+        let mut before = row.clone();
+        before["preparation_failure"] = Value::Null;
+        let at = Instant::now();
+        history.observe(receipt(&before), at);
+        history.observe(receipt(&row), at + Duration::from_millis(1));
+        assert_eq!(history.records.len(), 2);
+        assert!(on_time(&history, &spec, 1, at).is_none());
+        assert!(on_time(&history, &spec, 1, at + Duration::from_millis(2)).is_some());
+    }
     #[test]
     fn ordinary_frames_preserve_first_phase_receipt_and_latency() {
         let first_at = Instant::now();
