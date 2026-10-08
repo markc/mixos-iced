@@ -46,10 +46,23 @@ impl History {
                 return false;
             };
             self.sequence = sequence;
+            let mut retained = value.clone();
+            if let (Some(rows), Some(previous)) = (
+                retained["participants"].as_array_mut(),
+                self.records.back().and_then(|record| record.value["participants"].as_array()),
+            ) {
+                for row in rows {
+                    if let Some(old) = previous.iter().find(|old| {
+                        old["key"] == row["key"] && phase_fingerprint(old) == phase_fingerprint(row)
+                    }) {
+                        *row = old.clone();
+                    }
+                }
+            }
             self.records.push_back(Observed {
                 sequence,
                 at,
-                value: value.clone(),
+                value: retained,
             });
             if self.records.len() > 128 {
                 self.records.pop_front();
@@ -59,6 +72,17 @@ impl History {
         self.latest = value;
         true
     }
+}
+
+fn phase_fingerprint(row: &Value) -> Value {
+    let mut row = row.clone();
+    if !row["presentation"].is_null() {
+        row["presentation"] = row["presentation"]["stamp"].clone();
+    }
+    if let Some(row) = row.as_object_mut() {
+        row.remove("accepted_to_presented_ns");
+    }
+    row
 }
 
 pub(crate) struct Spec {
@@ -277,6 +301,15 @@ mod tests {
         assert_eq!(history.records[0].at, first_at + Duration::from_millis(1));
         assert_eq!(history.records[0].value, receipt(1));
         assert_eq!(history.latest, receipt(256));
+        let mut with_sibling = receipt(257);
+        with_sibling["participants"].as_array_mut().unwrap().push(json!({
+            "key":"shell/control", "service":"shell", "state":"applying"
+        }));
+        history.observe(with_sibling.clone(), first_at + Duration::from_millis(257));
+        with_sibling["participants"][1]["state"] = json!("presented");
+        with_sibling["participants"][0] = receipt(258)["participants"][0].clone();
+        history.observe(with_sibling, first_at + Duration::from_millis(258));
+        assert_eq!(history.records.back().unwrap().value["participants"][0], receipt(1)["participants"][0]);
         let spec = parse(r#"{"operation_id":"op","services":["term"],"until":"presented","timeout_ms":10}"#).unwrap();
         let settled = on_time(&history, &spec, 1, first_at + Duration::from_millis(10)).unwrap();
         assert_eq!(settled.value["participants"][0]["accepted_to_presented_ns"], 100);
@@ -289,7 +322,7 @@ mod tests {
         let mut changed = receipt(259);
         changed["participants"][0]["incarnation"] = json!(2);
         history.observe(changed, first_at + Duration::from_millis(259));
-        assert_eq!(history.records.len(), 4);
+        assert_eq!(history.records.len(), 6);
     }
     #[test]
     fn bounded_wait_refuses_ambiguous_or_unbounded_requests() {
