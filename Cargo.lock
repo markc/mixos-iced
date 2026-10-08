@@ -1559,7 +1559,7 @@ dependencies = [
 
 [[package]]
 name = "dopus"
-version = "0.4.10"
+version = "0.4.11"
 dependencies = [
  "actions",
  "anyhow",
