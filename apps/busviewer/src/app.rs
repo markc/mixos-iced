@@ -1259,18 +1259,23 @@ mod tests {
             application::test::assert_visible_bounds(service.bounds(), size);
             for text in [label("body"), label("reply")] {
                 let mut reached = false;
-                for _ in 0..100 {
+                for step in 0..100 {
                     let control = sim.find(text.clone()).expect("primary call editor label");
                     let bounds = control.bounds();
+                    if step == 0 || step == 99 {
+                        eprintln!("compact size={size:?} label={text:?} bounds={bounds:?} visible={:?}", control.visible_bounds());
+                        eprintln!("inspector={:?}", sim.find(widget::Id::new("busviewer-inspector")));
+                    }
                     if let Some(visible) = control.visible_bounds().filter(|visible| visible.size() == bounds.size()) {
                         application::test::assert_visible_bounds(visible, size);
                         reached = true;
                         break;
                     }
                     sim.point_at(iced::Point::new(size.width * 0.8, size.height * 0.4));
-                    sim.simulate([iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+                    let statuses = sim.simulate([iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
                         delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y: -8.0 },
                     })]);
+                    if step == 0 || step == 99 { eprintln!("wheel status={statuses:?}"); }
                 }
                 assert!(reached, "{text} must remain reachable by actual inspector scrolling");
             }
