@@ -440,6 +440,61 @@ fn remote_authority_clock_stays_unavailable_after_local_consumer_delivery() {
     command
         .headers
         .insert("broker_origin".into(), "local".into());
+    let mut bootstrap = consumer();
+    let read = read_work(&mut bootstrap, 1);
+    bootstrap.native_delivery(&command);
+    assert!(bootstrap.observations().authority.is_none(), "buffered delivery is not confirmed authority");
+    bootstrap.complete(&read, Ok(Some(next.clone())));
+    assert_eq!(bootstrap.observations().authority.unwrap().accepted, observation.accepted);
+    assert!(bootstrap.acknowledge(&bootstrap.pending().unwrap().clone()));
+    bootstrap.lost();
+    assert!(bootstrap.observations().authority.is_none(), "loss hides retained authority metadata");
+    let read = read_work(&mut bootstrap, 2);
+    bootstrap.complete(&read, Ok(Some(next.clone())));
+    assert!(bootstrap.observations().authority.is_none(), "reconnection cannot resurrect a generation-one receipt");
+
+    let mut absent = consumer();
+    let read = read_work(&mut absent, 1);
+    absent.native_delivery(&command);
+    absent.complete(&read, Ok(None));
+    assert!(absent.observations().authority.is_none(), "missing fresh snapshot cannot confirm buffered metadata");
+
+    let mut newer_command = command.clone();
+    newer_command.body = serde_json::to_string(&snapshot(3, "a")).unwrap();
+    for keep_wrong_observation in [false, true] {
+        let mut replacement = consumer();
+        let read = read_work(&mut replacement, 1);
+        replacement.native_delivery(&command);
+        let mut newer = newer_command.clone();
+        if !keep_wrong_observation {
+            newer.headers.remove("settings_observation");
+        }
+        replacement.native_delivery(&newer);
+        replacement.complete(&read, Ok(Some(snapshot(3, "a"))));
+        assert!(replacement.observations().authority.is_none(), "new buffered candidate cannot inherit an older receipt");
+    }
+
+    let mut forged = consumer();
+    let read = read_work(&mut forged, 1);
+    let mut wrong = observation.clone();
+    wrong.identity = (&snapshot(3, "a")).into();
+    let mut forged_command = command.clone();
+    forged_command.headers.insert("settings_observation".into(), serde_json::to_string(&wrong).unwrap());
+    forged.native_delivery(&forged_command);
+    forged.complete(&read, Ok(Some(next.clone())));
+    assert!(forged.observations().authority.is_none(), "mismatched commit identity cannot certify a matching fresh snapshot");
+
+    let mut different = consumer();
+    let read = read_work(&mut different, 1);
+    different.native_delivery(&command);
+    different.complete(&read, Ok(Some(snapshot(3, "a"))));
+    assert!(different.observations().authority.is_none(), "stale buffered identity cannot certify the fresh read");
+
+    let mut reconnected = consumer();
+    let read = read_work(&mut reconnected, 2);
+    reconnected.native_delivery(&command);
+    reconnected.complete(&read, Ok(Some(next.clone())));
+    assert!(reconnected.observations().authority.is_none(), "old-generation retained delivery is rejected");
     let mut local = consumer();
     activate(&mut local, snapshot(1, "a"));
     local.native_delivery(&command);
