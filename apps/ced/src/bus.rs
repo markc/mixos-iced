@@ -819,7 +819,8 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-                let value: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|error| panic!("{service}: rc={rc} body={body:?}: {error}"));
+                let value: serde_json::Value = serde_json::from_str(&body)
+                    .unwrap_or_else(|error| panic!("{service}: rc={rc} body={body:?}: {error}"));
                 assert_eq!(rc, 10);
                 assert_eq!(value["error_code"], "INVALID_ARGUMENT");
                 assert!(value["describe_code"].is_string());
