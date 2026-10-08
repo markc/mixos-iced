@@ -276,7 +276,8 @@ impl Consumer {
                 .authority_observation
                 .as_ref()
                 .filter(|(generation, observation)| {
-                    self.generation == Some(*generation)
+                    self.confirmed
+                        && self.generation == Some(*generation)
                         && self.current().is_some_and(|snapshot| {
                             SnapshotIdentity::from(snapshot) == observation.identity
                         })
@@ -289,11 +290,16 @@ impl Consumer {
     }
     #[cfg(feature = "observation")]
     pub(crate) fn observe_authority(&mut self, observation: Option<crate::clock::Commit>) {
+        // A retained event may arrive before the bootstrap read confirms its
+        // buffered snapshot. Keep its one bounded receipt; observations() only
+        // exposes it after confirmation of the matching current identity.
         self.authority_observation = self.generation.zip(observation).filter(|(_, observation)| {
             observation.operation_id.len() <= 128
-                && self.current().is_some_and(|snapshot| {
-                    SnapshotIdentity::from(snapshot) == observation.identity
-                })
+                && self
+                    .current()
+                    .into_iter()
+                    .chain(self.buffered.as_ref())
+                    .any(|snapshot| SnapshotIdentity::from(snapshot) == observation.identity)
         });
     }
     #[cfg(feature = "observation")]

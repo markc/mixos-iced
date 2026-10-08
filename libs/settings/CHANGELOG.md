@@ -1,5 +1,15 @@
 # settings contract changes
 
+## 0.3.10
+
+Retain the bounded authenticated authority receipt alongside a buffered native
+bootstrap snapshot. Expose it only after fresh-read confirmation of the matching
+current identity and generation; loss, stale identities and retired connections
+cannot certify a new owner's presentation. This preserves real retained-topic
+operation provenance without creating render work or changing snapshot bytes.
+The version-bound presentation cache advances; older caches use current bootstrap
+or embedded defaults.
+
 ## 0.3.9
 
 Configure app-owned supervised native settings receivers through one shared
