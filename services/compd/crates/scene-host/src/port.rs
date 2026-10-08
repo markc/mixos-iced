@@ -2330,11 +2330,8 @@ mod tests {
         let endpoint_root = tempfile::tempdir().unwrap();
         let endpoint = endpoint_root.path().join("settings-bus.sock");
         let _listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
-        let (port, wake, mut cached) = settings_port(
-            url.clone(),
-            cache_directory.clone(),
-            Some(endpoint.clone()),
-        );
+        let (port, wake, mut cached) =
+            settings_port(url.clone(), cache_directory.clone(), Some(endpoint.clone()));
         let mut cached_panels = crate::panels::Panels::default();
         drive_fallback(
             &port,
