@@ -562,7 +562,7 @@ impl Bus {
                         .hardware
                         .latest_before(kind, spec.after, deadline)
                     {
-                        reply.send(ControlReply::Body(json!({"instance":self.context.instance,"until":kind.name(),"event":{"sequence":event.sequence,"device":event.device},"waited_ms":waited_ms})));
+                        reply.send(ControlReply::Body(json!({"instance":self.context.instance,"until":kind.name(),"event":{"sequence":event.sequence,"device":event.device,"button":event.button},"waited_ms":waited_ms})));
                     } else if now >= deadline {
                         reply.send(ControlReply::refused(
                             "timeout",
@@ -650,6 +650,7 @@ fn hardware_kind(until: comp_model::request::HardwareUntil) -> world::comp::hard
     match until {
         HardwareUntil::Keyboard => Kind::Keyboard,
         HardwareUntil::Pointer => Kind::Pointer,
+        HardwareUntil::PointerButton => Kind::PointerButton,
         HardwareUntil::Paused => Kind::Paused,
         HardwareUntil::Active => Kind::Active,
     }
@@ -659,14 +660,14 @@ fn hardware_snapshot(lp: &Loop, context: &PortContext, profile: &str) -> Control
     use world::comp::hardware::Kind;
     let witness = &lp.inner.comp.hardware;
     let events: serde_json::Map<String, Value> =
-        [Kind::Keyboard, Kind::Pointer, Kind::Paused, Kind::Active]
+        [Kind::Keyboard, Kind::Pointer, Kind::PointerButton, Kind::Paused, Kind::Active]
             .into_iter()
             .map(|kind| {
                 (
                     kind.name().to_string(),
                     witness.latest(kind).map_or(
                         Value::Null,
-                        |event| json!({"sequence":event.sequence,"device":event.device}),
+                        |event| json!({"sequence":event.sequence,"device":event.device,"button":event.button}),
                     ),
                 )
             })

@@ -36,9 +36,10 @@ try
   rpc("comp.window.focus",merge($target,{raise:true}))
   rpc("comp.input.key",{seat:"human",window:$target,text:"native-witness-negative"})
   rpc("comp.input.pointer.move",{seat:"human",window:$target,x:20,y:20,corners:false})
+  rpc("comp.input.pointer.button",{seat:"human",button:"left",action:"both"})
   $after=rpc("comp.hardware.snapshot",{})
   check(deep_eq($before,$after),"Bus injection advanced native hardware witness")
-  for each $until in ["keyboard","pointer","paused","active"]
+  for each $until in ["keyboard","pointer","pointer_button","paused","active"]
     $reply=call("comp.hardware.wait",{instance:$before.instance,after:0,until:$until,timeout_ms:100})
     check($reply.rc >= 10 and $reply.result.error == "unsupported_backend","Nested wait produced false physical PASS")
   end

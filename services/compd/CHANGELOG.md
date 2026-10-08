@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.19
+
+- Add a bounded `pointer_button` native observation from actual libinput button
+  presses, including the Linux button code. Motion and release do not satisfy
+  button waits; generic pointer observations remain compatible.
+- Add strict parser, motion/replay and nested negative source guards.
+
 ## 0.1.18
 
 - Add bounded `comp.hardware.snapshot` and incarnation-fenced

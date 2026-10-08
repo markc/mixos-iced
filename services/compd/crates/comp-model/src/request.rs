@@ -345,6 +345,7 @@ pub struct SequenceStep {
 pub enum HardwareUntil {
     Keyboard,
     Pointer,
+    PointerButton,
     Paused,
     Active,
 }
@@ -802,13 +803,14 @@ pub fn parse_window_verb(verb: &str, args: &Value) -> Result<WindowVerb, Control
             let until = match present(object, "until").and_then(Value::as_str) {
                 Some("keyboard") => HardwareUntil::Keyboard,
                 Some("pointer") => HardwareUntil::Pointer,
+                Some("pointer_button") => HardwareUntil::PointerButton,
                 Some("paused") => HardwareUntil::Paused,
                 Some("active") => HardwareUntil::Active,
                 _ => {
                     return Err(invalid_argument(
                         "until",
                         "string",
-                        "keyboard|pointer|paused|active",
+                        "keyboard|pointer|pointer_button|paused|active",
                     ));
                 }
             };
