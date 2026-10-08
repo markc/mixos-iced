@@ -45,7 +45,7 @@ fn tile_verbs_keep_strict_original_identity_and_output_contract() {
     );
     for until in [WaitUntil::Tiled, WaitUntil::Untiled] {
         assert!(
-            matches!(parse_window_verb("comp.window.wait", &json!({"id":7,"generation":11,"until":until.name()})),
+            matches!(parse_window_verb("comp.window.wait", &json!({"match":{"id":7,"generation":11},"until":until.name()})),
             Ok(WindowVerb::Long(LongOp::Wait(spec))) if spec.until == until)
         );
     }
