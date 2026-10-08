@@ -1039,6 +1039,7 @@ impl App {
         ]
         .spacing(gap)
         .height(iced::Fill);
+        let right = widget::responsive(move |bounds| {
         let details = match self
             .selected
             .as_ref()
@@ -1079,10 +1080,16 @@ impl App {
                 .unwrap_or_else(|| label("select")),
         };
         let mono = self.typography("mono");
+        // Keep real text sizes. A compact inspector scrolls between finite
+        // editor viewports; a larger pane preserves the extra reply space.
+        let editor_height = (t.metrics.text.md * 7.0)
+            .min((bounds.height - gap * 2.0).max(t.metrics.text.md * 3.0));
+        let reply_height = editor_height.max(bounds.height
+            - t.metrics.text.md * 11.0 - editor_height - gap * 4.0);
         let mut body = text_editor(&self.body)
             .on_action(Message::Body)
             .placeholder(label("body"))
-            .height(t.metrics.text.md * 7.0)
+            .height(editor_height)
             .font(mono.font)
             .size(mono.size);
         if let Some(height) = mono.line_height {
@@ -1096,7 +1103,7 @@ impl App {
         }
         let mut reply = text_editor(&self.reply)
             .on_action(Message::Reply)
-            .height(iced::Fill)
+            .height(reply_height)
             .font(mono.font)
             .size(mono.size);
         if let Some(height) = mono.line_height {
@@ -1104,15 +1111,22 @@ impl App {
                 height,
             )));
         }
-        let right = column![
+        #[cfg(feature = "acceptance")]
+        if self.bus.fixture_frames.is_some() {
+            reply = reply.id(crate::acceptance::REPLY_ID);
+        }
+        widget::scrollable(column![
             widget::scrollable(self.text(details)).height(t.metrics.text.md * 9.0),
             self.text(label("body")),
             body,
             self.text(label("reply")),
             reply
         ]
-        .spacing(gap)
-        .height(iced::Fill);
+        .spacing(gap))
+        .height(iced::Fill)
+        .width(iced::Fill)
+        .into()
+        });
         let split = toolkit::Split::new(self.split, left, right).on_drag(Message::Split);
         let bar: Element<'_, Action, Theme> = toolkit::Menu::bar(menu::bar(
             self.busy() || !self.connected,
@@ -1229,6 +1243,10 @@ mod tests {
         for size in [iced::Size::new(420.0, 240.0), iced::Size::new(458.0, 346.0)] {
             let mut app = app();
             app.bootstrap = application::test::desktop_presentation(1.25);
+            #[cfg(feature = "acceptance")]
+            {
+                app.bus.fixture_frames = Some(application::acceptance::frames::Endpoint::new(app.bus.frames.clone()));
+            }
             let mut sim = application::test::Simulator::with_size(
                 iced::Settings::default(), size, app.view(),
             );
@@ -1239,10 +1257,52 @@ mod tests {
             assert!(service.visible_bounds().is_some(), "visible service");
             application::test::assert_visible_bounds(service.bounds(), size);
             for text in [label("body"), label("reply")] {
-                let control = sim.find(text).expect("primary call editor label");
-                assert!(control.visible_bounds().is_some(), "visible call editor label");
-                application::test::assert_visible_bounds(control.bounds(), size);
+                let mut reached = false;
+                for _ in 0..40 {
+                    let control = sim.find(text.clone()).expect("primary call editor label");
+                    let bounds = control.bounds();
+                    if control.visible_bounds() == Some(bounds)
+                        && bounds.y >= 0.0 && bounds.y + bounds.height <= size.height
+                    {
+                        application::test::assert_visible_bounds(bounds, size);
+                        reached = true;
+                        break;
+                    }
+                    sim.point_at(iced::Point::new(size.width * 0.8, size.height * 0.4));
+                    sim.simulate([iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+                        delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+                    })]);
+                }
+                assert!(reached, "{text} must remain reachable by actual inspector scrolling");
             }
+            #[cfg(feature = "acceptance")]
+            for id in [crate::acceptance::BODY_ID, crate::acceptance::REPLY_ID] {
+                let mut reached = false;
+                for _ in 0..40 {
+                    let control = sim.find(widget::Id::from(id)).expect("actual editor viewport");
+                    let bounds = control.bounds();
+                    if control.visible_bounds() == Some(bounds) {
+                        application::test::assert_visible_bounds(bounds, size);
+                        reached = true;
+                        break;
+                    }
+                    sim.point_at(iced::Point::new(size.width * 0.8, size.height * 0.4));
+                    let direction = if bounds.center_y() < size.height * 0.4 { 1.0 } else { -1.0 };
+                    sim.simulate([iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+                        delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: direction },
+                    })]);
+                }
+                assert!(reached, "{id} must retain a whole usable editor viewport");
+                sim.click(widget::Id::from(id)).expect("reachable editor can receive focus");
+                sim.typewrite("native");
+            }
+            #[cfg(feature = "acceptance")]
+            {
+                let messages: Vec<_> = sim.into_messages().collect();
+                assert!(messages.iter().any(|message| matches!(message, Message::Body(_))));
+                assert!(messages.iter().any(|message| matches!(message, Message::Reply(_))));
+            }
+            #[cfg(not(feature = "acceptance"))]
             drop(sim);
             let _ = app.action(Action::About);
             let mut sim = application::test::Simulator::with_size(

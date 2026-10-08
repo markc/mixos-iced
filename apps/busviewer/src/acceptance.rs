@@ -8,6 +8,7 @@ use application::{
 
 pub const ROOT_ID: &str = "busviewer.fixture.root";
 pub const BODY_ID: &str = "busviewer.fixture.body";
+pub const REPLY_ID: &str = "busviewer.fixture.reply";
 pub const POINTS: &[&str] = &["busviewer.prepare"];
 
 pub(crate) fn setup() -> Result<(Option<acceptance::Fixture>, Task<crate::app::Message>), String> {
@@ -20,6 +21,7 @@ pub(crate) fn setup() -> Result<(Option<acceptance::Fixture>, Task<crate::app::M
         vec![
             inspect::Target::new("root", widget::Id::from(ROOT_ID)),
             inspect::Target::new("body", widget::Id::from(BODY_ID)).kind(inspect::Kind::TextInput),
+            inspect::Target::new("reply", widget::Id::from(REPLY_ID)).kind(inspect::Kind::TextInput),
         ],
         inspect::Limits::new(),
     )?;
