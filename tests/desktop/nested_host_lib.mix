@@ -36,6 +36,10 @@ fn new_run($prefix)
   $path = trim(run_argv_must(["mktemp", "-d", "--", $prefix .. ".XXXXXX"]))
   -- Name it immediately, so even an interrupted setup leaves a breadcrumb.
   print("run artefacts: " .. $path)
+  -- The first broker can precede start(). BUS-013 needs user-traversable
+  -- ancestors at bind time; only this newly and exclusively owned root is
+  -- widened, while private contents stay in their protected children.
+  print(run_argv_must(["chmod", "0711", $path]))
   return {path: $path, owner_pid: pid(), identity: stat($path, {follow_symlinks: false})}
 end
 

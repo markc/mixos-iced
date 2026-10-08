@@ -264,6 +264,10 @@ try
   $R.run=$n.new_run("/var/tmp/scene-editor-settings")
   $root=$R.run.path
   $R.a=$n.private_bus({dir:$root .. "/a",name:"scene-editor-desktop",noded:$bin .. "/noded"})
+  $native_a=rpc($R.a,"noded","noded.ping",{})
+  check($native_a.extensions["native-session"] == "1" and
+    $native_a.extensions["native-session-endpoint"] == $R.a.endpoint,
+    "First owned broker must expose its exact native endpoint before compositor startup")
   mkdir($root .. "/cfg",{parents:true})
   write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
   write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
