@@ -8,6 +8,12 @@
 - Publish additive read-only output `instance` and `generation` inspector facts.
 - Add retained real-app fractional output transition acceptance source. Native
   execution and physical mode/hotplug acceptance remain separate requirements.
+## 0.1.19
+
+- Add a bounded `pointer_button` native observation from actual libinput button
+  presses, including the Linux button code. Motion and release do not satisfy
+  button waits; generic pointer observations remain compatible.
+- Add strict parser, motion/replay and nested negative source guards.
 
 ## 0.1.18
 

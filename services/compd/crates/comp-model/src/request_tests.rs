@@ -10,7 +10,7 @@ fn hardware_wait_is_strict_incarnation_and_sequence_fenced() {
         parse_window_verb("comp.hardware.snapshot", &json!({})),
         Ok(WindowVerb::Op(WindowOp::HardwareSnapshot))
     );
-    for until in ["keyboard", "pointer", "paused", "active"] {
+    for until in ["keyboard", "pointer", "pointer_button", "paused", "active"] {
         let parsed = parse_window_verb(
             "comp.hardware.wait",
             &json!({"instance":"owner","after":0,"until":until,"timeout_ms":200}),
@@ -26,6 +26,8 @@ fn hardware_wait_is_strict_incarnation_and_sequence_fenced() {
         json!({"instance":"owner","after":-1,"until":"keyboard"}),
         json!({"instance":"owner","after":1.5,"until":"pointer"}),
         json!({"instance":"owner","after":0,"until":"input"}),
+        json!({"instance":"owner","after":0,"until":"pointer_motion"}),
+        json!({"instance":"owner","after":0,"until":"pointer_button_pressed"}),
         json!({"instance":"owner","after":0,"until":"active","timeout_ms":60001}),
         json!({"instance":"owner","after":0,"until":"active","extra":true}),
     ] {

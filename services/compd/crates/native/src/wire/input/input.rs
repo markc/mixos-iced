@@ -6,7 +6,7 @@ use dispatcher::state::state::Dispatch;
 use dispatcher::wire::tablet::tablet as tbl;
 use kms::input::loop_::libinput::libinput::LibinputSource;
 use seat::pointer::restore::restore::TouchCursor;
-use smithay::backend::input::{Event, InputEvent};
+use smithay::backend::input::{ButtonState, Event, InputEvent, PointerButtonEvent};
 use smithay::input::tablet::TabletDescriptor;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::input::event::tablet_pad::{
@@ -262,6 +262,15 @@ pub fn register(
                 || ctx_rc.borrow().pipe().drm_output.is_none();
             if !dark || matches!(event, InputEvent::Keyboard { .. }) {
                 scenegraph::state::lifecycle::lifecycle::input(state, &event);
+                if let InputEvent::PointerButton { event } = &event {
+                    if event.state() == ButtonState::Pressed {
+                        state
+                            .inner
+                            .comp
+                            .hardware
+                            .note_button(event.device().sysname(), event.button_code());
+                    }
+                }
                 // Only this real libinput callback records native input. Bus
                 // injection and nested input never pass through this owner.
                 let observed = match &event {
@@ -277,10 +286,14 @@ pub fn register(
                         world::comp::hardware::Kind::Pointer,
                         event.device().sysname().to_string(),
                     )),
-                    InputEvent::PointerButton { event } => Some((
-                        world::comp::hardware::Kind::Pointer,
-                        event.device().sysname().to_string(),
-                    )),
+                    InputEvent::PointerButton { event }
+                        if event.state() != ButtonState::Pressed =>
+                    {
+                        Some((
+                            world::comp::hardware::Kind::Pointer,
+                            event.device().sysname().to_string(),
+                        ))
+                    }
                     _ => None,
                 };
                 if let Some((kind, device)) = observed {

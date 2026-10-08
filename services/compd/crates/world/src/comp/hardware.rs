@@ -9,6 +9,7 @@ use std::time::Instant;
 pub enum Kind {
     Keyboard,
     Pointer,
+    PointerButton,
     Paused,
     Active,
 }
@@ -18,6 +19,7 @@ impl Kind {
         match self {
             Self::Keyboard => "keyboard",
             Self::Pointer => "pointer",
+            Self::PointerButton => "pointer_button",
             Self::Paused => "paused",
             Self::Active => "active",
         }
@@ -28,6 +30,7 @@ impl Kind {
             Self::Pointer => 1,
             Self::Paused => 2,
             Self::Active => 3,
+            Self::PointerButton => 4,
         }
     }
 }
@@ -36,13 +39,14 @@ impl Kind {
 pub struct Event {
     pub sequence: u64,
     pub device: Option<String>,
+    pub button: Option<u32>,
     observed_at: Instant,
 }
 
 #[derive(Default)]
 pub struct Witness {
     sequence: u64,
-    events: [Option<Event>; 4],
+    events: [Option<Event>; 5],
 }
 
 impl Witness {
@@ -58,6 +62,22 @@ impl Witness {
     }
     pub fn note(&mut self, kind: Kind, device: Option<&str>) {
         self.note_at(kind, device, Instant::now());
+    }
+    /// Only the actual native pressed-button callback supplies this fact.
+    /// The compatibility pointer row and specific button row share one edge.
+    pub fn note_button(&mut self, device: &str, button: u32) {
+        let before = self.sequence;
+        self.note_at(Kind::PointerButton, Some(device), Instant::now());
+        if self.sequence == before {
+            return;
+        }
+        let event = self.events[Kind::PointerButton.index()]
+            .as_mut()
+            .expect("recorded button edge");
+        event.button = Some(button);
+        let mut compatible = event.clone();
+        compatible.button = None;
+        self.events[Kind::Pointer.index()] = Some(compatible);
     }
     fn note_at(&mut self, kind: Kind, device: Option<&str>, observed_at: Instant) {
         let Some(sequence) = self.sequence.checked_add(1) else {
@@ -75,6 +95,7 @@ impl Witness {
         self.events[kind.index()] = Some(Event {
             sequence,
             device,
+            button: None,
             observed_at,
         });
     }
@@ -83,6 +104,45 @@ impl Witness {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_actual_pressed_button_notes_satisfy_button_waits() {
+        let mut witness = Witness::default();
+        witness.note(Kind::Pointer, Some("event7"));
+        assert!(
+            witness.latest(Kind::PointerButton).is_none(),
+            "motion cannot certify a click"
+        );
+        witness.note_button("event7", 0x110);
+        let pressed = witness.latest(Kind::PointerButton).unwrap();
+        assert_eq!(pressed.button, Some(0x110));
+        assert_eq!(
+            pressed.sequence,
+            witness.latest(Kind::Pointer).unwrap().sequence
+        );
+        let after = pressed.sequence;
+        for _ in 0..10000 {
+            witness.note(Kind::Pointer, Some("event7"));
+        }
+        assert_eq!(witness.latest(Kind::PointerButton).unwrap().sequence, after);
+        assert!(
+            witness
+                .latest_before(Kind::PointerButton, after, Instant::now())
+                .is_none(),
+            "motion cannot replay a previous button"
+        );
+        let deadline = Instant::now();
+        witness.note_at(
+            Kind::PointerButton,
+            Some("event7"),
+            deadline + std::time::Duration::from_millis(1),
+        );
+        assert!(
+            witness
+                .latest_before(Kind::PointerButton, after, deadline)
+                .is_none(),
+            "late button cannot satisfy an expired wait"
+        );
+    }
     #[test]
     fn native_edges_survive_other_kinds_without_unbounded_history() {
         let mut witness = Witness::default();
