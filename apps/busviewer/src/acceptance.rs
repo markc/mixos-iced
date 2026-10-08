@@ -19,7 +19,7 @@ pub(crate) fn setup() -> Result<(Option<acceptance::Fixture>, Task<crate::app::M
         POINTS,
         vec![
             inspect::Target::new("root", widget::Id::from(ROOT_ID)),
-            inspect::Target::new("body", widget::Id::from(BODY_ID)),
+            inspect::Target::new("body", widget::Id::from(BODY_ID)).kind(inspect::Kind::TextInput),
         ],
         inspect::Limits::new(),
     )?;

@@ -146,7 +146,8 @@ try
   app("busviewer.select",{service:$service,verb:"busviewer.ping"})
   app("busviewer.call",{service:$service,verb:"busviewer.ping",body:"{}"})
   $editor=fixture("layout",merge($identity,{window:$initial.target.window,layer:"base",aliases:["body"]}))
-  check(len($editor.records) == 1 and $editor.aliases[0].status == "found","Actual body editor layout unavailable")
+  write_file($root .. "/layout-editor.json",json_encode($editor))
+  check(len($editor.records) == 1 and $editor.aliases[0].status == "found","Actual body editor layout unavailable: " .. json_encode($editor))
   $bounds=$editor.records[0].visible_bounds
   check($bounds != nil and $bounds[2] > 20 and $bounds[3] > 20,"Body editor not visibly editable")
   comp("comp.window.focus",$viewer.window)
