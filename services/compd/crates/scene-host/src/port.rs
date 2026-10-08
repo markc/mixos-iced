@@ -65,6 +65,8 @@ pub struct HostConfig {
     /// The comp port's URL resolution (`comp_service::default_noded_url()`:
     /// `MIXOS_NODED_URL`, else the node config, else the loopback broker).
     pub noded_url: String,
+    #[cfg(test)]
+    offline_endpoint: Option<std::path::PathBuf>,
 }
 
 /// One admitted scene request.
@@ -639,6 +641,20 @@ async fn connect(config: HostConfig, mut shutdown: watch::Receiver<bool>) -> Con
         let options = match settings::native::supervised_options(name, &config.noded_url) {
             Ok(options) => options,
             Err(error) => return Connected::Refused(error.message),
+        };
+        #[cfg(test)]
+        let options = if let Some(endpoint) = &config.offline_endpoint {
+            let account = std::env::var("MIXOS_BROKER_ACCOUNT")
+                .expect("native offline fixture requires the configured broker account");
+            let mut unix = bus::client_helpers::unix_connect_options(
+                bus::client_helpers::broker_account_named(&account).unwrap(),
+            )
+            .unwrap();
+            unix.endpoint = Some(endpoint.clone());
+            unix.require_native_session = true;
+            options.with_unix(unix)
+        } else {
+            options
         };
         let client = Arc::new(
             options
@@ -1901,6 +1917,7 @@ mod tests {
                     owner_version: "compd-fixture".into(),
                     service_override: Some("shell-description-overridden".into()),
                     noded_url: broker.url.clone(),
+                    offline_endpoint: None,
                 },
                 waker.clone(),
                 root.path().join("cache"),
@@ -2047,6 +2064,7 @@ mod tests {
     fn settings_port(
         url: String,
         cache_directory: std::path::PathBuf,
+        offline_endpoint: Option<std::path::PathBuf>,
     ) -> (Port, Receiver<()>, SettingsUi<Look>) {
         install_settings_fonts();
         let (notify, wake) = mpsc::channel();
@@ -2055,6 +2073,7 @@ mod tests {
                 owner_version: "compd-fixture".into(),
                 service_override: None,
                 noded_url: url,
+                offline_endpoint,
             },
             Arc::new(move || {
                 let _ = notify.send(());
@@ -2070,14 +2089,17 @@ mod tests {
     #[test]
     #[ignore = "requires settings_test.mix isolated environment"]
     fn settings_offline_port_prepares_fallback_while_connecting() {
-        // Own an unresponsive endpoint that never completes the WS upgrade,
-        // without selecting a port
-        // somebody else can claim between binding and the connection attempt.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        // Own a native endpoint which never completes registration. The real
+        // fixture broker remains available, proving it cannot be selected as
+        // an accidental fallback instead of this unresponsive Unix socket.
+        let endpoint_root = tempfile::tempdir().unwrap();
+        let endpoint = endpoint_root.path().join("settings-bus.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
         let cache = tempfile::tempdir().unwrap();
         let (port, wake, mut session) = settings_port(
-            format!("ws://{}/ws", listener.local_addr().unwrap()),
+            std::env::var("MIXOS_NODED_URL").unwrap(),
             cache.path().join("settings"),
+            Some(endpoint),
         );
         let mut panels = crate::panels::Panels::default();
         assert_eq!(
@@ -2139,7 +2161,7 @@ mod tests {
         );
         let url = std::env::var("MIXOS_NODED_URL").unwrap();
         let cache_directory = root.path().join("cache/settings");
-        let (port, wake, mut session) = settings_port(url.clone(), cache_directory.clone());
+        let (port, wake, mut session) = settings_port(url.clone(), cache_directory.clone(), None);
         let mut panels = crate::panels::Panels::default();
         panels.ensure("fixture", (1280.0, 800.0));
         assert_eq!(
@@ -2305,9 +2327,14 @@ mod tests {
 
         // The newest successfully activated snapshot survives connection loss
         // and shutdown, and is validated again by an offline worker.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let offline_url = format!("ws://{}/ws", listener.local_addr().unwrap());
-        let (port, wake, mut cached) = settings_port(offline_url.clone(), cache_directory.clone());
+        let endpoint_root = tempfile::tempdir().unwrap();
+        let endpoint = endpoint_root.path().join("settings-bus.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
+        let (port, wake, mut cached) = settings_port(
+            url.clone(),
+            cache_directory.clone(),
+            Some(endpoint.clone()),
+        );
         let mut cached_panels = crate::panels::Panels::default();
         drive_fallback(
             &port,
@@ -2352,7 +2379,7 @@ mod tests {
             .collect();
         assert_eq!(files.len(), 1);
         std::fs::write(&files[0], b"{broken cache").unwrap();
-        let (port, wake, mut embedded) = settings_port(offline_url, cache_directory);
+        let (port, wake, mut embedded) = settings_port(url, cache_directory, Some(endpoint));
         drive_fallback(
             &port,
             &wake,
@@ -2409,6 +2436,7 @@ mod tests {
                     owner_version: "compd-fixture".into(),
                     noded_url: url.clone(),
                     service_override,
+                    offline_endpoint: None,
                 },
                 Arc::new(move || {
                     let _ = notify.send(());
