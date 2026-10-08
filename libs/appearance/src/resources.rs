@@ -2257,6 +2257,7 @@ mod tests {
     #[test]
     fn unbound_local_variants_pin_sources_and_text_without_discovery() {
         let _test = TESTS.lock().unwrap_or_else(|error| error.into_inner());
+        reset_image_ledger_for_tests();
         const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3 L21 20"/></svg>"#;
         const OTHER: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0 0 L20 0 L20 20 Z"/></svg>"#;
         let requirements = |scale, bytes| {
