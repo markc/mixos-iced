@@ -49,7 +49,9 @@ impl History {
             let mut retained = value.clone();
             if let (Some(rows), Some(previous)) = (
                 retained["participants"].as_array_mut(),
-                self.records.back().and_then(|record| record.value["participants"].as_array()),
+                self.records
+                    .back()
+                    .and_then(|record| record.value["participants"].as_array()),
             ) {
                 for row in rows {
                     if let Some(old) = previous.iter().find(|old| {
@@ -288,12 +290,14 @@ mod tests {
     fn ordinary_frames_preserve_first_phase_receipt_and_latency() {
         let first_at = Instant::now();
         let mut history = History::default();
-        let receipt = |frame: u64| json!({"participants":[{
-            "key":"term/main", "service":"term", "incarnation":1,
-            "state":"presented", "operation_id":"op",
-            "presentation":{"stamp":"stamp", "request_id":frame},
-            "accepted_to_presented_ns":frame * 100
-        }]});
+        let receipt = |frame: u64| {
+            json!({"participants":[{
+                "key":"term/main", "service":"term", "incarnation":1,
+                "state":"presented", "operation_id":"op",
+                "presentation":{"stamp":"stamp", "request_id":frame},
+                "accepted_to_presented_ns":frame * 100
+            }]})
+        };
         for frame in 1..=256 {
             assert!(history.observe(receipt(frame), first_at + Duration::from_millis(frame)));
         }
@@ -302,17 +306,29 @@ mod tests {
         assert_eq!(history.records[0].value, receipt(1));
         assert_eq!(history.latest, receipt(256));
         let mut with_sibling = receipt(257);
-        with_sibling["participants"].as_array_mut().unwrap().push(json!({
-            "key":"shell/control", "service":"shell", "state":"applying"
-        }));
+        with_sibling["participants"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "key":"shell/control", "service":"shell", "state":"applying"
+            }));
         history.observe(with_sibling.clone(), first_at + Duration::from_millis(257));
         with_sibling["participants"][1]["state"] = json!("presented");
         with_sibling["participants"][0] = receipt(258)["participants"][0].clone();
         history.observe(with_sibling, first_at + Duration::from_millis(258));
-        assert_eq!(history.records.back().unwrap().value["participants"][0], receipt(1)["participants"][0]);
-        let spec = parse(r#"{"operation_id":"op","services":["term"],"until":"presented","timeout_ms":10}"#).unwrap();
+        assert_eq!(
+            history.records.back().unwrap().value["participants"][0],
+            receipt(1)["participants"][0]
+        );
+        let spec = parse(
+            r#"{"operation_id":"op","services":["term"],"until":"presented","timeout_ms":10}"#,
+        )
+        .unwrap();
         let settled = on_time(&history, &spec, 1, first_at + Duration::from_millis(10)).unwrap();
-        assert_eq!(settled.value["participants"][0]["accepted_to_presented_ns"], 100);
+        assert_eq!(
+            settled.value["participants"][0]["accepted_to_presented_ns"],
+            100
+        );
         let mut changed = receipt(257);
         changed["participants"][0]["state"] = json!("hidden");
         history.observe(changed, first_at + Duration::from_millis(257));
