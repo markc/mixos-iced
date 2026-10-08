@@ -144,14 +144,19 @@ pub(crate) struct VerifiedGap {
 }
 impl VerifiedGap {
     pub(crate) fn new() -> Self {
-        Self { pending: std::sync::atomic::AtomicBool::new(false), wake: tokio::sync::Notify::new() }
+        Self {
+            pending: std::sync::atomic::AtomicBool::new(false),
+            wake: tokio::sync::Notify::new(),
+        }
     }
     pub(crate) fn record(&self) {
-        self.pending.store(true, std::sync::atomic::Ordering::Release);
+        self.pending
+            .store(true, std::sync::atomic::Ordering::Release);
         self.wake.notify_one();
     }
     pub(crate) fn take(&self) -> bool {
-        self.pending.swap(false, std::sync::atomic::Ordering::AcqRel)
+        self.pending
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 }
 
@@ -170,8 +175,12 @@ impl VerifiedIncoming {
                     let notified = gap.wake.notified();
                     tokio::pin!(notified);
                     notified.as_mut().enable();
-                    if gap.take() { return Some(VerifiedCommand::gap()); }
-                    if let Some(command) = deferred.take() { return Some(command); }
+                    if gap.take() {
+                        return Some(VerifiedCommand::gap());
+                    }
+                    if let Some(command) = deferred.take() {
+                        return Some(command);
+                    }
                     // Refusals first; no reader waits for the owner's sink.
                     let command = tokio::select! {
                         biased;
@@ -481,7 +490,19 @@ mod tests {
     use super::*;
     #[test]
     fn oversized_refusal_retains_only_bounded_correlation() {
-        let refused = VerifiedCommand::new(IncomingCommand { generation: 0, from: "caller".into(), command: "probe".into(), id: Some("request".into()), args: serde_json::json!({"large":"x".repeat(100000)}), body: "x".repeat(100000), headers: std::collections::BTreeMap::from([("payload".into(), "x".repeat(100000))]) }, None).refusal();
+        let refused = VerifiedCommand::new(
+            IncomingCommand {
+                generation: 0,
+                from: "caller".into(),
+                command: "probe".into(),
+                id: Some("request".into()),
+                args: serde_json::json!({"large":"x".repeat(100000)}),
+                body: "x".repeat(100000),
+                headers: std::collections::BTreeMap::from([("payload".into(), "x".repeat(100000))]),
+            },
+            None,
+        )
+        .refusal();
         assert_eq!(refused.delivery(), Delivery::Refuse);
         assert_eq!(refused.command().id.as_deref(), Some("request"));
         assert!(refused.command().args.is_null());
@@ -494,12 +515,35 @@ mod tests {
         let (tx, commands) = mpsc::channel(1);
         let (_refusals_tx, refusals) = mpsc::channel(1);
         let gap = std::sync::Arc::new(VerifiedGap::new());
-        let mut receiver = VerifiedIncoming::Bounded { commands, refusals, gap: gap.clone(), deferred: None };
+        let mut receiver = VerifiedIncoming::Bounded {
+            commands,
+            refusals,
+            gap: gap.clone(),
+            deferred: None,
+        };
         let mut idle = Box::pin(receiver.recv());
         assert!(futures_util::poll!(idle.as_mut()).is_pending());
         gap.record();
-        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(1), idle).await.unwrap().unwrap().delivery(), Delivery::Gap);
-        let retained = VerifiedCommand::new(IncomingCommand { generation: 0, from: "caller".into(), command: "notice".into(), id: None, args: serde_json::Value::Null, body: String::new(), headers: Default::default() }, None);
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), idle)
+                .await
+                .unwrap()
+                .unwrap()
+                .delivery(),
+            Delivery::Gap
+        );
+        let retained = VerifiedCommand::new(
+            IncomingCommand {
+                generation: 0,
+                from: "caller".into(),
+                command: "notice".into(),
+                id: None,
+                args: serde_json::Value::Null,
+                body: String::new(),
+                headers: Default::default(),
+            },
+            None,
+        );
         tx.send(retained).await.unwrap();
         gap.record();
         assert_eq!(receiver.recv().await.unwrap().delivery(), Delivery::Gap);
