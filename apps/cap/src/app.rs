@@ -1625,7 +1625,8 @@ mod tests {
     use crate::bus::Effect;
     #[test]
     fn compact_desktop_keeps_workspace_and_modal_actions_visible() {
-        for size in [iced::Size::new(420.0, 240.0), iced::Size::new(458.0, 346.0)] {
+        // Include real content viewports after the native 35px decoration.
+        for size in [iced::Size::new(420.0, 205.0), iced::Size::new(458.0, 311.0), iced::Size::new(420.0, 240.0), iced::Size::new(458.0, 346.0)] {
             let mut app = test_app();
             app.bootstrap = application::test::desktop_presentation(1.25);
             let mut sim = application::test::Simulator::with_size(

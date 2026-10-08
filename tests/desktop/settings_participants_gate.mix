@@ -165,6 +165,11 @@ fn participant_presentations($batch,$label)
     applied:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_applied_ns != nil),fn($row)=$row.accepted_to_applied_ns)),
     presented:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_presented_ns != nil),fn($row)=$row.accepted_to_presented_ns))}
 end
+fn compact_bounds($window)
+  check($window.width > 0 and $window.height > 0 and $window.window_width > 0 and $window.window_height > 0,"Compact proof needs both positive buffer and window geometry")
+  $compact_left=min([$window.x,$window.window_x]); $compact_top=min([$window.y,$window.window_y])
+  return {x:$compact_left,y:$compact_top,width:max([$window.x+$window.width,$window.window_x+$window.window_width])-$compact_left,height:max([$window.y+$window.height,$window.window_y+$window.window_height])-$compact_top}
+end
 fn compact_windows($area,$size)
   $compact_rows=[]
   $compact_windows=comp("comp.windows.list",{}).windows
@@ -173,19 +178,23 @@ fn compact_windows($area,$size)
     $compact_matches=filter($compact_windows,fn($candidate)=$candidate.id == $compact_owner.window.id and $candidate.generation == $compact_owner.window.generation and $candidate.pid == $compact_owner.pid)
     check(len($compact_matches) == 1,"Compact native owner was replaced")
     $compact_window=$compact_matches[0]
-    check($compact_window.width == $size.width and $compact_window.height == $size.height,"Actual compact client geometry differs from requested size: " .. json_encode({owner:$compact_owner.name,requested:$size,actual:$compact_window}))
+    check($compact_window.window_width == $size.width and $compact_window.window_height == $size.height,"Actual compact window geometry differs from requested size: " .. json_encode({owner:$compact_owner.name,requested:$size,actual:$compact_window}))
     check($compact_window.visible and not $compact_window.minimized and not $compact_window.maximized,"Compact native owner must remain normally visible")
-    check($compact_window.width > 0 and $compact_window.height > 0 and $compact_window.x >= $area.x and $compact_window.y >= $area.y and $compact_window.x+$compact_window.width <= $area.x+$area.width and $compact_window.y+$compact_window.height <= $area.y+$area.height,"Compact native window is clipped outside usable output")
+    $compact_extent=compact_bounds($compact_window)
+    check($compact_extent.x >= $area.x and $compact_extent.y >= $area.y and $compact_extent.x+$compact_extent.width <= $area.x+$area.width and $compact_extent.y+$compact_extent.height <= $area.y+$area.height,"Compact native buffer or decoration is clipped outside usable output")
     for each $compact_prior in $compact_rows
-      check($compact_window.x+$compact_window.width <= $compact_prior.x or $compact_prior.x+$compact_prior.width <= $compact_window.x or $compact_window.y+$compact_window.height <= $compact_prior.y or $compact_prior.y+$compact_prior.height <= $compact_window.y,"Compact native windows overlap")
+      $compact_prior_extent=compact_bounds($compact_prior)
+      check($compact_extent.x+$compact_extent.width <= $compact_prior_extent.x or $compact_prior_extent.x+$compact_prior_extent.width <= $compact_extent.x or $compact_extent.y+$compact_extent.height <= $compact_prior_extent.y or $compact_prior_extent.y+$compact_prior_extent.height <= $compact_extent.y,"Compact native buffers or decorations overlap")
     end
     $compact_rows=concat($compact_rows,[$compact_window])
   end
   check(len($compact_rows) == 6,"Compact proof requires all six native windows")
   for each $compact_other in $compact_windows
     if not $compact_other.visible or $compact_other.minimized or any($compact_rows,fn($candidate)=$candidate.id == $compact_other.id and $candidate.generation == $compact_other.generation) then continue end
+    $compact_other_extent=compact_bounds($compact_other)
     for each $compact_row in $compact_rows
-      check($compact_other.x+$compact_other.width <= $compact_row.x or $compact_row.x+$compact_row.width <= $compact_other.x or $compact_other.y+$compact_other.height <= $compact_row.y or $compact_row.y+$compact_row.height <= $compact_other.y,"Unmeasured window overlaps compact population")
+      $compact_row_extent=compact_bounds($compact_row)
+      check($compact_other_extent.x+$compact_other_extent.width <= $compact_row_extent.x or $compact_row_extent.x+$compact_row_extent.width <= $compact_other_extent.x or $compact_other_extent.y+$compact_other_extent.height <= $compact_row_extent.y or $compact_row_extent.y+$compact_row_extent.height <= $compact_other_extent.y,"Unmeasured buffer or decoration overlaps compact population")
     end
   end
   return $compact_rows
@@ -247,8 +256,8 @@ fn compact_desktop()
       check($compact_batch.snapshot.effective[$compact_actual_owner.settings_context].ui.text_scale == 1.25,"Compact owner did not receive real prepared text scale")
     end
     $compact_after=compact_windows($compact_area,$compact_size)
-    $compact_geometry_before=map($compact_before,fn($candidate)={id:$candidate.id,generation:$candidate.generation,pid:$candidate.pid,x:$candidate.x,y:$candidate.y,width:$candidate.width,height:$candidate.height})
-    $compact_geometry_after=map($compact_after,fn($candidate)={id:$candidate.id,generation:$candidate.generation,pid:$candidate.pid,x:$candidate.x,y:$candidate.y,width:$candidate.width,height:$candidate.height})
+    $compact_geometry_before=map($compact_before,fn($candidate)={id:$candidate.id,generation:$candidate.generation,pid:$candidate.pid,x:$candidate.x,y:$candidate.y,width:$candidate.width,height:$candidate.height,window_x:$candidate.window_x,window_y:$candidate.window_y,window_width:$candidate.window_width,window_height:$candidate.window_height})
+    $compact_geometry_after=map($compact_after,fn($candidate)={id:$candidate.id,generation:$candidate.generation,pid:$candidate.pid,x:$candidate.x,y:$candidate.y,width:$candidate.width,height:$candidate.height,window_x:$candidate.window_x,window_y:$candidate.window_y,window_width:$candidate.window_width,window_height:$candidate.window_height})
     check(deep_eq($compact_geometry_before,$compact_geometry_after),"Native geometry changed during compact presentation proof")
     $compact_capture=$R.run.path .. "/" .. $compact_label .. ".ppm"
     run_argv_must([$bin .. "/testkit-screenshot",$compact_capture],{timeout:10,env:$n.client_env($R.session,{})})
