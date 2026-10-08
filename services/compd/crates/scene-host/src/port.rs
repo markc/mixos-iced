@@ -1246,12 +1246,20 @@ fn decode_registrations(value: &Value) -> Option<BTreeMap<String, String>> {
         return None;
     }
     let mut result = BTreeMap::new();
+    let mut services = BTreeSet::new();
     for row in rows {
         let service = row["service"].as_str()?;
-        let incarnation = row["incarnation"].as_str()?;
-        if service.is_empty()
-            || service.len() > 256
-            || incarnation.len() != 32
+        if service.is_empty() || service.len() > 256 || !services.insert(service) {
+            return None;
+        }
+        // Legacy registrations have no broker incarnation. They cannot supply
+        // participant proof, but must not erase unrelated verified owners.
+        let incarnation = row.get("incarnation")?;
+        if incarnation.is_null() {
+            continue;
+        }
+        let incarnation = incarnation.as_str()?;
+        if incarnation.len() != 32
             || !incarnation.bytes().all(|byte| byte.is_ascii_hexdigit())
         {
             return None;
@@ -1566,6 +1574,24 @@ async fn send(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn legacy_registry_rows_do_not_erase_verified_participant_owners() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let rows = serde_json::json!([
+            {"service":"observer", "incarnation":null},
+            {"service":"term", "incarnation":token}
+        ]);
+        assert_eq!(decode_registrations(&rows), Some(BTreeMap::from([("term".into(), token.into())])));
+        for invalid in [
+            serde_json::json!([{"service":"term", "incarnation":null}, {"service":"term", "incarnation":token}]),
+            serde_json::json!([{"service":"term"}]),
+            serde_json::json!([{"service":"term", "incarnation":"invalid"}]),
+        ] {
+            assert!(decode_registrations(&invalid).is_none());
+        }
+        assert_eq!(decode_registrations(&serde_json::json!([{"service":"observer", "incarnation":null}])), Some(BTreeMap::new()));
+    }
+
     use super::*;
 
     async fn received_command(
