@@ -608,7 +608,12 @@ try
     $selected=nil; sleep(0.05)
   end
   check($selected != nil,"True Scene Editor calendar selection unavailable")
-  if $compact_mode then compact_desktop() end
+  if $compact_mode then
+    $compact_initial=compact_desktop()
+    -- The compact proof accepted real mutations; subsequent phases must use
+    -- that actual current operation, not the preserved initial-light receipt.
+    $light=$compact_initial.layouts[len($compact_initial.layouts)-1].batch
+  end
   comp("comp.window.focus",$editor.window)
   for each $key in ["F10","Right","Right","End","Return"] comp("comp.input.key",{seat:"human",window:$editor.window,key:$key}) end
   $deadline=time()+5; $confirm=nil
