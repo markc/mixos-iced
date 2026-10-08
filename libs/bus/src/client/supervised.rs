@@ -36,12 +36,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, oneshot, watch};
 
 use super::IncomingCommand;
-use super::connection::{Connection, ConnectionOptions};
+use super::connection::{Connection, ConnectionOptions, ConnectionIncomingReceiver};
 use super::error::{
     ClientError, RegistrationRejected, SubscriptionDeclarationError, SupervisedError,
 };
 use crate::BusMessage;
-use crate::native_client::NativeIncomingReceiver;
 use crate::native_client::bounded::{
     BoundedIncomingEvent, BoundedIncomingReceiver, BoundedIncomingSender, bounded_incoming_channel,
 };
@@ -267,6 +266,17 @@ pub struct SupervisedConnectOptions {
 }
 
 impl SupervisedConnectOptions {
+    /// Explicit authenticated local ingress. Endpoint, account, fallback and
+    /// native-session policy remain caller-owned and are verified on every
+    /// reconnect. Ordinary supervised connections continue to use TCP.
+    #[cfg(unix)]
+    pub fn with_unix(mut self, options: crate::native_client::UnixConnectOptions) -> Self {
+        if self.connection.capacity.is_none() {
+            self.connection.capacity = Some(options.incoming_capacity.unwrap_or(64));
+        }
+        self.connection.unix = Some(options);
+        self
+    }
     pub fn with_verbs(mut self, verbs: Vec<crate::VerbDescriptor>) -> Self {
         self.connection.verbs = Some(verbs);
         self
@@ -1029,6 +1039,27 @@ enum SupervisorOutgoing {
 }
 
 impl SupervisorOutgoing {
+    async fn forward_verified(&self, event: BoundedIncomingEvent, connection: &Connection) -> bool {
+        match (self, event) {
+            (Self::Bounded(sender), BoundedIncomingEvent::Command(command)) => {
+                match sender.try_send_retaining(command) {
+                    Ok(()) => true,
+                    Err(mpsc::error::TrySendError::Closed(_)) => false,
+                    Err(mpsc::error::TrySendError::Full(command)) => {
+                        if command.id.is_none() {
+                            sender.record_overflow(1);
+                            true
+                        } else {
+                            connection.respond_parts(&command.from, &command.command,
+                                command.id.as_deref(), crate::RC_ERROR,
+                                r#"{"error":"overloaded","error_code":"OVERLOADED"}"#).await.is_ok()
+                        }
+                    }
+                }
+            }
+            (_, event) => self.forward(event),
+        }
+    }
     async fn closed(&self) {
         match self {
             Self::Unbounded(sender) => sender.closed().await,
@@ -1235,7 +1266,7 @@ enum PublishBlock {
 enum EstablishOutcome {
     /// Published: generation advanced, `Connected` published, the forward
     /// phase takes this receiver.
-    Published(NativeIncomingReceiver),
+    Published(ConnectionIncomingReceiver),
     /// Transient failure: back off and retry on a fresh socket.
     Retry,
     /// The supervisor must stop.
@@ -1584,12 +1615,13 @@ async fn supervisor_loop(mut ctx: SupervisorCtx) {
 }
 
 async fn supervisor_run(ctx: &mut SupervisorCtx) {
-    let mut current_rx: Option<NativeIncomingReceiver> = None;
+    let mut current_rx: Option<ConnectionIncomingReceiver> = None;
     let mut attempt: u32 = 0;
     loop {
         // Forward phase: pump the live connection's frames outward until it
         // drops or a stop is requested.
         while let Some(receiver) = current_rx.as_mut() {
+            let verified = receiver.verified();
             tokio::select! {
                 _ = ctx.out_tx.closed() => return,
                 changed = ctx.shutdown_rx.changed() => {
@@ -1609,7 +1641,21 @@ async fn supervisor_run(ctx: &mut SupervisorCtx) {
                             if let BoundedIncomingEvent::Command(incoming) = &mut command {
                                 incoming.generation = ctx.connection_generation.load(Ordering::SeqCst);
                             }
-                            if !ctx.out_tx.forward(command) {
+                            let forwarded = if verified {
+                                let connection = ctx.inner.read().await.clone();
+                                match connection {
+                                    Some(connection) => tokio::select! {
+                                        biased;
+                                        _ = ctx.out_tx.closed() => return,
+                                        _ = ctx.shutdown_rx.changed() => return,
+                                        result = ctx.out_tx.forward_verified(command, &connection) => result,
+                                    },
+                                    None => false,
+                                }
+                            } else {
+                                ctx.out_tx.forward(command)
+                            };
+                            if !forwarded {
                                 tracing::info!(
                                     event = "supervised_stop",
                                     service = %ctx.service_name,
