@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5
+
+- Add optional owned GUI acceptance fixtures using shared layout inspection,
+  preparation barriers and exact native main-window presentation receipts.
+- Keep fixture control and two waiting jobs separate from serial product
+  replies, with native lifecycle fencing and bounded shutdown accounting.
+
 ## 0.1.4
 
 - Complete GUI and headless descriptions from the shared presentation owner,
