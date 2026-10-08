@@ -570,8 +570,13 @@ fn window_state(
         .resolve_window_target(id, Some(generation))
         .map_err(|error| ControlReply::WindowTarget { id, error })?
         .id();
-    if window_of(lp, record_id).is_some_and(|window| lp.inner.world_of_window(&window) != Some(lp.inner.worlds.spawn_target())) {
-        return Err(ControlReply::refused("unsupported_state", serde_json::json!({"id":id,"reason":"not_active_world"})));
+    if window_of(lp, record_id).is_some_and(|window| {
+        lp.inner.world_of_window(&window) != Some(lp.inner.worlds.spawn_target())
+    }) {
+        return Err(ControlReply::refused(
+            "unsupported_state",
+            serde_json::json!({"id":id,"reason":"not_active_world"}),
+        ));
     }
     let facts = window_facts(lp, record_id);
     let (outputs, _, _) = crate::project::project_outputs(lp);
@@ -730,7 +735,9 @@ pub fn tile_description(lp: &Loop, id: SurfaceId) -> Value {
             generation: record.generation(),
         })
     });
-    let pending = window_of(lp, id).and_then(|window| crate::geometry::tile_pending(&lp.inner.comp, owning_space(lp, &window), id));
+    let pending = window_of(lp, id).and_then(|window| {
+        crate::geometry::tile_pending(&lp.inner.comp, owning_space(lp, &window), id)
+    });
     serde_json::json!({"tile_group": member.map(|member| serde_json::json!({
         "output":member.group.output,"workspace":member.group.workspace,
         "order":lp.inner.comp.tiles.members().iter().position(|candidate| candidate.target == member.target),
@@ -790,8 +797,13 @@ fn place(lp: &mut Loop, spec: &comp_model::request::PlaceSpec) -> ControlReply {
         Ok(record) => record.id(),
         Err(error) => return ControlReply::WindowTarget { id: spec.id, error },
     };
-    if window_of(lp, id).is_some_and(|window| lp.inner.world_of_window(&window) != Some(lp.inner.worlds.spawn_target())) {
-        return ControlReply::refused("unsupported_state", serde_json::json!({"id":spec.id,"reason":"not_active_world"}));
+    if window_of(lp, id).is_some_and(|window| {
+        lp.inner.world_of_window(&window) != Some(lp.inner.worlds.spawn_target())
+    }) {
+        return ControlReply::refused(
+            "unsupported_state",
+            serde_json::json!({"id":spec.id,"reason":"not_active_world"}),
+        );
     }
     let facts = window_facts(lp, id);
     let (outputs, _, _) = crate::project::project_outputs(lp);
@@ -964,14 +976,11 @@ pub fn window_facts(lp: &Loop, id: SurfaceId) -> WindowFacts {
     let committed_maximized = committed_maximized(&window);
     let (min_size, max_size) = size_hints(&window);
     let space = owning_space(lp, &window);
-    let origin = space
-        .element_location(&window)
-        .unwrap_or_default();
+    let origin = space.element_location(&window).unwrap_or_default();
     let fullscreen = protocols::window::ident::ident::states(&window).fullscreen;
     let committed_fullscreen = protocols::window::ident::ident::committed_fullscreen(&window);
     let geometry = window.geometry();
-    let tiles =
-        crate::geometry::tile_facts(&lp.inner.comp, space, id, &window);
+    let tiles = crate::geometry::tile_facts(&lp.inner.comp, space, id, &window);
     WindowFacts {
         requested_tiled: tiles.membership,
         native_requested_tiled: tiles.requested,
@@ -1562,7 +1571,9 @@ pub fn maximize(lp: &mut Loop, id: SurfaceId, enabled: bool) {
     let Some(window) = window_of(lp, id) else {
         return;
     };
-    let Some(owner) = lp.inner.world_of_window(&window) else { return; };
+    let Some(owner) = lp.inner.world_of_window(&window) else {
+        return;
+    };
     let (comp, space) = lp.inner.comp_world_space_mut(owner);
     if crate::geometry::set_maximized(comp, space, id, &window, enabled).windows {
         lp.state.schedule_redraw(RedrawReason::WindowState);
@@ -1906,11 +1917,18 @@ fn settle(lp: &mut Loop, prefer: Option<SurfaceId>) {
 
 /// Whether a window would be drawn now (through the draw's own predicate).
 pub fn drawn(lp: &Loop, window: &Window) -> bool {
-    lp.inner.host_space().state.element_location(window).is_some()
-        && window.visible(lp) && protocols::window::ident::ident::is_drawn(window)
+    lp.inner
+        .host_space()
+        .state
+        .element_location(window)
+        .is_some()
+        && window.visible(lp)
+        && protocols::window::ident::ident::is_drawn(window)
 }
 
 pub fn owning_space<'a>(lp: &'a Loop, window: &Window) -> &'a smithay::desktop::Space<Window> {
-    lp.inner.world_of_window(window).map(|owner| &lp.inner.space_of(owner).state)
+    lp.inner
+        .world_of_window(window)
+        .map(|owner| &lp.inner.space_of(owner).state)
         .unwrap_or(&lp.inner.host_space().state)
 }

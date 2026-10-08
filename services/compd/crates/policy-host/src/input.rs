@@ -396,7 +396,9 @@ fn payload(
 
 /// Keyboard-only grabs also own the human seat, independently of pointer grabs.
 pub fn human_keyboard_owned(human: &smithay::input::Seat<Dispatch>) -> bool {
-    human.get_keyboard().is_some_and(|keyboard| keyboard.is_grabbed())
+    human
+        .get_keyboard()
+        .is_some_and(|keyboard| keyboard.is_grabbed())
         || human.input_method().keyboard_grabbed()
 }
 

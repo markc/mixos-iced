@@ -618,8 +618,14 @@ fn project_surface(
     let (window_x, window_y, window_width, window_height) = placement.window.unwrap_or_default();
     let occlusion = occlusion_of(lp, record);
     let facts = crate::control::window_facts(lp, record.id());
-    let tile_pending_reason = crate::control::window_of(lp, record.id()).and_then(|window|
-        crate::geometry::tile_pending(&lp.inner.comp, crate::control::owning_space(lp, &window), record.id()))
+    let tile_pending_reason = crate::control::window_of(lp, record.id())
+        .and_then(|window| {
+            crate::geometry::tile_pending(
+                &lp.inner.comp,
+                crate::control::owning_space(lp, &window),
+                record.id(),
+            )
+        })
         .map(|error| error.name());
     SurfaceSnapshot {
         occlusion,

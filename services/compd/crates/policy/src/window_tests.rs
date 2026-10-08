@@ -1277,8 +1277,12 @@ fn world_activation_and_creation_obey_session_lock_but_listing_does_not_mutate()
     assert!(super::locked_refusal(&comp_model::request::WindowOp::WorldList, true).is_none());
     assert!(super::locked_refusal(&comp_model::request::WindowOp::WorldCreate, true).is_some());
     let comp_model::request::WindowVerb::Op(activate) = comp_model::request::parse_window_verb(
-        "comp.world.activate", &serde_json::json!({"id":"00000000-0000-0000-0000-000000000002"}),
-    ).expect("strict native activation") else { panic!("activation must use finite control lane") };
+        "comp.world.activate",
+        &serde_json::json!({"id":"00000000-0000-0000-0000-000000000002"}),
+    )
+    .expect("strict native activation") else {
+        panic!("activation must use finite control lane")
+    };
     assert!(super::locked_refusal(&activate, true).is_some());
     assert!(super::locked_refusal(&activate, false).is_none());
 }

@@ -6,29 +6,69 @@ use super::*;
 
 #[test]
 fn hardware_wait_is_strict_incarnation_and_sequence_fenced() {
-    assert_eq!(parse_window_verb("comp.hardware.snapshot", &json!({})), Ok(WindowVerb::Op(WindowOp::HardwareSnapshot)));
+    assert_eq!(
+        parse_window_verb("comp.hardware.snapshot", &json!({})),
+        Ok(WindowVerb::Op(WindowOp::HardwareSnapshot))
+    );
     for until in ["keyboard", "pointer", "paused", "active"] {
-        let parsed = parse_window_verb("comp.hardware.wait", &json!({"instance":"owner","after":0,"until":until,"timeout_ms":200})).unwrap();
-        assert!(matches!(parsed, WindowVerb::Long(LongOp::HardwareWait(spec)) if spec.timeout == Duration::from_millis(200) && spec.after == 0 && spec.instance == "owner"));
+        let parsed = parse_window_verb(
+            "comp.hardware.wait",
+            &json!({"instance":"owner","after":0,"until":until,"timeout_ms":200}),
+        )
+        .unwrap();
+        assert!(
+            matches!(parsed, WindowVerb::Long(LongOp::HardwareWait(spec)) if spec.timeout == Duration::from_millis(200) && spec.after == 0 && spec.instance == "owner")
+        );
     }
-    for body in [json!({}),json!({"instance":"","after":0,"until":"keyboard"}),json!({"instance":"owner","after":-1,"until":"keyboard"}),json!({"instance":"owner","after":1.5,"until":"pointer"}),json!({"instance":"owner","after":0,"until":"input"}),json!({"instance":"owner","after":0,"until":"active","timeout_ms":60001}),json!({"instance":"owner","after":0,"until":"active","extra":true})] {
-        assert!(parse_window_verb("comp.hardware.wait", &body).is_err(), "{body}");
+    for body in [
+        json!({}),
+        json!({"instance":"","after":0,"until":"keyboard"}),
+        json!({"instance":"owner","after":-1,"until":"keyboard"}),
+        json!({"instance":"owner","after":1.5,"until":"pointer"}),
+        json!({"instance":"owner","after":0,"until":"input"}),
+        json!({"instance":"owner","after":0,"until":"active","timeout_ms":60001}),
+        json!({"instance":"owner","after":0,"until":"active","extra":true}),
+    ] {
+        assert!(
+            parse_window_verb("comp.hardware.wait", &body).is_err(),
+            "{body}"
+        );
     }
     assert!(parse_window_verb("comp.hardware.snapshot", &json!({"after":0})).is_err());
 }
 
 #[test]
 fn native_world_routes_are_strict_and_use_canonical_owner_identity() {
-    assert_eq!(parse_window_verb("comp.world.list", &json!({})), Ok(WindowVerb::Op(WindowOp::WorldList)));
-    assert_eq!(parse_window_verb("comp.world.create", &json!({})), Ok(WindowVerb::Op(WindowOp::WorldCreate)));
+    assert_eq!(
+        parse_window_verb("comp.world.list", &json!({})),
+        Ok(WindowVerb::Op(WindowOp::WorldList))
+    );
+    assert_eq!(
+        parse_window_verb("comp.world.create", &json!({})),
+        Ok(WindowVerb::Op(WindowOp::WorldCreate))
+    );
     let id = uuid::Uuid::from_u128(1);
-    assert_eq!(parse_window_verb("comp.world.activate", &json!({"id":id.to_string()})), Ok(WindowVerb::Op(WindowOp::WorldActivate { id })));
+    assert_eq!(
+        parse_window_verb("comp.world.activate", &json!({"id":id.to_string()})),
+        Ok(WindowVerb::Op(WindowOp::WorldActivate { id }))
+    );
     for verb in ["comp.world.list", "comp.world.create"] {
-        for body in [json!({"id":id}), json!({"name":"test"}), json!([])] { assert!(parse_window_verb(verb, &body).is_err()); }
+        for body in [json!({"id":id}), json!({"name":"test"}), json!([])] {
+            assert!(parse_window_verb(verb, &body).is_err());
+        }
     }
-    for body in [json!({}), json!({"id":null}), json!({"id":1}), json!({"id":"bad"}),
-        json!({"id":id.simple().to_string()}), json!({"id":id,"generation":1})] {
-        assert!(parse_window_verb("comp.world.activate", &body).is_err(), "{body}");
+    for body in [
+        json!({}),
+        json!({"id":null}),
+        json!({"id":1}),
+        json!({"id":"bad"}),
+        json!({"id":id.simple().to_string()}),
+        json!({"id":id,"generation":1}),
+    ] {
+        assert!(
+            parse_window_verb("comp.world.activate", &body).is_err(),
+            "{body}"
+        );
     }
 }
 

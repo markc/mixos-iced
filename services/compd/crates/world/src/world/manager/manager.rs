@@ -38,10 +38,18 @@ mod tests {
         let host = crate::kind::build::base::overlay(KERNEL, "kernel", vec![], &kernel);
         let mut worlds = WorldManager::new(main, host, &kernel);
         let second = Uuid::from_u128(2);
-        worlds.add(crate::kind::build::base::desktop(second, "desktop", &kernel));
+        worlds.add(crate::kind::build::base::desktop(
+            second, "desktop", &kernel,
+        ));
         assert_eq!(worlds.active_id(), MAIN_WORLD);
         assert_eq!(worlds.spawn_target(), MAIN_WORLD);
-        assert!(worlds.get(second).storage().try_get(&crate::host::space::base::SPACE).is_some());
+        assert!(
+            worlds
+                .get(second)
+                .storage()
+                .try_get(&crate::host::space::base::SPACE)
+                .is_some()
+        );
         worlds.switch(second, &kernel);
         worlds.set_spawn_target(second);
         assert_eq!(worlds.active_id(), second);
@@ -50,7 +58,11 @@ mod tests {
         worlds.set_spawn_target(MAIN_WORLD);
         assert!(worlds.contains(second));
         while worlds.can_add_desktop() {
-            worlds.add(crate::kind::build::base::desktop(Uuid::now_v7(), "desktop", &kernel));
+            worlds.add(crate::kind::build::base::desktop(
+                Uuid::now_v7(),
+                "desktop",
+                &kernel,
+            ));
         }
         assert_eq!(worlds.ids().len(), MAX_DESKTOP_WORLDS);
         assert!(!worlds.can_add_desktop());
@@ -59,7 +71,9 @@ mod tests {
 }
 
 impl WorldManager {
-    pub fn can_add_desktop(&self) -> bool { self.worlds.len() < MAX_DESKTOP_WORLDS }
+    pub fn can_add_desktop(&self) -> bool {
+        self.worlds.len() < MAX_DESKTOP_WORLDS
+    }
     /// Start with the initial (main, SPATIAL) world, already active and the
     /// spawn-target. Activation fires `on_enable`.
     pub fn new(mut main: World, mut host: World, kernel: &Storage) -> Self {
@@ -68,7 +82,13 @@ impl WorldManager {
         let id = main.id;
         let mut index = HashMap::new();
         index.insert(id, 0);
-        Self { worlds: vec![main], index, kernel: host, active: id, spawn_target: id }
+        Self {
+            worlds: vec![main],
+            index,
+            kernel: host,
+            active: id,
+            spawn_target: id,
+        }
     }
 
     /// The kernel system host — ticked every frame, whatever world is active.
@@ -81,7 +101,10 @@ impl WorldManager {
     }
 
     fn idx(&self, id: Uuid) -> usize {
-        *self.index.get(&id).unwrap_or_else(|| panic!("unknown world {id}"))
+        *self
+            .index
+            .get(&id)
+            .unwrap_or_else(|| panic!("unknown world {id}"))
     }
 
     /// The spatial world new toplevels map into (the space-hosting world).
@@ -93,7 +116,10 @@ impl WorldManager {
     /// Returns `true` if the target actually changed (the space the foreign mirror
     /// advertises is the spawn-target's — see `Orchestrator::space_state`).
     pub fn set_spawn_target(&mut self, id: Uuid) -> bool {
-        assert!(self.index.contains_key(&id), "spawn-target to unknown world {id}");
+        assert!(
+            self.index.contains_key(&id),
+            "spawn-target to unknown world {id}"
+        );
         if self.spawn_target == id {
             return false;
         }
@@ -113,7 +139,9 @@ impl WorldManager {
         self.active
     }
     /// Every world id (insertion order); the loader prewarms each at startup.
-    pub fn ids(&self) -> Vec<Uuid> { self.worlds.iter().map(|w| w.id).collect() }
+    pub fn ids(&self) -> Vec<Uuid> {
+        self.worlds.iter().map(|w| w.id).collect()
+    }
 
     pub fn active(&self) -> &World {
         &self.worlds[self.idx(self.active)]

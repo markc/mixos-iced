@@ -669,9 +669,14 @@ impl CompState {
         observation: Vec<(policy::tiling::Target, Option<policy::tiling::LayoutError>)>,
     ) {
         let before = self.tile_pending_observation.clone();
-        self.tile_pending_observation.retain(|(target, _)| self.tiles.member(*target).is_some());
+        self.tile_pending_observation
+            .retain(|(target, _)| self.tiles.member(*target).is_some());
         for (target, reason) in observation {
-            if let Some(entry) = self.tile_pending_observation.iter_mut().find(|(existing, _)| *existing == target) {
+            if let Some(entry) = self
+                .tile_pending_observation
+                .iter_mut()
+                .find(|(existing, _)| *existing == target)
+            {
                 entry.1 = reason;
             } else {
                 self.tile_pending_observation.push((target, reason));

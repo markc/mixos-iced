@@ -13,9 +13,9 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::utils::{Logical, Point};
 use std::cell::RefCell;
 use std::rc::Rc;
-use world::state::state::StatusSession;
-use world::state::Loop;
 use world::environment::interface::lifecycle::lifecycle;
+use world::state::Loop;
+use world::state::state::StatusSession;
 
 pub fn register(
     event_loop: &mut EventLoop<'static, Loop>,
