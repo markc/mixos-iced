@@ -460,7 +460,9 @@ try
   end
   $participant_states=native_states()
   $participant_idle=native_idle()
+  write_file($root .. "/participants-native-idle.json",json_encode($participant_idle))
   $participant_samples=native_samples()
+  write_file($root .. "/participants-native-samples.json",json_encode($participant_samples))
   -- A newly created app/control resolves the changed authority while all
   -- original citizens remain alive and retain their genuine product state.
   $late=launch("busviewer","late",true)
