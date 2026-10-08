@@ -434,6 +434,7 @@ mod output_scale_tests {
                     subpixel: Subpixel::Unknown,
                     make: "fixture".into(),
                     model: "fixture".into(),
+                    serial_number: String::new(),
                 },
             );
             output.change_current_state(
@@ -476,6 +477,7 @@ mod output_scale_tests {
                 subpixel: Subpixel::Unknown,
                 make: "fixture".into(),
                 model: "fixture".into(),
+                serial_number: String::new(),
             },
         );
         let mode = Mode {
@@ -484,7 +486,7 @@ mod output_scale_tests {
         };
         output.change_current_state(
             Some(mode),
-            Some(Transform::Rot180),
+            Some(Transform::_180),
             Some(Scale::Integer(1)),
             Some((40, 20).into()),
         );
@@ -498,7 +500,7 @@ mod output_scale_tests {
         assert!(apply_output_scale(&output, &spec, instance, 3, true).unwrap());
         assert_eq!(output.current_scale().fractional_scale(), 1.25);
         assert_eq!(output.current_mode(), Some(mode));
-        assert_eq!(output.current_transform(), Transform::Rot180);
+        assert_eq!(output.current_transform(), Transform::_180);
         assert_eq!(output.current_location(), (40, 20).into());
         let mut change = spec.clone();
         change.scale = 2.0;
