@@ -72,9 +72,11 @@ fn stored($worlds,$home,$client)
   check($count == 1,"Client is missing or stored in multiple actual worlds")
   return $found
 end
-fn probe($name,$colour,$x,$y,$home)
+fn probe($name,$colour,$x,$y,$home,$restore_on_leave)
   $log=$root .. "/probe-" .. $name .. ".log"
-  $pid=spawn([$bin .. "/testkit-input-probe","--app-id","dev.mixos.World" .. $name,"--size","420x260","--seconds","240","--colour",$colour,"--seats","--popup"],
+  $argv=[$bin .. "/testkit-input-probe","--app-id","dev.mixos.World" .. $name,"--size","420x260","--seconds","240","--colour",$colour,"--seats","--popup"]
+  if $restore_on_leave then $argv=concat($argv,["--restore-overlay-on-leave"]) end
+  $pid=spawn($argv,
     {env:$n.client_env($R.session,{}),stdout:{file:$log},stderr:"stdout",detach:true})
   $R.children=concat($R.children,[$pid])
   $mapped=rpc("comp.window.wait",{match:{app_id:"dev.mixos.World" .. $name},until:"presented",timeout_ms:15000}).window
@@ -152,7 +154,7 @@ try
   $initial=snapshot("initial")
   check(len($initial.worlds) == 1 and $initial.active == $initial.spawn_target,"Initial owner is not one native spatial world")
   $main=$initial.active
-  $a=probe("A","ff00ff",64,48,$main)
+  $a=probe("A","ff00ff",64,48,$main,false)
   rpc("comp.window.tile",merge(target($a),{output:$output_key}))
   wait_state($a,"tiled")
   pixels("main-tiled",$a,false); point($a)
@@ -164,7 +166,7 @@ try
   activate($other)
   check(not row($a).visible,"Dormant actual-world client falsely visible")
   popup_visible($a,false)
-  $b=probe("B","00ff00",180,120,$other)
+  $b=probe("B","00ff00",180,120,$other,false)
   rpc("comp.window.tile",merge(target($b),{output:$output_key}))
   wait_state($b,"tiled")
   pixels("other-tiled",$b,false); point($b)
@@ -197,6 +199,43 @@ try
   popup_visible($a,false); popup_visible($b,true)
   check(not activate($other).changed,"Repeated native activation was not idempotent")
   pixels("other-same-owner-return",$b,false); point($b)
+  -- A real client reacts to human focus loss by issuing xdg unset requests.
+  -- Those requests arrive after world activation; no Bus command can mutate
+  -- a dormant overlay or move its immutable owning Space to the current one.
+  for each $overlay in [{name:"Fullscreen",enter:"fullscreen",exit:"unfullscreen"},{name:"Maximized",enter:"maximize",exit:"unmaximized"}]
+    activate($main)
+    $c=probe($overlay.name,"ff00ff",360,280,$main,true)
+    rpc("comp.window.focus",merge(target($c),{raise:true}))
+    rpc("comp.window." .. $overlay.enter,target($c))
+    wait_state($c,if $overlay.enter == "maximize" then "maximized" else "fullscreen" end)
+    $entered=stored(snapshot($overlay.name .. "-entered"),$main,$c)
+    check(deep_eq($entered.decided,[$width,$height]),"Actual overlay did not cover owning output")
+    pixels($overlay.name .. "-entered",$c,false); point($c)
+    $offset=len(read_file($c.log))
+    activate($other)
+    wait_state($c,$overlay.exit)
+    $observed=false
+    for $attempt=1 to 100
+      if contains(slice(read_file($c.log),$offset),"overlay_restore_requested") then $observed=true; break end
+      sleep(0.02)
+    end
+    check($observed,"No actual focus-leave xdg restore request")
+    $dormant=snapshot($overlay.name .. "-dormant-restored")
+    $restored=stored($dormant,$main,$c)
+    stored($dormant,$other,$b); stored($dormant,$main,$a)
+    check($dormant.active == $other and $dormant.spawn_target == $other and not row($c).visible and
+      deep_eq($restored.local,{x:360,y:280}) and deep_eq($restored.decided,[420,260]),
+      "Dormant real xdg restore changed native owner or failed exact normal geometry")
+    popup_visible($c,false)
+    pixels($overlay.name .. "-keeps-other",$b,false); point($b)
+    activate($main); wait_state($c,"presented")
+    check(row($c).visible and not row($c).fullscreen and not row($c).maximized,"Returned overlay retained committed state")
+    popup_visible($c,true)
+    pixels($overlay.name .. "-normal-return",$c,true); point($c)
+    stored(snapshot($overlay.name .. "-normal-return"),$main,$c)
+    rpc("comp.window.close",target($c)); wait_state($c,"gone")
+    activate($other); wait_state($b,"presented")
+  end
   $unknown=call("comp.world.activate",{id:"00000000-0000-0000-0000-000000000000"})
   check($unknown.rc >= 10 and $unknown.result.error == "unknown_world","Unknown native world was not refused")
   $invalid=call("comp.world.create",{name:"invalid"})
@@ -227,7 +266,7 @@ try
   end
   check(not process_alive($a.pid) and not process_alive($b.pid),"Native clients failed natural shutdown")
   check(len(snapshot("retired").worlds) == $initial.limit,"Native world lifecycle unexpectedly discarded retained worlds")
-  print("PASS native world ownership: actual creation/activation, same home/UUID/generation/local slot, dormant public untile, pixels/input, strict stale/unknown/capacity refusal and natural retirement")
+  print("PASS native world ownership: actual creation/activation, same home/UUID/generation/local slot, dormant public untile and real xdg fullscreen/maximise restoration, pixels/input, strict stale/unknown/capacity refusal and natural retirement")
   $R.ok=true
 catch $message
   print("FAIL " .. $message)
