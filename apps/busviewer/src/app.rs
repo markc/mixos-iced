@@ -1259,23 +1259,17 @@ mod tests {
             application::test::assert_visible_bounds(service.bounds(), size);
             for text in [label("body"), label("reply")] {
                 let mut reached = false;
-                for step in 0..40 {
+                for _ in 0..100 {
                     let control = sim.find(text.clone()).expect("primary call editor label");
                     let bounds = control.bounds();
-                    if step == 0 || step == 39 {
-                        eprintln!("compact inspector size={size:?} label={text:?} step={step} bounds={bounds:?} visible={:?}", control.visible_bounds());
-                        eprintln!("outer inspector {:?}", sim.find(widget::Id::new("busviewer-inspector")));
-                    }
-                    if control.visible_bounds() == Some(bounds)
-                        && bounds.y >= 0.0 && bounds.y + bounds.height <= size.height
-                    {
-                        application::test::assert_visible_bounds(bounds, size);
+                    if let Some(visible) = control.visible_bounds().filter(|visible| visible.size() == bounds.size()) {
+                        application::test::assert_visible_bounds(visible, size);
                         reached = true;
                         break;
                     }
                     sim.point_at(iced::Point::new(size.width * 0.8, size.height * 0.4));
                     sim.simulate([iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
-                        delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+                        delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y: -8.0 },
                     })]);
                 }
                 assert!(reached, "{text} must remain reachable by actual inspector scrolling");
@@ -1283,18 +1277,22 @@ mod tests {
             #[cfg(feature = "acceptance")]
             for id in [crate::acceptance::BODY_ID, crate::acceptance::REPLY_ID] {
                 let mut reached = false;
-                for _ in 0..40 {
+                for _ in 0..100 {
                     let control = sim.find(widget::Id::from(id)).expect("actual editor viewport");
                     let bounds = control.bounds();
-                    if control.visible_bounds() == Some(bounds) {
-                        application::test::assert_visible_bounds(bounds, size);
+                    if let Some(visible) = control.visible_bounds().filter(|visible| visible.size() == bounds.size()) {
+                        application::test::assert_visible_bounds(visible, size);
                         reached = true;
                         break;
                     }
+                    let inspector = sim.find(widget::Id::new("busviewer-inspector")).expect("owning inspector viewport");
+                    let application::test::selector::Target::Scrollable { translation, .. } = inspector else {
+                        panic!("inspector must retain the native scrollable contract");
+                    };
                     sim.point_at(iced::Point::new(size.width * 0.8, size.height * 0.4));
-                    let direction = if bounds.center_y() < size.height * 0.4 { 1.0 } else { -1.0 };
+                    let direction = if bounds.center_y() - translation.y < size.height * 0.4 { 8.0 } else { -8.0 };
                     sim.simulate([iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
-                        delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: direction },
+                        delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y: direction },
                     })]);
                 }
                 assert!(reached, "{id} must retain a whole usable editor viewport");
