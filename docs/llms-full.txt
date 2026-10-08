@@ -723,6 +723,78 @@ do not close full desktop acceptance. See the [initial contract](../spec/setting
 
 ---
 
+<!-- page: https://mixos.dev/decisions/2026-10-08-application-macros/ (source: https://mixos.dev/decisions/2026-10-08-application-macros.md) -->
+
+# Decision — every application supports Mix macros
+
+Status: accepted 2026-10-08. Binding for new GUI applications immediately;
+existing applications must converge through the rollout. Runtime integration
+is not yet complete. This extends the source-layout application requirements
+and preserves the generic-toolkit decision.
+
+## Purpose
+
+Native MixOS applications are younger and often have fewer features than
+established Linux desktop applications. Their reason to exist includes a
+common ability to compose operations across applications, services and nodes.
+Users and agents must be able to turn a useful sequence into a reusable action
+without adding a separate automation system to each application.
+
+This is the ARexx application-macro principle applied to Mix and the ABP Bus.
+It complements ordinary application quality; it does not excuse unreliable
+editing, inaccessible controls or poor performance. The distinguishing product
+property is a common, supported programming interface across the native desktop,
+not a claim that other desktops cannot run scripts.
+
+## Decision
+
+1. Every native GUI application exposes the shared Mix macro facility by
+   default. Applications with menu bars have a **Macros** menu. Compact apps
+   and scene-backed surfaces expose an equally discoverable **Macros** action
+   in their existing menu or action surface. An empty catalogue retains useful
+   creation, folder-opening and reload actions.
+2. A macro is an ordinary executable `*.mix` script. The application invokes
+   it with `/opt/mixos/bin/mix`, supplies application context and reports its
+   output and result. No new macro or workflow language is introduced.
+3. Application-local macros live in `<AppDirs component>/config/macros/`.
+   Relative means relative to the resolved application data root, never the
+   process working directory or binary directory.
+4. Global, reusable Mix scripts/macros live in **`/opt/mixos/mix`**. This is the
+   agreed initial home until real use warrants a documented migration. Generic
+   scripts remain usable directly; only explicitly labelled eligible macros
+   appear in application menus. There is no recursive scan of home directories.
+5. Shared discovery, metadata, context, execution and result handling belong
+   to `libs/application`. Applications provide small domain adapters and own
+   their existing Bus and domain lifetimes. `libs/toolkit` remains generic.
+6. Macros may coordinate any available Mix capability. Application and node
+   control uses native ABP Bus verbs between noded instances. The facility adds
+   no parallel transport, broker, scheduler or mandatory background daemon.
+7. Applications expose useful, documented domain operations through the Bus;
+   macro execution is not restricted to the invoking application. Relevant
+   mutation fences and undo semantics remain owned by those operations.
+8. Existing Ced filenames, `ced-macro`/`ced-key` headers, `CED_*` context and
+   edit-origin behaviour remain supported during adoption of the shared contract.
+9. New applications ship a working example, native execution evidence and
+   macro documentation. Current standalone apps and Quoin scene surfaces are
+   rollout obligations, not permanent exemptions. Daemons and CLI tools have
+   no GUI menu obligation, but remain callable macro building blocks.
+
+## Contract and delivery
+
+The [application macro specification](../spec/macros/2026-10-08-application-macros.md)
+defines version 1 of the target contract, migration and acceptance criteria.
+The [macro guide](../macros.md) explains the two homes and current availability.
+Implementation planning and operational evidence stay in the private control
+hub. Accepting this decision does not claim that the shared runner or new Bus
+verbs have already shipped.
+
+Changes to the global home, compatibility rules or context contract require
+an explicit versioned migration. Framework gates must enumerate principal
+`kind = "app"` components automatically, so future apps cannot evade the rule
+by being absent from a manually maintained list.
+
+---
+
 <!-- page: https://mixos.dev/dev/application-performance/ (source: https://mixos.dev/dev/application-performance.md) -->
 
 # Application performance
@@ -1065,6 +1137,71 @@ durable recovery. The session supplies its own state root. See
 
 ---
 
+<!-- page: https://mixos.dev/macros/ (source: https://mixos.dev/macros.md) -->
+
+# Mix application macros
+
+Mix macros make application operations reusable. A macro can work on the current
+selection, ask another application to process something, or coordinate several
+services over the ABP Bus. It is an ordinary executable `.mix` script, using the
+same language as a script launched directly. Calling it a macro describes its
+use by an application, not another language or file format.
+
+Every native GUI app is now required to expose the shared macro facility. The
+[decision](decisions/2026-10-08-application-macros.md) is accepted; implementation
+across the desktop is pending. **Ced already has its own macro runner.** Other
+apps must adopt the shared implementation; this guide does not claim they can
+run the new contract today.
+
+## Where scripts belong
+
+| Use | Home |
+| --- | --- |
+| Macros for one app | `<AppDirs component>/config/macros/` |
+| Global reusable scripts/macros | `/opt/mixos/mix` |
+
+The local folder belongs to the resolved app data root, not the directory of the
+document being edited. The app will show its resolved path. Existing profile and
+image-root configuration can change that root. The global home is the initial
+standard until use demonstrates a better location and a migration is agreed.
+
+Only explicitly labelled eligible scripts appear in menus. Generic scripts and
+helper libraries can remain available without filling every app's menu. Existing
+service, build and private control scripts retain their owning directories.
+
+## Ced today
+
+Ced discovers local `.mix` files with a leading `ced-macro` label and an optional
+`ced-key` shortcut:
+
+```mix
+-- ced-macro: Report current file
+print(env("CED_PATH", ""))
+```
+
+Selecting that entry invokes `/opt/mixos/bin/mix`. Ced supplies buffer, epoch,
+revision, path, language, selection offsets and edit origin through `CED_*`
+variables. Output and failures appear in its Output panel. The script can invoke
+other native services as well as the edit service. Editor mutations must respect
+the edit service's target/revision and undo contract.
+
+## Shared target contract
+
+The rollout adds common `macro`/`macro-key`/`macro-apps` headers, a versioned
+`MIX_MACRO_CONTEXT`, local and global menu groups, creation/folder/reload actions,
+and common output and stop handling. Ced's old headers and context remain
+supported. These additions are specified, **not yet generally available**.
+
+Apps expose their domain operations on the native Bus. A menu-launched macro
+and an agent-launched macro use the same execution path. A sequence should check
+each reply before depending on its result. Cancelling the script does not undo
+an operation already accepted by another service.
+
+See the [application macro contract](spec/macros/2026-10-08-application-macros.md)
+for the exact target rules and acceptance criteria.
+
+---
+
 <!-- page: https://mixos.dev/mix/ (source: https://mixos.dev/mix.md) -->
 
 # Mix
@@ -1261,6 +1398,232 @@ reports the frontend, registration and pending launch separately from the
 retained legacy scene record.
 An unconfirmed first-run launch ends with an explicit startup diagnostic after
 a bounded deadline. It requires a manual open to retry and never loops launches.
+
+---
+
+<!-- page: https://mixos.dev/spec/macros/2026-10-08-application-macros/ (source: https://mixos.dev/spec/macros/2026-10-08-application-macros.md) -->
+
+# Application macro contract
+
+Status: accepted target contract, version 1.0.0, 2026-10-08. Shared implementation
+and all-app rollout are pending. Existing Ced support is the initial reference,
+not proof of compliance with every requirement below. No ABP wire bytes change.
+
+Authority: [application macro decision](../../decisions/2026-10-08-application-macros.md).
+
+## 1. Scope and ownership
+
+Every native GUI app supports this contract. A scene-backed application surface
+also has a macro entry; compd/Quoin hosts the shared adapter and supplies its
+scene identity. Background services and CLI tools expose operations rather than
+menus. No app-specific interpreter or independently copied runner is allowed.
+
+`application` owns discovery, context types, execution coordination and bounded
+result delivery. App adapters own menu placement, context capture, domain
+operations, revision checking and undo. The existing host worker integrates
+macro work without adding a second Bus connection or UI event loop. Toolkit
+receives only generic menu/output models and actions.
+
+## 2. Runtime and source homes
+
+| Kind | Runtime home | Source ownership |
+| --- | --- | --- |
+| App-local macro | `<AppDirs component>/config/macros/*.mix` | Shipped examples in `apps/<component>/scripts/macros/`; user additions stay in the resolved app root |
+| Scene-local macro | `<AppDirs scene component>/config/macros/*.mix` | Shipped examples owned by the scene/compd component; distinct from scene layout and behaviour |
+| Global script or macro | `/opt/mixos/mix/*.mix` | Shared runtime scripts in `share/mix/`, collected for installation |
+
+Use the authoritative AppDirs resolver, including existing profile/image-root
+overrides. Do not duplicate or replace precedence in macro code. Different
+profiles or instances with distinct app roots must not share local catalogues
+accidentally. A scene adapter must assign a stable component/root explicitly;
+it must not put all scenes into a single undifferentiated Quoin directory.
+
+Discovery is non-recursive over these two runtime locations. Reusable helper
+modules may live below `lib/` and be loaded explicitly with `require`; they are
+not menu entries. Behaviour, strict config and scene layout files are not macros
+merely because their names end in `.mix`.
+
+Provision shipped app examples only when their destination is absent; never
+overwrite a user's copy on upgrade. Global installation follows the existing
+packaging/provisioning path; applications run as the user and never elevate to
+write `/opt/mixos/mix`. **Create Macro…** defaults to the writable local home;
+global editing remains available through the normal authorised operator path.
+Document which global files are package-owned so upgrades preserve operator
+additions. These two homes do not relocate service scripts, build tools or hub
+automation: those retain their owning component or private hub.
+
+## 3. Script metadata and discovery
+
+An eligible macro is a regular readable `.mix` file with this leading header:
+
+```mix
+-- macro: Report selection
+-- macro-key: Ctrl+Alt+R
+-- macro-apps: ced,dopus
+```
+
+`macro` is the required non-empty menu label. `macro-key` is an optional shortcut
+using the shared chord parser. `macro-apps` is an optional comma-separated list
+of exact component IDs or the single value `*`; omission means all apps for a
+global macro and its owning app for a local macro. Invalid metadata is diagnosed
+and never interpreted as broader eligibility. This filter controls presentation,
+not Bus authority.
+
+Read at most the first 20 lines, stopping at the first non-comment executable
+line; allow blank lines in that block. Filenames follow `snake_case.mix` for new
+files. Preserve Ced's previously accepted stems on migration. Ignore unlabelled
+scripts, directories and helper modules. Discovery never executes a script.
+Malformed entries produce diagnostics while other valid entries remain usable.
+
+Identity is `(scope, stem)`, for example `local:report_selection` or
+`global:report_selection`; same-stem entries remain distinct. Menus group **This
+App** and **Global**, sort by label then identity, and show scope when labels
+collide. Built-in shortcuts win; then local macros, then global macros, each in
+stable filename order. A shortcut conflict drops only the shortcut, not the menu
+entry, and is reported. Ced keeps its existing local `macro.<stem>` action IDs.
+
+Ced accepts `-- ced-macro:` and `-- ced-key:` as compatibility aliases. A file
+using old and new headers with contradictory values is refused with a diagnostic;
+matching duplicates are allowed. Migration never rewrites user scripts silently.
+
+Load at startup and on **Reload Macros**. Native filesystem events update the
+catalogue; rename, removal and overflow trigger a fresh scan. There is no polling.
+If watching is unavailable, show that fact and retain explicit reload. Menu
+discovery and header I/O run off the UI thread.
+
+## 4. Common invocation context
+
+Run the selected file with `/opt/mixos/bin/mix` using an argv list, without a
+shell wrapper. A missing interpreter produces a visible failure with no fallback.
+Macros are ordinary one-shot scripts; a macro that needs a resident worker uses
+the existing native service/lifecycle facilities explicitly.
+
+Supply `MIX_MACRO_CONTEXT` as a JSON-encoded versioned envelope:
+
+```json
+{
+  "schema": "mixos.macro-context.v1",
+  "run_id": "opaque-run-id",
+  "macro": {"scope": "local", "stem": "report_selection"},
+  "app": {"component": "ced", "app_id": "dev.mixos.ced", "service": "ced", "instance": "example"},
+  "app_root": "/home/user/.local/state/mixos/apps/ced",
+  "cwd": "/home/user/Documents",
+  "target": {"kind": "buffer", "id": "opaque-buffer-id", "epoch": "opaque-epoch", "revision": "7"},
+  "selection": {"unit": "utf8-byte", "start": "0", "end": "12"},
+  "origin": "agent:macro.report_selection",
+  "extensions": {}
+}
+```
+
+`app` identifies the actual invoking instance and advertised Bus service, never
+an assumed singleton. Adapters inherit the session's real native Bus connection
+configuration. `app_root` and `cwd` are resolved absolute paths. `target` and
+`selection` are nullable; domain-specific extra references go in the component's
+object under `extensions`. Revisions and offsets are canonical decimal strings
+to preserve full integer range across Mix's floating-point numbers. Selection
+units are explicit, with offsets into the captured target revision.
+
+The UTF-8 JSON envelope is bounded to 64 KiB. Pass large selections, image data
+and file collections by native handles/references rather than putting their
+content in environment variables. Unrepresentable context is a visible refusal,
+never truncation. Values are data, never injected into generated source. Helpers
+use ordinary `env`, `json_parse` and validation with structured failure results.
+
+Capture context when execution begins, after draining relevant pending app work.
+Edits use the owning service's epoch/revision fences and native transaction
+semantics. A stale target is reported; never redirect to a newly active document.
+Switching tabs or focus after launch does not change the captured target.
+
+Ced additionally supplies all existing `CED_*` variables with their existing
+meaning, including `CED_ORIGIN=agent:macro.<stem>` for legacy local macros.
+New global invocation origins include scope to distinguish them; the adapter
+must validate origin length and the owning service's accepted syntax.
+
+## 5. Menu and execution lifecycle
+
+Every app presents **Macros** by default. It contains eligible local/global
+entries and **Create Macro…**, **Open App Macros Folder**, **Open Global Macros
+Folder**, **Reload Macros**, and **Macro Output**. Folder opening and editing
+use the existing native file-manager/editor actions. Built-in labels use Fluent;
+user script labels are displayed as supplied. Keyboard navigation works whether
+or not the catalogue is empty. No launch control may be a dead placeholder.
+
+Create produces a labelled local script with explanatory context comments and
+a harmless example; open it in Ced. Never overwrite an existing filename.
+Document the resolved folders in the app's diagnostics/help so users can find
+scripts without guessing an environment override.
+
+Allow one active macro per app instance initially. A second activation receives
+an explicit busy result, without silent queueing or duplicate effects. Execution
+does not block UI painting/input. Stream stdout/stderr to a bounded output view
+and expose running, succeeded, failed or cancelled status with exit code and
+diagnostics. Bound pending delivery and retained output by bytes as well as lines;
+report truncation and keep draining the process pipes to prevent deadlock.
+
+Provide **Stop Macro** while running. Reap the launched process on stop and app
+shutdown under the shared host's shutdown policy, using native Mix/process
+lifecycle facilities where needed. Stopping execution cannot undo Bus effects
+already accepted or independently managed services. No automatic retry of a
+failed mutation or promise of atomicity across multiple services is permitted.
+
+Run under the normal user/session authority with the normal Mix capability
+surface. Do not introduce a restricted mini-language or recurring approval step
+for ordinary local macros. Context does not grant extra authority. Cross-node
+application operations travel through the ABP Bus between noded instances;
+SSH/HTTP/stdio relays are not replacements for missing native verbs.
+
+## 6. Application and agent control
+
+The visible menu and agent activation must use the same discovery, context
+capture and runner. Extend each app's existing action dispatcher where it exists;
+otherwise add owner-prefixed catalogue/run/status/stop verbs on that app's
+existing Bus service. Do not create a second macro daemon or service identity.
+
+Catalogue returns scope/stem identities, labels, shortcut and eligibility plus
+contract version and diagnostics. Run returns a run ID or a structured refusal;
+status reports observed execution state; stop targets that run ID. Never mark
+completion merely because launch was accepted. Native completion events remove
+the need to poll. Verb names and exact payloads must be registered with owners,
+version and implementation status before landing their implementations; this
+document does not declare any proposed verb already served.
+
+Applications document meaningful domain verbs and provide at least one useful
+shipped macro. Mutation examples exercise domain state and undo where supported;
+read-only apps can demonstrate a report/query. One desktop-wide example must
+compose two real services and check failure/results at each step. Long-lived
+event handling uses Mix serve/event facilities rather than busy loops.
+
+## 7. Compatibility and acceptance
+
+The rollout must preserve existing Ced macro discovery, shortcuts, context,
+output, busy handling and origin/undo semantics. Track outstanding legacy work
+explicitly; no completed claim based solely on menu screenshots or mocks.
+
+Required evidence:
+
+- Discovery fixtures cover both homes, unlabelled files, malformed headers,
+  eligibility, duplicate identities/labels, shortcut collisions and Ced aliases.
+- Native watch tests cover edit, atomic rename, deletion, overflow and explicit
+  reload; no idle polling or unnecessary redraw.
+- Invocation tests cover exact argv/environment/context, stale revisions,
+  two app instances, large-context refusal and no interpreter fallback.
+- Real execution covers success, non-zero exit, launch failure, output flood,
+  cancellation, app shutdown and mutation failure without automatic retry.
+- Every app launches its example from the actual GUI entry and from its native
+  action interface, with matching observable results; the UI remains responsive.
+- Ced edits remain undoable in the correct lane. DOpus/Term/Cap examples prove
+  their own domain behaviour rather than shell substitutions for missing verbs.
+- A real multi-service macro and an authorised two-node macro prove ABP routing,
+  instance identity, replies and final state through the native stack.
+- The supported self-contained VT-native image supplies interpreter, scripts,
+  folders and native service wiring without host desktop/session dependencies.
+- New principal app components fail the application gate unless macro support,
+  documented context/operations and a real acceptance example are declared and
+  verified. Deferred existing apps remain explicit failing rollout work.
+
+Add machine-checkable `*.spec.mix` fixtures and a Mix integration gate during
+implementation. A declaration alone is not execution evidence. Version changes
+to headers/context require compatibility and migration, not a silent rewrite.
 
 ---
 

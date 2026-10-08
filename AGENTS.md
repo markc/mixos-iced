@@ -232,6 +232,25 @@ and new GUI apps, and to shared application, toolkit and renderer code.
   Uploading CPU-painted pixels is not equivalent to GPU glyph compositing.
   There is no calendar-triggered renderer switch or assumed speedup.
 
+### 4.2 Application macros
+
+The [application macro decision](docs/decisions/2026-10-08-application-macros.md)
+and [versioned target contract](docs/spec/macros/2026-10-08-application-macros.md)
+apply to every native GUI application, including scene-backed app surfaces.
+
+- Every app exposes the shared Mix macro facility by default: a **Macros**
+  menu where it has a menu bar, or an equally discoverable entry otherwise.
+  Empty catalogues retain creation, folder-opening and reload actions.
+- Macros are ordinary executable `*.mix` scripts. App-local macros live in
+  `<AppDirs component>/config/macros/`; global reusable scripts/macros live in
+  `/opt/mixos/mix`. Do not create another script home or workflow language.
+- Shared discovery, context, execution and output belong in `libs/application`;
+  toolkit remains generic. Use native ABP Bus control and the app's existing
+  service/domain lifetimes. Preserve existing Ced macro compatibility.
+- New apps include useful domain verbs, a working macro example, documentation
+  and real native acceptance evidence. Existing apps converge through the
+  rollout; a menu placeholder or capability declaration is not completion.
+
 ## 5. Contracts and versions
 
 - **Internal crates** inherit the workspace version (`version.workspace = true`),
@@ -315,3 +334,5 @@ are prerendered, and every page is also published as Markdown.
 8. Manual page in `docs/`; a public decision record if it changes a rule.
 9. GUI apps follow §4.1 and document their representative performance
    workloads using the [performance guide](docs/dev/application-performance.md).
+10. GUI apps follow §4.2 and provide the shared macro entry, application context,
+    documented native operations and a verified macro example.
