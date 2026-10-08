@@ -1,5 +1,18 @@
 # settings contract changes
 
+## 0.3.9
+
+Configure app-owned supervised native settings receivers through one shared
+options wrapper. Explicitly admit the existing bounded snapshot envelope
+(983040-byte body plus 65536 bytes for observation and routing metadata) on
+verified Unix ingress, retaining the generic Bus 65536-byte default. Receiver
+counts, native trust, snapshot limits and cached recovery remain unchanged.
+All six desktop actors, settingsd and embedded Quoin use this wrapper; Term's
+separate native-session receiver retains its own default. Snapshot schema and
+authority wire contracts remain unchanged.
+The version-bound presentation cache interpretation advances; older caches
+fall back to current bootstrap or embedded defaults.
+
 ## 0.3.8
 
 - Preserve remote changed-operation identity while removing comparable timing

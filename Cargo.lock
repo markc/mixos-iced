@@ -6683,7 +6683,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "blake3",
  "bus",

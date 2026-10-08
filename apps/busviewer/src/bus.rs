@@ -617,10 +617,10 @@ async fn worker(
     };
     // Nonblocking startup: registration and subscription replay run in the
     // supervisor. Failures surface as lifecycle deliveries, never here.
-    let options = match ::bus::client_helpers::local_supervised_options(&service, &url) {
+    let options = match ::settings::native::supervised_options(&service, &url) {
         Ok(options) => options,
         Err(error) => {
-            let _ = ready.send(Err(error.to_string()));
+            let _ = ready.send(Err(error.message));
             return;
         }
     };

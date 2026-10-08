@@ -66,6 +66,10 @@ a missing or invalid configured account never enables TCP fallback. The
 profile is inherited by app descendants and remains inside this session's
 runtime, beside the user's other desktop. Callers without this explicit
 profile retain their existing TCP connection behaviour.
+The shared settings-native options wrapper explicitly admits the existing
+983040-byte snapshot body plus 65536 bytes for observation and routing metadata
+on the bounded verified receiver. Generic Bus receivers retain their 65536-byte
+default; actor queue counts and the settings snapshot body limit remain fixed.
 Install `session/scripts/session_bus_env.mix` under `/opt/mixos/share/session`
 alongside the collected units. The bus startup helper verifies a live bus ID
 through its own socket and writes an owned mode-0600 environment file.
