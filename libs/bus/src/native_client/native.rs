@@ -125,8 +125,14 @@ impl NativeIncomingSender {
                 // Correlation is bounded too. Exhaustion terminates this native
                 // connection; the broker settles outstanding forwarded calls on
                 // transport retirement rather than silently losing correlations.
-                if refused.command().from.len().saturating_add(refused.command().command.len())
-                    .saturating_add(refused.command().id.as_ref().map_or(0, String::len)) > 65536 {
+                if refused
+                    .command()
+                    .from
+                    .len()
+                    .saturating_add(refused.command().command.len())
+                    .saturating_add(refused.command().id.as_ref().map_or(0, String::len))
+                    > 65536
+                {
                     return false;
                 }
                 refusals.try_send(refused.refusal()).is_ok()
