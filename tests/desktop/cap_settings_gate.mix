@@ -1,0 +1,290 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Actual Cap document, shared inspector, held preparation and native frames.
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo=args()[0]
+$bin=args()[1]
+$mix=$bin .. "/mix"
+export MIXOS_TEST_MIX=$mix
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$f=require("settings_fixture_lib.mix")
+$R={run:nil,bus:nil,session:nil,children:[],calls:[],ok:false}
+$binding={instance:"fixture",profile:"default"}
+$service="cap-settings"
+fn check($condition,$message)
+  if not $condition then raise("CAP_SETTINGS_GATE",$message) end
+end
+fn fixture_context()
+  return {mix:$mix,bus:$R.bus,root:$R.run.path,service:$service}
+end
+fn rpc($service,$verb,$body)
+  return $h.rpc($mix,$R.bus,$R.run.path,$service,$verb,$body)
+end
+fn app($verb,$body)
+  return $f.rpc(fixture_context(),$verb,$body)
+end
+fn fixture($verb,$body)
+  return $f.fixture(fixture_context(),$verb,$body)
+end
+fn comp($verb,$body)
+  return rpc($R.session.service,$verb,$body)
+end
+fn wait_service($service,$verb,$child,$log)
+  $deadline=time()+10
+  while time() < $deadline
+    check(process_alive($child),"Owned child exited: " .. read_file($log))
+    $reply=$h.call($mix,$R.bus,$R.run.path,$service,$verb,{})
+    if $reply.rc == 0 then return $reply.result end
+    sleep(0.05)
+  end
+  raise("SETUP","Service did not register: " .. $service)
+end
+fn launch($label,$identity,$image)
+  $home=$R.run.path .. "/home-" .. $label
+  for each $dir in ["config","state","cache"]
+    mkdir($home .. "/" .. $dir,{parents:true})
+  end
+  $environment=merge($h.bus_env($R.bus,$R.run.path),{HOME:$home,MIXOS_APP_HOME:$home,
+    XDG_CONFIG_HOME:$home .. "/config",XDG_STATE_HOME:$home .. "/state",XDG_CACHE_HOME:$home .. "/cache",
+    MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default",LIBGL_ALWAYS_SOFTWARE:"1",
+    MIXOS_ACCEPTANCE_RUN:nil,MIXOS_ACCEPTANCE_INSTANCE:nil})
+  if $identity != nil then
+    $environment.MIXOS_ACCEPTANCE_RUN=$identity.run
+    $environment.MIXOS_ACCEPTANCE_INSTANCE=to_string($identity.instance)
+  end
+  $log=$R.run.path .. "/cap-" .. $label .. ".log"
+  $child=spawn([$bin .. "/cap","--service",$service,"--comp",$R.session.service,$image],
+    {env:$n.client_env($R.session,$environment),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$child])
+  wait_service($service,"app.describe",$child,$log)
+  $window=comp("comp.window.wait",{match:{app_id:"dev.mixos.cap"},until:"presented",timeout_ms:5000}).window
+  check($window != nil and $window.pid == $child,"Window is not the actual launched owner")
+  $deadline=time()+5
+  while time() < $deadline
+    $info=app("cap.info",{})
+    if not $info.busy and $info.document != nil then
+      return {pid:$child,window:{id:$window.id,generation:$window.generation},log:$log}
+    end
+    sleep(0.05)
+  end
+  raise("OPEN","Owned PNG did not open")
+end
+fn current($snapshot)
+  $deadline=time()+10
+  $last=nil
+  while time() < $deadline
+    $last=app("app.describe",{})
+    if (deep_eq($last.settings.applied,$h.identity($snapshot)) and
+      deep_eq($last.settings_cache.persisted,$last.settings.applied) and $last.preparation.current) then return $last end
+    check($last.preparation.fault == nil,"Preparation failed: " .. json_encode($last))
+    sleep(0.05)
+  end
+  raise("ACTIVATION","Did not settle: " .. json_encode($last))
+end
+fn apply($snapshot,$operation,$changes)
+  rpc("settingsd","settings.apply",{binding:$binding,expected_incarnation:$snapshot.incarnation,
+    expected_revision:$snapshot.revision,operation_id:$operation,changes:$changes,reset:[]})
+  return rpc("settingsd","settings.get",{binding:$binding}).snapshot
+end
+fn hold($identity,$token)
+  $arm=fixture("barrier.arm",merge($identity,{point:"cap.prepare",token:$token}))
+  check($arm.state == "armed","Hold failed to arm")
+  return merge($identity,{sequence:$arm.sequence,token:$token})
+end
+fn async_wait($verb,$body,$label)
+  $pending=$f.asynchronous(fixture_context(),$verb,$body,$label,12)
+  $R.calls=concat($R.calls,[$pending.pid])
+  return $pending
+end
+fn document_matches($product,$label)
+  $now=app("cap.info",{})
+  check(not $now.busy and deep_eq($now.document,$product.document) and $now.path == $product.path and
+    deep_eq($now.capture,$product.capture) and deep_eq($now.ui,$product.ui),$label .. " changed the actual document/editor")
+  write_file($R.run.path .. "/document-" .. $label .. ".json",json_encode($now))
+end
+fn window_row($window)
+  for each $row in comp("comp.windows.list",{}).windows
+    if $row.id == $window.id and $row.generation == $window.generation then return $row end
+  end
+  raise("WINDOW","Actual Cap window disappeared")
+end
+try
+  for each $name in ["mix","cap","noded","settingsd","compd"]
+    check(is_file($bin .. "/" .. $name),"Missing exact candidate " .. $name)
+  end
+  $R.run=$n.new_run("/var/tmp/cap-settings")
+  $root=$R.run.path
+  $image=$root .. "/source.png"
+  run_argv_must(["cp",$repo .. "/share/brand/favicons/white-on-black/icon-512.png",$image])
+  $R.bus=$n.private_bus({dir:$root,name:"cap-settings",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"cap-settings",run:$R.run,
+    config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,max_secs:180})
+  check($n.wait_ready($R.session,30) and $R.session.dbus == "","Owned compositor unavailable")
+  comp("comp.props.set",{path:"input.host.passthrough",value:false})
+  print(run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30}))
+  $authority_log=$root .. "/settingsd.log"
+  $authority=spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$root .. "/profile"],
+    {env:$h.bus_env($R.bus,$root),stdout:{file:$authority_log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$authority])
+  wait_service("settingsd","settings.describe",$authority,$authority_log)
+  $snapshot=rpc("settingsd","settings.get",{binding:$binding}).snapshot
+  $ordinary=launch("ordinary",nil,$image)
+  $description=current($snapshot)
+  check($description.pid == $ordinary.pid and $description.service == $service and
+    $description.app_id == "dev.mixos.cap" and $description.transport == "native","Wrong canonical owner")
+  for each $entry in $description.verbs
+    check(not starts_with($entry.name,"app.acceptance."),"Ordinary inventory advertises fixture")
+  end
+  for each $verb in ["describe","layout","barrier.arm","barrier.wait","barrier.release","barrier.state","frame.state","frame.wait"]
+    $reply=$f.call(fixture_context(),"app.acceptance." .. $verb,{})
+    check($reply.rc == 10 and $reply.result.error_code == "UNKNOWN_VERB","Ordinary launch exposes fixture: " .. json_encode($reply))
+  end
+  app("cap.quit",{})
+  $deadline=time()+4
+  while process_alive($ordinary.pid) and time() < $deadline
+    sleep(0.02)
+  end
+  check(not process_alive($ordinary.pid),"Ordinary native quit did not retire its owner")
+  $identity={run:"cap-native-" .. to_string(pid()),instance:1}
+  $cap=launch("fixture",$identity,$image)
+  $info=fixture("describe",$identity)
+  check($info.pid == $cap.pid and deep_eq($info.aliases,["root","viewport"]) and
+    deep_eq($info.points,["cap.prepare"]) and $info.frames.enabled,"Wrong explicit fixture")
+  $before=current($snapshot)
+  check(type($before.resources) == "map","No prepared resource owner")
+  $initial=$f.target(fixture_context(),$identity,$before.preparation.applied)
+  $identity=merge($identity,{generation:$initial.evidence.live_generation})
+  $f.presented(fixture_context(),$identity,$initial.target,"baseline")
+  $f.layout(fixture_context(),$identity,$initial.target.window,"baseline")
+  $viewport=fixture("layout",merge($identity,{window:$initial.target.window,layer:"base",aliases:["viewport"]}))
+  check(len($viewport.records) == 1 and $viewport.aliases[0].status == "found" and
+    $viewport.records[0].visible_bounds != nil,"Actual image viewport unavailable")
+  app("cap.annotate",{kind:"redact",points:[{x:10,y:10},{x:50,y:40}],colour:[0,0,0,255],width:2})
+  $product=app("cap.info",{})
+  check($product.document.dirty and len($product.document.objects) == 1 and
+    $product.document.undo > 0 and $product.path == $image,"Actual annotation/undo state missing")
+  write_file($root .. "/document-edited.json",json_encode($product))
+  $reference=hold($identity,"theme-held")
+  $waiting=async_wait("barrier.wait",$reference,"theme-reached")
+  $changed=apply($snapshot,"cap-native-dark",{"appearance.mode":"dark","ui.text_scale":1.25})
+  $reached=$f.collect($waiting,4)
+  check($reached.rc == 0 and $reached.result.ok and $reached.result.state == "reached","Physical preparation never reached hold")
+  $held=app("app.describe",{})
+  check(deep_eq($held.settings.current,$h.identity($changed)) and deep_eq($held.settings.applied,$before.settings.applied) and
+    deep_eq($held.resources,$before.resources),"Held builder replaced installed settings/resources")
+  check(deep_eq(fixture("frame.state",$identity).target,$initial.target),"Held preparation relabelled old frame")
+  document_matches($product,"held")
+  $f.layout(fixture_context(),$identity,$initial.target.window,"held")
+  check(fixture("barrier.release",$reference).state == "released","Release failed")
+  $after=current($changed)
+  $second=$f.target(fixture_context(),$identity,$after.preparation.applied)
+  check($second.target.window == $initial.target.window and $second.target.stamp.activation_epoch > $initial.target.stamp.activation_epoch,"No actual new activation")
+  $f.presented(fixture_context(),$identity,$second.target,"settings")
+  $f.layout(fixture_context(),$identity,$second.target.window,"settings")
+  document_matches($product,"activated")
+  $old_identity=$identity
+  $R.bus=$n.restart_private_bus($R.bus)
+  wait_service($service,"app.describe",$cap.pid,$cap.log)
+  $reconnected=current($changed)
+  $second=$f.target(fixture_context(),{run:$identity.run,instance:$identity.instance},$reconnected.preparation.applied)
+  check($second.evidence.live_generation > $old_identity.generation and $second.target.window == $initial.target.window and
+    process_alive($cap.pid),"Reconnect replaced the GUI or failed to advance generation")
+  $stale=$f.call(fixture_context(),"app.acceptance.frame.state",$old_identity)
+  check($stale.rc == 0 and not $stale.result.ok and contains($stale.result.error,"generation"),"Old generation remained usable")
+  $identity=merge($identity,{generation:$second.evidence.live_generation})
+  $f.presented(fixture_context(),$identity,$second.target,"reconnected")
+  document_matches($product,"reconnected")
+  $saved=app("cap.export",{path:$root .. "/edited.png"})
+  check(is_file($root .. "/edited.png") and not $saved.document.dirty and
+    deep_eq($saved.document.objects,$product.document.objects),"Actual export lost annotations or did not mark saved")
+  $capture_out=$root .. "/region-cancel.reply"
+  $capture_pid=$h.call_async($mix,$R.bus,$root,$service,"cap.capture",{mode:"region",cursor:false},$capture_out,15)
+  $R.calls=concat($R.calls,[$capture_pid])
+  $deadline=time()+5
+  while not window_row($cap.window).minimized and time() < $deadline
+    check(process_alive($capture_pid),"Region capture ended before hiding its owner")
+    sleep(0.02)
+  end
+  check(window_row($cap.window).minimized and app("cap.info",{}).busy,"Region capture did not hide its actual owner")
+  check(app("cap.cancel",{}).cancelling,"Native cancellation was not admitted")
+  $cancelled=$f.collect({pid:$capture_pid,out:$capture_out},4)
+  check($cancelled.rc != 0 and contains(json_encode($cancelled.result),"cancelled"),"Cancelled capture claimed success")
+  check(not window_row($cap.window).minimized,"Cancellation did not restore the actual window")
+  document_matches($saved,"cancelled")
+  $captured=app("cap.capture",{mode:"screen",cursor:false})
+  check(not $captured.busy and $captured.document.width > 0 and $captured.document.height > 0 and
+    is_file($captured.path) and type($captured.capture) == "map" and not window_row($cap.window).minimized,
+    "Actual compositor capture failed or did not restore its owner")
+  write_file($root .. "/capture.json",json_encode($captured))
+  $closing=hold($identity,"closing")
+  $closing_wait=async_wait("barrier.wait",$closing,"closing-reached")
+  $last=apply($changed,"cap-native-close",{"ui.density":1.5})
+  $closed_hold=$f.collect($closing_wait,4)
+  check($closed_hold.rc == 0 and $closed_hold.result.ok and $closed_hold.result.state == "reached","Closing preparation did not hold")
+  $future=merge($identity,{window:$second.target.window,activation_epoch:$second.target.stamp.activation_epoch+1,
+    local_revision:$second.target.stamp.local_revision,timeout_ms:10000})
+  $pending=async_wait("frame.wait",$future,"closing-frame")
+  $admitted=false
+  $deadline=time()+1
+  while time() < $deadline
+    $busy=$f.call(fixture_context(),"app.acceptance.frame.wait",merge($future,{timeout_ms:100}))
+    if $busy.rc == 0 and not $busy.result.ok and contains($busy.result.error,"frame wait: Busy") then $admitted=true; break end
+    check($busy.rc == 0 and not $busy.result.ok and contains($busy.result.error,"TimedOut"),"Unexpected wait admission")
+  end
+  check($admitted,"Closing wait never claimed native owner")
+  $started=time()
+  app("cap.quit",{})
+  $reply=$f.collect($pending,3)
+  check($reply.rc == 0 and not $reply.result.ok and contains($reply.result.error,"Closed"),"Admitted frame wait did not close explicitly")
+  $deadline=time()+3
+  while process_alive($cap.pid) and time() < $deadline
+    sleep(0.02)
+  end
+  check(not process_alive($cap.pid) and time()-$started < 5,"Held preparation blocked bounded shutdown")
+  write_file($root .. "/acceptance.json",json_encode({ordinary_omission:true,layout:true,presented:true,
+    held_last_good:true,reconnect:true,document_preserved:true,region_cancel:true,capture:true,
+    settings_applied:$h.identity($changed),same_window:true,shutdown_wait:$reply,dbus:false}))
+  $R.ok=true
+catch $message
+  print("FAIL Cap native settings: " .. $message)
+finally
+  for each $child in concat($R.calls,$R.children)
+    try
+      $h.stop($child)
+    catch $error
+      $R.ok=false
+      print("FAIL owned child teardown: " .. $error)
+    end
+  end
+  if $R.session != nil then
+    try
+      $n.stop($R.session)
+    catch $error
+      $R.ok=false
+      print("FAIL native host teardown: " .. $error)
+    end
+    for each $child in $R.session.pids
+      try
+        $h.stop($child)
+      catch $error
+        $R.ok=false
+        print("FAIL host child teardown: " .. $error)
+      end
+    end
+  end
+  if $R.bus != nil then
+    try
+      $h.stop($R.bus.pid)
+    catch $error
+      $R.ok=false
+      print("FAIL broker teardown: " .. $error)
+    end
+  end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
+print("PASS Cap actual GUI: native frames, held resources, preserved annotation/undo, reconnect, capture/cancel and bounded shutdown")
