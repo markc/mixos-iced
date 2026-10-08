@@ -220,10 +220,16 @@ pub fn file_list<'a>(
             if index < 8 && decoration == pane::Decoration::Entry {
                 Some(crate::acceptance::entry_id(index))
             } else if index == 0 {
-                Some(application::iced::widget::Id::from("dopus.fixture.left-chevron-0"))
-            } else { None }
+                Some(application::iced::widget::Id::from(
+                    "dopus.fixture.left-chevron-0",
+                ))
+            } else {
+                None
+            }
         })
-    } else { list };
+    } else {
+        list
+    };
     list
 }
 

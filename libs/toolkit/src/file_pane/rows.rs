@@ -239,19 +239,33 @@ where
         self
     }
 
-    fn decoration_bounds(&self, bounds: Rectangle, index: usize, depth: usize, row_h: f32, offset: f32)
-        -> [Rectangle; 2]
-    {
+    fn decoration_bounds(
+        &self,
+        bounds: Rectangle,
+        index: usize,
+        depth: usize,
+        row_h: f32,
+        offset: f32,
+    ) -> [Rectangle; 2] {
         let icon = self.look.chrome.icon;
         let padding = self.look.chrome.small;
         let chevron = Rectangle {
-            x: bounds.x + self.columns.cells(bounds.width)[0].0
+            x: bounds.x
+                + self.columns.cells(bounds.width)[0].0
                 + self.columns.indentation(bounds.width, depth, icon),
-            y: bounds.y + index as f32 * row_h - offset + padding
+            y: bounds.y + index as f32 * row_h - offset
+                + padding
                 + (row_h - 2.0 * padding - icon) / 2.0,
-            width: icon, height: icon,
+            width: icon,
+            height: icon,
         };
-        [chevron, Rectangle { x: chevron.x + icon, ..chevron }]
+        [
+            chevron,
+            Rectangle {
+                x: chevron.x + icon,
+                ..chevron
+            },
+        ]
     }
 
     fn line_height(px: f32, height: Option<f32>) -> f32 {
@@ -543,27 +557,49 @@ where
         _renderer: &Renderer,
         operation: &mut dyn iced_core::widget::Operation,
     ) {
-        let Some(identify) = &self.decoration_id else { return };
+        let Some(identify) = &self.decoration_id else {
+            return;
+        };
         let bounds = layout.bounds();
         let st = tree.state.downcast_ref::<RowState<Renderer::Paragraph>>();
         let cell = self.columns.cells(bounds.width)[0];
-        let clip = Rectangle { x: bounds.x + cell.0, width: cell.1, ..bounds };
+        let clip = Rectangle {
+            x: bounds.x + cell.0,
+            width: cell.1,
+            ..bounds
+        };
         operation.container(None, bounds);
         operation.traverse(&mut |operation| {
             operation.clip(clip);
             let first = (st.offset / st.row_h).floor().max(0.0) as usize;
             for index in first..self.source.len() {
-                let Some(row) = self.source.row(index) else { break };
+                let Some(row) = self.source.row(index) else {
+                    break;
+                };
                 let y = bounds.y + index as f32 * st.row_h - st.offset;
-                if y >= bounds.y + bounds.height { break }
-                let [chevron, entry] = self.decoration_bounds(bounds, index, row.depth, st.row_h, st.offset);
+                if y >= bounds.y + bounds.height {
+                    break;
+                }
+                let [chevron, entry] =
+                    self.decoration_bounds(bounds, index, row.depth, st.row_h, st.offset);
                 for decoration in [Decoration::ChevronRight, Decoration::Entry] {
-                    if decoration != Decoration::Entry && !row.is_dir { continue }
-                    let decoration = if decoration != Decoration::Entry && self.source.is_expanded(row.path) {
-                        Decoration::ChevronDown
-                    } else { decoration };
-                    let rect = if decoration == Decoration::Entry { entry } else { chevron };
-                    if rect.intersection(&clip).is_some() && let Some(id) = identify(index, decoration) {
+                    if decoration != Decoration::Entry && !row.is_dir {
+                        continue;
+                    }
+                    let decoration =
+                        if decoration != Decoration::Entry && self.source.is_expanded(row.path) {
+                            Decoration::ChevronDown
+                        } else {
+                            decoration
+                        };
+                    let rect = if decoration == Decoration::Entry {
+                        entry
+                    } else {
+                        chevron
+                    };
+                    if rect.intersection(&clip).is_some()
+                        && let Some(id) = identify(index, decoration)
+                    {
                         operation.container(Some(&id), rect);
                     }
                 }
@@ -1164,47 +1200,103 @@ mod tests {
                 self.clip = self.clip.intersection(&bounds).unwrap_or_default();
             }
             fn container(&mut self, id: Option<&iced_core::widget::Id>, bounds: Rectangle) {
-                if id.is_some() { self.records.push((bounds, bounds.intersection(&self.clip))); }
+                if id.is_some() {
+                    self.records.push((bounds, bounds.intersection(&self.clip)));
+                }
             }
         }
-        let entries: Vec<_> = (0..100_000).map(|index| {
-            (PathBuf::from(format!("/listing/{index}")), format!("entry-{index}"))
-        }).collect();
+        let entries: Vec<_> = (0..100_000)
+            .map(|index| {
+                (
+                    PathBuf::from(format!("/listing/{index}")),
+                    format!("entry-{index}"),
+                )
+            })
+            .collect();
         let reads = Cell::new(0);
         let painted = Rc::new(RefCell::new(Vec::new()));
         let capture = Rc::clone(&painted);
         let mut list: FilePane<'_, crate::Theme, LayoutRenderer> = FilePane::new(
-            Listing { entries: &entries, reads: &reads }, Presentation::default(), columns(),
-        ).decoration_id(|index, _| Some(iced_core::widget::Id::from(format!("entry-{index}"))))
-         .decoration(move |_, _, _, bounds, clip| {
-             if bounds.intersection(&clip).is_some() {
-                 capture.borrow_mut().push((bounds, bounds.intersection(&clip)));
-             }
-         });
+            Listing {
+                entries: &entries,
+                reads: &reads,
+            },
+            Presentation::default(),
+            columns(),
+        )
+        .decoration_id(|index, _| Some(iced_core::widget::Id::from(format!("entry-{index}"))))
+        .decoration(move |_, _, _, bounds, clip| {
+            if bounds.intersection(&clip).is_some() {
+                capture
+                    .borrow_mut()
+                    .push((bounds, bounds.intersection(&clip)));
+            }
+        });
         let mut renderer = LayoutRenderer::new();
         let mut tree = Tree::new(&list as &dyn Widget<Message, crate::Theme, LayoutRenderer>);
-        let node = list.layout(&mut tree, &renderer,
-            &layout::Limits::new(Size::ZERO, Size::new(600.0, 40.0))).move_to(Point::new(20.0, 30.0));
-        let state = tree.state.downcast_mut::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
+        let node = list
+            .layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(600.0, 40.0)),
+            )
+            .move_to(Point::new(20.0, 30.0));
+        let state = tree
+            .state
+            .downcast_mut::<RowState<<LayoutRenderer as atext::Renderer>::Paragraph>>();
         state.offset = 2.0 * state.row_h + 10.0;
-        let viewport = Rectangle { x: 20.0, y: 30.0, width: 100.0, height: 35.0 };
-        let mut probe = Probe { clip: viewport, records: Vec::new() };
+        let viewport = Rectangle {
+            x: 20.0,
+            y: 30.0,
+            width: 100.0,
+            height: 35.0,
+        };
+        let mut probe = Probe {
+            clip: viewport,
+            records: Vec::new(),
+        };
         reads.set(0);
         list.operate(&mut tree, Layout::new(&node), &renderer, &mut probe);
         // Operate must not scan or format the 100,000-row listing.
         assert!(reads.get() < 10);
-        assert!(probe.records.iter().any(|(raw, visible)| *visible != Some(*raw)),
-            "partly visible first row must expose the real clip");
-        let visible: Vec<_> = probe.records.iter().copied().filter(|(_, clip)| clip.is_some()).collect();
-        list.draw(&tree, &mut renderer, &crate::Theme::default(), &renderer::Style::default(),
-            Layout::new(&node), mouse::Cursor::Unavailable, &viewport);
+        assert!(
+            probe
+                .records
+                .iter()
+                .any(|(raw, visible)| *visible != Some(*raw)),
+            "partly visible first row must expose the real clip"
+        );
+        let visible: Vec<_> = probe
+            .records
+            .iter()
+            .copied()
+            .filter(|(_, clip)| clip.is_some())
+            .collect();
+        list.draw(
+            &tree,
+            &mut renderer,
+            &crate::Theme::default(),
+            &renderer::Style::default(),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &viewport,
+        );
         assert_eq!(visible, *painted.borrow());
         let mut unobserved = FilePane::<crate::Theme, LayoutRenderer>::new(
-            Listing { entries: &entries, reads: &reads }, Presentation::default(), columns(),
+            Listing {
+                entries: &entries,
+                reads: &reads,
+            },
+            Presentation::default(),
+            columns(),
         );
         reads.set(0);
         unobserved.operate(&mut tree, Layout::new(&node), &renderer, &mut probe);
-        assert_eq!(reads.get(), 0, "ordinary path must not traverse decorations");
+        assert_eq!(
+            reads.get(),
+            0,
+            "ordinary path must not traverse decorations"
+        );
     }
     fn deliver(
         list: &mut FilePane<'_, crate::Theme, LayoutRenderer>,
