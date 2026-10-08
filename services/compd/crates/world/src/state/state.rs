@@ -786,6 +786,14 @@ impl Orchestrator {
         &mut smithay::desktop::Space<Window>,
     ) {
         let target = self.worlds.spawn_target();
+        self.comp_world_space_mut(target)
+    }
+
+    /// Geometry mutation belongs to the window's actual world, including dormant worlds.
+    pub fn comp_world_space_mut(&mut self, target: uuid::Uuid) -> (
+        &mut crate::comp::CompState,
+        &mut smithay::desktop::Space<Window>,
+    ) {
         let space = &mut self
             .worlds
             .get_mut(target)

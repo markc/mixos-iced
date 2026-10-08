@@ -287,9 +287,14 @@ impl Dispatch {
         if requester.as_ref() != Some(&self.seat.seat) {
             return false;
         }
+        if protocols::window::shell::shell::tile_input_owned(surface.wl_surface()) { return false; }
+        if surface.with_pending_state(|state| [State::TiledLeft, State::TiledRight, State::TiledTop, State::TiledBottom]
+            .iter().any(|edge| state.states.contains(*edge))) { return false; }
         !surface.with_committed_state(|state| {
             state.is_some_and(|state| {
                 state.states.contains(State::Maximized) || state.states.contains(State::Fullscreen)
+                    || [State::TiledLeft, State::TiledRight, State::TiledTop, State::TiledBottom]
+                        .iter().any(|edge| state.states.contains(*edge))
             })
         })
     }

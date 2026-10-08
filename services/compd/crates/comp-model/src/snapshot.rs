@@ -207,6 +207,11 @@ pub struct SurfaceSnapshot {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WindowExtras {
+    pub tiled: bool,
+    pub requested_tiled: bool,
+    pub native_requested_tiled: bool,
+    pub tile_pending_reason: Option<&'static str>,
+    pub configure_pending: bool,
     pub window_x: f32,
     pub window_y: f32,
     pub window_width: f32,
@@ -251,6 +256,11 @@ pub struct LayerSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct WindowSnapshot {
+    pub tiled: bool,
+    pub requested_tiled: bool,
+    pub native_requested_tiled: bool,
+    pub tile_pending_reason: Option<&'static str>,
+    pub configure_pending: bool,
     #[serde(flatten)]
     pub occlusion: OcclusionProps,
     pub id: u64,
@@ -738,6 +748,11 @@ macro_rules! window_snapshot {
 }
 
 window_snapshot!(
+    tiled,
+    requested_tiled,
+    native_requested_tiled,
+    tile_pending_reason,
+    configure_pending,
     id,
     foreign_id,
     title,
@@ -927,6 +942,11 @@ impl SurfaceSnapshot {
 /// The `windows.*` row of a mapped xdg toplevel's `surfaces.*` row.
 pub fn project_window_row(surface: &SurfaceSnapshot) -> WindowSnapshot {
     WindowSnapshot {
+        tiled: surface.window.tiled,
+        requested_tiled: surface.window.requested_tiled,
+        native_requested_tiled: surface.window.native_requested_tiled,
+        tile_pending_reason: surface.window.tile_pending_reason,
+        configure_pending: surface.window.configure_pending,
         occlusion: surface.occlusion.clone(),
         id: surface.id,
         foreign_id: surface.foreign_id.clone(),
@@ -1524,6 +1544,11 @@ pub static DESCRIPTORS: &[DescribeEntry] = &[
         "Compositor minimized state; write false to restore and focus this window, true to minimise it",
         mutable
     ),
+    descriptor!(&[L("windows"), S, L("tiled")], Bool, "Client-committed native tiled flags; membership is separate"),
+    descriptor!(&[L("windows"), S, L("requested_tiled")], Bool, "Persistent generation-fenced tile membership, including overlays and pending groups"),
+    descriptor!(&[L("windows"), S, L("native_requested_tiled")], Bool, "Native requested tiled flags; false during overlays or pending normal return"),
+    descriptor!(&[L("windows"), S, L("tile_pending_reason")], String, "Complete-group layout failure or null", enum = &["no_output", "invalid_area", "capacity", "invalid_constraints", "insufficient_area"]),
+    descriptor!(&[L("windows"), S, L("configure_pending")], Bool, "Requested native state or tiled slot differs from committed client state/geometry"),
     descriptor!(
         &[L("windows"), S, L("output")],
         String,
@@ -2513,4 +2538,3 @@ fn describe(snapshot: &CompSnapshot, path: &PropPath) -> Option<String> {
 #[cfg(test)]
 #[path = "snapshot_tests.rs"]
 mod tests;
-

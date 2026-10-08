@@ -171,14 +171,23 @@ impl WireTrait for TestHost {
         self.to_place.push((window, geometry));
     }
     fn fullscreen_request(&mut self, window: Window, fullscreen: bool) {
-        let target =
-            world::comp::fullscreen::target_geometry(&self.comp, &self.space.state, &window);
+        let returning = if !fullscreen {
+            SurfaceHandle::of_window(&window)
+                .and_then(|handle| self.comp.registry.id_for_handle(&handle))
+                .and_then(|id| world::comp::geometry::tile_return(&self.comp, &self.space.state, id))
+        } else { None };
+        let target = if fullscreen {
+            world::comp::fullscreen::target_geometry(&self.comp, &self.space.state, &window)
+        } else { returning.map(|target| target.area) };
         world::window::interface::draw::fullscreen::apply(
             &mut self.space.state,
             &window,
             fullscreen,
             target,
+            returning.is_some_and(|target| target.tiled),
         );
+        world::comp::geometry::refresh_space(&mut self.comp, &mut self.space.state);
+        self.comp.mark_input_geometry_dirty();
     }
     fn request_activation(&mut self, _window: Window, _origin: ActivationOrigin) {}
     fn settle_toplevel_drag(&mut self, _surface: WlSurface) {}

@@ -73,6 +73,32 @@ compd waits for its own VT to become active and never switches VT itself.
 (default `comp`); `compd --help` lists every flag. Settings are read from
 `--config-file`, else `~/.config/compd/settings.json`.
 
+## Window tiling
+
+`comp.window.tile {id, generation, output?}` explicitly admits an active xdg
+window into its output/workspace column group; ordinary new windows stay free.
+`comp.window.untile {id, generation}` removes membership and restores its original
+normal rectangle. Groups are bounded to 256 members and preflight every cell
+against actual layer/panel work areas, committed client size hints and prepared
+SSD extents. Output loss selects the first sorted mapped output. Minimise/unmap
+suspend participation, workspace moves transfer the group, and destruction or a
+new role/UUID generation retires membership. Fullscreen and maximise are overlays.
+
+`windows.s<id>.requested_tiled` means membership; `native_requested_tiled` and
+`tiled` mean requested and client-committed native flags. `tile_pending_reason`
+reports a complete-group failure. A pending overlay return restores immutable
+normal geometry with tiled flags clear, retaining membership for later reflow.
+`compd.truth.tiles` carries group/order-independent identity and normal restores.
+`comp.window.wait {until:"tiled"}` requires active current-workspace membership,
+committed flags and the latest decided tile size; ACK alone cannot satisfy it.
+`until:"untiled"` requires removed membership, committed clear flags and client
+geometry matching the current decided slot. An active overlay restores normal
+geometry on its subsequent exit. Use
+`untile` before free placement or interactive move/resize. X11 tile admission is
+refused because it cannot express the native tiled state contract.
+
+See [the tiling contract](../../docs/spec/compd/window-tiling.md).
+
 ## Test
 
 ```

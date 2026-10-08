@@ -18,6 +18,10 @@ use wayland_client::protocol::{
     wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+    zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup::XdgPopup, xdg_positioner::XdgPositioner, xdg_surface, xdg_surface::XdgSurface,
     xdg_toplevel::XdgToplevel, xdg_wm_base, xdg_wm_base::XdgWmBase,
@@ -214,6 +218,15 @@ impl TestClient {
             .create_surface(&self.qh, ())
     }
 
+    /// A real xdg-decoration object, used to prove target SSD geometry through
+    /// native negotiation and client ACK/commit rather than a state stamp.
+    pub fn decoration(&mut self, top: &XdgToplevel) -> ZxdgToplevelDecorationV1 {
+        let (name, _, version) = self.state.globals.iter().find(|(_, interface, _)|
+            interface == "zxdg_decoration_manager_v1").expect("native decoration global");
+        let manager: ZxdgDecorationManagerV1 = self.registry.bind(*name, (*version).min(1), &self.qh, ());
+        manager.get_toplevel_decoration(top, &self.qh, ())
+    }
+
     /// `surface` becomes an xdg toplevel.
     pub fn toplevel(&mut self, surface: &WlSurface) -> (XdgSurface, XdgToplevel) {
         let xdg = self
@@ -223,6 +236,16 @@ impl TestClient {
             .get_xdg_surface(surface, &self.qh, ());
         let toplevel = xdg.get_toplevel(&self.qh, ());
         (xdg, toplevel)
+    }
+
+    /// Bind an actual requested xdg version for native capability guards.
+    pub fn toplevel_version(&mut self, surface: &WlSurface, version: u32) -> (XdgSurface, XdgToplevel) {
+        let (name, _, advertised) = self.state.globals.iter().find(|(_, interface, _)| interface == "xdg_wm_base").unwrap();
+        assert!(version >= 1 && version <= *advertised);
+        let wm: XdgWmBase = self.registry.bind(*name, version, &self.qh, ());
+        let xdg = wm.get_xdg_surface(surface, &self.qh, ());
+        let top = xdg.get_toplevel(&self.qh, ());
+        (xdg, top)
     }
 
     /// `surface` becomes an xdg popup of `parent`, 20x20 off its top-left.
@@ -574,6 +597,8 @@ delegate_noop!(ClientState: ZwlrScreencopyManagerV1);
 delegate_noop!(ClientState: ignore WlShm);
 delegate_noop!(ClientState: ignore WlBuffer);
 delegate_noop!(ClientState: ignore XdgPopup);
+delegate_noop!(ClientState: ZxdgDecorationManagerV1);
+delegate_noop!(ClientState: ignore ZxdgToplevelDecorationV1);
 
 /// The client half of a proxy's id, for the server-side lookup.
 pub fn protocol_id(proxy: &impl Proxy) -> u32 {

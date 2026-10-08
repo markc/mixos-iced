@@ -35,6 +35,8 @@ wayland-protocols = { version = "=0.32.13", features = ["client", "unstable", "s
 wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
 
 [dev-dependencies]
+comp-model = { workspace = true }
+decor = { workspace = true }
 policy-host = { workspace = true }
 # The workspace model the window tests drive.
 policy = { workspace = true }

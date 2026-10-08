@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "compd"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "buildinfo",
  "comp-model",
@@ -7435,6 +7435,8 @@ dependencies = [
 name = "testkit"
 version = "0.1.1"
 dependencies = [
+ "comp-model",
+ "decor",
  "dispatcher",
  "libc",
  "model",

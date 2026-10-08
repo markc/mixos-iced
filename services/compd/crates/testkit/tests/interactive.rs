@@ -136,3 +136,38 @@ fn a_stale_serial_starts_nothing() {
     h.roundtrip();
     assert!(h.comp().interactive.is_none(), "the serial must name the held button");
 }
+
+#[test]
+fn tile_admission_refuses_real_native_move_and_resize_before_its_first_commit() {
+    let mut h = Harness::new();
+    let (surface, _, top) = h.mapped_toplevel(320, 240);
+    let handle = h.handle_of(&surface);
+    let record = h.comp().registry.get(h.comp().registry.id_for_handle(&handle).unwrap()).unwrap();
+    let target = policy::tiling::Target { id: record.id(), generation: record.generation() };
+    let window = h.wire.inner.space.state.elements().find(|window|
+        dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(window).as_ref() == Some(&handle)).unwrap().clone();
+    {
+        let host = &mut h.wire.inner;
+        world::comp::geometry::set_tiled(&mut host.comp, &mut host.space.state, target, &window, true, None).unwrap();
+    }
+    h.roundtrip();
+    assert!(!protocols::window::shell::shell::committed_tiled(&window));
+    let serial = h.press(&surface, BTN_LEFT);
+    top._move(h.client.seat(PRIMARY), serial);
+    top.resize(h.client.seat(PRIMARY), serial, ResizeEdge::Right);
+    h.roundtrip();
+    assert!(h.comp().interactive.is_none());
+    h.release(&surface, BTN_LEFT);
+    {
+        let host = &mut h.wire.inner;
+        world::comp::geometry::set_tiled(&mut host.comp, &mut host.space.state, target, &window, false, None).unwrap();
+    }
+    h.roundtrip();
+    h.client.attach(&surface, 320, 240);
+    h.roundtrip();
+    assert!(!protocols::window::shell::shell::tile_input_owned(window.toplevel().unwrap().wl_surface()));
+    let serial = h.press(&surface, BTN_LEFT);
+    top._move(h.client.seat(PRIMARY), serial);
+    h.roundtrip();
+    assert!(h.comp().interactive.is_some(), "untile restores ordinary real grab admission");
+}

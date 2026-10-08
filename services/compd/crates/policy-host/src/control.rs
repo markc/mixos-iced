@@ -94,7 +94,7 @@ pub fn refresh_usable(lp: &mut Loop) -> crate::geometry::GeometryChange {
     let windows: Vec<_> = lp
         .inner
         .comp
-        .maximized_ids()
+        .geometry_ids()
         .into_iter()
         .filter_map(|id| Some((id, window_of(lp, id)?)))
         .collect();
@@ -184,6 +184,7 @@ pub fn window(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
 fn named_window(op: &WindowOp) -> Option<u64> {
     match op {
         WindowOp::State { id, .. }
+        | WindowOp::Tile { id, .. }
         | WindowOp::Minimize { id, .. }
         | WindowOp::Focus { id, .. }
         | WindowOp::Raise { id, .. }
@@ -203,6 +204,7 @@ fn window_op(lp: &mut Loop, op: &WindowOp) -> Option<ControlReply> {
         return Some(locked);
     }
     match op {
+        WindowOp::Tile { id, generation, enabled, output } => Some(tile(lp, *id, *generation, *enabled, output.as_deref())),
         WindowOp::SwitchWorkspace {
             output,
             index,
@@ -595,6 +597,76 @@ fn requested(lp: &Loop, id: SurfaceId, state: WindowState) -> bool {
     }
 }
 
+fn tile(lp: &mut Loop, id: u64, generation: u64, enabled: bool, output: Option<&str>) -> ControlReply {
+    let record_id = SurfaceId(id);
+    let target = policy::tiling::Target { id: record_id, generation };
+    if let Err(policy::tiling::AdmissionError::Target(error)) = policy::tiling::resolve_control_target(&lp.inner.comp.registry, target, enabled) {
+        return ControlReply::WindowTarget { id, error };
+    }
+    let Some(window) = window_of(lp, record_id) else {
+        return ControlReply::refused("unsupported_state", serde_json::json!({"id":id,"reason":"not_in_active_space"}));
+    };
+    // Native tiled flags have an xdg contract. Do not promise an X11 state the
+    // protocol cannot express or admit a dormant world's window into this one.
+    if window.toplevel().is_none() || (enabled && lp.inner.host_space().state.element_location(&window).is_none()) {
+        return ControlReply::refused("unsupported_state", serde_json::json!({"id":id,"reason":"not_active_xdg_toplevel"}));
+    }
+    let selected = if let Some(name) = output {
+        let (outputs, _, _) = crate::project::project_outputs(lp);
+        match outputs.iter().find(|(key, row)| key.as_str() == name || row.name == name) {
+            Some((_, row)) => Some(row.name.clone()),
+            None => return ControlReply::refused("unknown_output", serde_json::json!({"output":name})),
+        }
+    } else { None };
+    let Some(owner) = window.toplevel().and_then(|top| lp.inner.window_of_surface(top.wl_surface()).map(|(world, _)| world)) else {
+        return ControlReply::refused("unsupported_state", serde_json::json!({"id":id,"reason":"no_owning_space"}));
+    };
+    let before = lp.inner.comp.tiles.member(target).cloned();
+    let outcome = {
+        let (comp, space) = lp.inner.comp_world_space_mut(owner);
+        crate::geometry::set_tiled(comp, space, target, &window, enabled, selected.as_deref())
+    };
+    match outcome {
+        Err(policy::tiling::AdmissionError::Target(error)) => return ControlReply::WindowTarget { id, error },
+        Err(error) => {
+            let reason = match error {
+                policy::tiling::AdmissionError::Layout(error) => error.name(),
+                policy::tiling::AdmissionError::Capacity => "capacity",
+                policy::tiling::AdmissionError::InvalidGroup => "inactive_workspace",
+                policy::tiling::AdmissionError::InvalidRestore => "invalid_restore",
+                policy::tiling::AdmissionError::UnsupportedProtocol => "tiled_state_protocol",
+                policy::tiling::AdmissionError::Target(_) => unreachable!(),
+            };
+            return ControlReply::refused("unsupported_state", serde_json::json!({"id":id,"reason":reason}));
+        }
+        Ok(change) => {
+            if change.windows { crate::input::retarget_pointer(lp); }
+            if change.windows || before != lp.inner.comp.tiles.member(target).cloned() {
+                lp.state.schedule_redraw(RedrawReason::WindowState);
+            }
+        }
+    }
+    let facts = window_facts(lp, record_id);
+    let record = lp.inner.comp.registry.get(record_id).expect("synchronous tile target remains live");
+    let reply = policy::window::state_reply(record, before != lp.inner.comp.tiles.member(target).cloned(), &facts);
+    match reply {
+        ControlReply::Body(body) => ControlReply::Body(merged(body, tile_description(lp, record_id))),
+        reply => reply,
+    }
+}
+
+/// Owner membership and complete-plan status, separate from protocol flags.
+pub fn tile_description(lp: &Loop, id: SurfaceId) -> Value {
+    let member = lp.inner.comp.registry.get(id).and_then(|record|
+        lp.inner.comp.tiles.member(policy::tiling::Target { id, generation: record.generation() }));
+    let pending = crate::geometry::tile_pending(&lp.inner.comp, &lp.inner.host_space().state, id);
+    serde_json::json!({"tile_group": member.map(|member| serde_json::json!({
+        "output":member.group.output,"workspace":member.group.workspace,
+        "order":lp.inner.comp.tiles.members().iter().position(|candidate| candidate.target == member.target),
+        "normal":{"x":member.normal.x,"y":member.normal.y,"width":member.normal.width,"height":member.normal.height}
+    })), "tile_pending_reason":pending.map(|error|error.name())})
+}
+
 /// Whether the client has committed the maximised state (xdg: its last acked
 /// configure; X11: `_NET_WM_STATE`).
 pub fn committed_maximized(window: &Window) -> bool {
@@ -720,6 +792,12 @@ pub fn apply_interactive(lp: &mut Loop) {
     let Some(window) = window_of(lp, grab.id) else {
         return;
     };
+    let facts = window_facts(lp, grab.id);
+    if facts.requested_tiled || facts.native_requested_tiled || facts.committed_tiled {
+        shell::unstage_resizing(&window);
+        shell::send(&window);
+        return;
+    }
     let (origin, size) = match grab.start {
         Some(start) => start,
         None => {
@@ -820,13 +898,16 @@ pub fn window_facts(lp: &Loop, id: SurfaceId) -> WindowFacts {
     let fullscreen = protocols::window::ident::ident::states(&window).fullscreen;
     let committed_fullscreen = protocols::window::ident::ident::committed_fullscreen(&window);
     let geometry = window.geometry();
+    let tiles = crate::geometry::tile_facts(&lp.inner.comp, &lp.inner.host_space().state, id, &window);
     WindowFacts {
+        requested_tiled: tiles.membership, native_requested_tiled: tiles.requested,
+        committed_tiled: tiles.committed, tile_pending: tiles.pending.is_some(),
         requested_maximized,
         requested_fullscreen: fullscreen,
         committed_maximized,
         committed_fullscreen,
         configure_pending: requested_maximized != committed_maximized
-            || fullscreen != committed_fullscreen,
+            || fullscreen != committed_fullscreen || tiles.configure_pending,
         min_size,
         max_size,
         visible: drawn(lp, &window),

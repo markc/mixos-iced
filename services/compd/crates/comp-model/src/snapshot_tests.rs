@@ -5,6 +5,23 @@ use super::*;
 use crate::observation::{SetValidationError as SetError, validate_set_request};
 use surfaces::{AGENT_SEAT_NAME, HUMAN_SEAT_NAME};
 
+#[test]
+fn tile_projection_preserves_membership_pending_and_native_commit_distinctions() {
+    let mut snapshot = fixture();
+    let row = snapshot.windows.get_mut("s2").unwrap();
+    row.requested_tiled = true;
+    row.native_requested_tiled = false;
+    row.tiled = false;
+    row.tile_pending_reason = Some("insufficient_area");
+    row.configure_pending = false;
+    assert_eq!(snapshot.select(&["windows","s2","requested_tiled"]), Some(json!(true)));
+    assert_eq!(snapshot.select(&["windows","s2","native_requested_tiled"]), Some(json!(false)));
+    assert_eq!(snapshot.select(&["windows","s2","tiled"]), Some(json!(false)));
+    assert_eq!(snapshot.select(&["windows","s2","tile_pending_reason"]), Some(json!("insufficient_area")));
+    assert_eq!(snapshot.select(&["windows","s2","configure_pending"]), Some(json!(false)));
+    assert!(snapshot.select(&["surfaces","s2","requested_tiled"]).is_none(), "window-only policy facts stay out of raw surface rows");
+}
+
 fn fixture() -> CompSnapshot {
     let output = "o_dp_1".to_string();
     let mut outputs = BTreeMap::new();
@@ -105,6 +122,7 @@ fn fixture() -> CompSnapshot {
             window_height: 576.0,
             pid: Some(4242),
             workspace: 1,
+            ..WindowExtras::default()
         },
     };
     let mut surfaces = BTreeMap::new();
@@ -152,6 +170,11 @@ fn fixture() -> CompSnapshot {
     windows.insert(
         "s2".into(),
         WindowSnapshot {
+            tiled: false,
+            requested_tiled: false,
+            native_requested_tiled: false,
+            tile_pending_reason: None,
+            configure_pending: false,
             occlusion: Default::default(),
             id: toplevel.id,
             foreign_id: toplevel.foreign_id.clone(),

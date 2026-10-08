@@ -579,6 +579,11 @@ fn diff_window_row(
             prop_opt_string(old.title.as_deref()),
             prop_opt_string(new.title.as_deref()),
         ),
+        ("tiled", PropValue::Bool(old.tiled), PropValue::Bool(new.tiled)),
+        ("requested_tiled", PropValue::Bool(old.requested_tiled), PropValue::Bool(new.requested_tiled)),
+        ("native_requested_tiled", PropValue::Bool(old.native_requested_tiled), PropValue::Bool(new.native_requested_tiled)),
+        ("configure_pending", PropValue::Bool(old.configure_pending), PropValue::Bool(new.configure_pending)),
+        ("tile_pending_reason", prop_opt_string(old.tile_pending_reason), prop_opt_string(new.tile_pending_reason)),
         (
             "app_id",
             prop_opt_string(old.app_id.as_deref()),

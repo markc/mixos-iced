@@ -84,6 +84,10 @@ pub fn release(lp: &mut Loop) {
 /// An intent from the chrome, as the request the client itself would make.
 fn apply(lp: &mut Loop, window: &Window, intent: Intent) {
     let Some(handle) = SurfaceHandle::of_window(window) else { return };
+    let tile_owned = lp.inner.comp.registry.id_for_handle(&handle).is_some_and(|id|
+        lp.inner.comp.tiles.members().iter().any(|member| member.target.id == id));
+    let tile_flags = protocols::window::shell::shell::requested_tiled(window) || protocols::window::shell::shell::committed_tiled(window);
+    if (tile_owned || tile_flags) && matches!(intent, Intent::Move | Intent::Resize { .. }) { return; }
     match intent {
         Intent::Move => {
             dispatcher::wayland::grab::interactive::start_chrome(&mut lp.state, handle, 0);

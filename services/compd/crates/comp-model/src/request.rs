@@ -57,6 +57,7 @@ pub enum StatsTarget {
 /// window is named; only `restore` may name none (most recently minimised).
 #[derive(Clone, Debug, PartialEq)]
 pub enum WindowOp {
+    Tile { id: u64, generation: u64, enabled: bool, output: Option<String> },
     State {
         id: u64,
         generation: u64,
@@ -147,6 +148,8 @@ pub enum WindowState {
 /// What `comp.window.wait` waits for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WaitUntil {
+    Tiled,
+    Untiled,
     Maximized,
     Unmaximized,
     Fullscreen,
@@ -163,6 +166,8 @@ pub enum WaitUntil {
 impl WaitUntil {
     pub fn name(self) -> &'static str {
         match self {
+            Self::Tiled => "tiled",
+            Self::Untiled => "untiled",
             Self::Maximized => "maximized",
             Self::Unmaximized => "unmaximized",
             Self::Fullscreen => "fullscreen",
@@ -745,6 +750,15 @@ fn timeout_arg(
 pub fn parse_window_verb(verb: &str, args: &Value) -> Result<WindowVerb, ControlReply> {
     let empty = serde_json::Map::new();
     match verb {
+        "comp.window.tile" | "comp.window.untile" => {
+            let allowed: &'static [&'static str] = if verb == "comp.window.tile" {
+                &["id", "generation", "output"]
+            } else { &["id", "generation"] };
+            let object = args_object(args, &empty, allowed)?;
+            let (id, generation) = required_target(object)?;
+            Ok(WindowVerb::Op(WindowOp::Tile { id, generation,
+                enabled: verb == "comp.window.tile", output: output_arg(object)? }))
+        }
         "comp.window.maximize"
         | "comp.window.unmaximize"
         | "comp.window.fullscreen"
@@ -916,6 +930,8 @@ pub fn parse_window_verb(verb: &str, args: &Value) -> Result<WindowVerb, Control
             let width = size_arg(object, "width")?;
             let height = size_arg(object, "height")?;
             let until = match present(object, "until").and_then(Value::as_str) {
+                Some("tiled") => WaitUntil::Tiled,
+                Some("untiled") => WaitUntil::Untiled,
                 Some("mapped") => WaitUntil::Mapped,
                 Some("visible") => WaitUntil::Visible,
                 Some("presented") => WaitUntil::Presented,
@@ -940,7 +956,7 @@ pub fn parse_window_verb(verb: &str, args: &Value) -> Result<WindowVerb, Control
                     return Err(invalid_argument(
                         "until",
                         "string",
-                        "mapped|visible|presented|size|focused|maximized|unmaximized|fullscreen|unfullscreen|unmapped|gone",
+                        "mapped|visible|presented|size|focused|maximized|unmaximized|fullscreen|unfullscreen|tiled|untiled|unmapped|gone",
                     ));
                 }
             };
