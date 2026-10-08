@@ -299,17 +299,34 @@ try
   check($held.requested_tiled and $held.native_requested_tiled and not $held.tiled and $held.configure_pending and
     $held.window_width == 420 and $held.window_height == 260,"Held native ACK fabricated committed tile/geometry")
   check_slot($c,$third_width,$height)
+  write_file($root .. "/third-held.json",json_encode({row:$held,owner:owner($c),truth:rpc("compd.truth",{})}))
   timeout($c,"tiled")
   $size_wait=call("comp.window.wait",{match:identity($c),until:"size",width:$third_width,height:$height,timeout_ms:200})
   check($size_wait.rc >= 10 and $size_wait.result.error == "timeout","Held geometry prematurely satisfied size wait")
   $image=screenshot("third-held")
   $left=floor(2*$width/3)
-  check(colour($image,$left+20,40,"0000ff") and not colour($image,$left+20,floor($height/2),"0000ff"),"Held old buffer was replaced in actual pixels")
-  point($c,20,40)
-  $outside=rpc("comp.input.pointer.move",{seat:"human",x:$left+20,y:floor($height/2)})
+  -- Production aspect-fits the committed buffer in the new decided slot.
+  -- The old short buffer is centred with letterbox, never a tall replacement.
+  check(colour($image,$left+$third_width/2,$height/2,"0000ff") and
+    not colour($image,$left+20,40,"0000ff"),"Held old buffer was replaced in actual pixels")
+  $pointer_offset=len(read_file($c.log))
+  $inside=rpc("comp.input.pointer.move",{seat:"human",x:$left+$third_width/2,y:$height/2})
+  check($inside.target != nil and $inside.target.id == $c.id,"Fitted committed buffer did not own native input")
+  $matched=false
+  for $attempt=1 to 100
+    $motions=re_find(probe_tail($c,$pointer_offset),"(?:enter|motion) (-?[0-9.]+) (-?[0-9.]+)")
+    for each $motion in $motions
+      if (abs(to_number($motion.groups[0])-$held.window_width/2) <= 1 and
+        abs(to_number($motion.groups[1])-$held.window_height/2) <= 1) then $matched=true; break end
+    end
+    if $matched then break end
+    sleep(0.02)
+  end
+  check($matched,"Actual input did not invert the committed buffer's aspect fit")
+  $outside=rpc("comp.input.pointer.move",{seat:"human",x:$left+20,y:40})
   check($outside.target == nil or $outside.target.id != $c.id,"Held new decided size fabricated native input")
   check(not contains(probe_tail($c,$offset),"PROBE buffer_commit"),"Buffer committed during claimed held assertions")
-  write_file($root .. "/third-held.json",json_encode({row:$held,size_wait:$size_wait,owner:owner($c)}))
+  write_file($root .. "/third-held-input.json",json_encode({size_wait:$size_wait,inside:$inside,outside:$outside,motions:$motions}))
   columns([$a,$b,$c],$height)
   check(contains(probe_tail($c,$offset),"PROBE buffer_commit " .. to_string($third_width) .. " " .. to_string($height)),"Converged without real replacement buffer log")
   pixels_columns("three",[$a,$b,$c],$height-60)
