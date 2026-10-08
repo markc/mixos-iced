@@ -377,44 +377,98 @@ fn malformed_delivery_during_successful_read_keeps_recovery_deadline_and_then_co
 #[test]
 fn remote_authority_clock_stays_unavailable_after_local_consumer_delivery() {
     use bus::native_client::IncomingCommand;
-    use bus::native_session::{Assurance,BrokerPrincipal,HexBytes,PrincipalVersion};
-    let next=snapshot(2,"a");
-    let stamp=settings::clock::now().expect("test host monotonic clock");
-    let observation=settings::clock::Commit {operation_id:"changed-remote".into(),
-        identity:(&next).into(),changed:true,validation_started:Some(stamp.clone()),
-        commit_started:Some(stamp.clone()),accepted:Some(stamp)};
-    let mut command=IncomingCommand {generation:1,from:"settingsd".into(),command:"".into(),id:None,
-        args:serde_json::Value::Null,body:serde_json::to_string(&next).unwrap(),
-        headers:BTreeMap::from([("topic".into(),topic("default")),
-            ("broker_service".into(),"settingsd".into()),("broker_origin".into(),"mesh".into()),
-            ("settings_observation".into(),serde_json::to_string(&observation).unwrap())])};
-    let principal=BrokerPrincipal {version:PrincipalVersion::V1,assurance:Assurance::LocalUnix,
-        owner_node:"test".into(),unix_uid:1000,unix_gid:1000,peer_pid:7,
-        broker_epoch:HexBytes([1;16]),connection_id:HexBytes([2;16]),session:None};
-    let mut envelope=bus::wire::BusMessage::new();
-    bus::native_session::stamp_principal(&mut envelope,Some(&principal)).unwrap();
+    use bus::native_session::{Assurance, BrokerPrincipal, HexBytes, PrincipalVersion};
+    let next = snapshot(2, "a");
+    let stamp = settings::clock::now().expect("test host monotonic clock");
+    let observation = settings::clock::Commit {
+        operation_id: "changed-remote".into(),
+        identity: (&next).into(),
+        changed: true,
+        validation_started: Some(stamp.clone()),
+        commit_started: Some(stamp.clone()),
+        accepted: Some(stamp),
+    };
+    let mut command = IncomingCommand {
+        generation: 1,
+        from: "settingsd".into(),
+        command: "".into(),
+        id: None,
+        args: serde_json::Value::Null,
+        body: serde_json::to_string(&next).unwrap(),
+        headers: BTreeMap::from([
+            ("topic".into(), topic("default")),
+            ("broker_service".into(), "settingsd".into()),
+            ("broker_origin".into(), "mesh".into()),
+            (
+                "settings_observation".into(),
+                serde_json::to_string(&observation).unwrap(),
+            ),
+        ]),
+    };
+    let principal = BrokerPrincipal {
+        version: PrincipalVersion::V1,
+        assurance: Assurance::LocalUnix,
+        owner_node: "test".into(),
+        unix_uid: 1000,
+        unix_gid: 1000,
+        peer_pid: 7,
+        broker_epoch: HexBytes([1; 16]),
+        connection_id: HexBytes([2; 16]),
+        session: None,
+    };
+    let mut envelope = bus::wire::BusMessage::new();
+    bus::native_session::stamp_principal(&mut envelope, Some(&principal)).unwrap();
     command.headers.extend(envelope.headers);
-    let mut remote=consumer(); activate(&mut remote,snapshot(1,"a"));
+    let mut remote = consumer();
+    activate(&mut remote, snapshot(1, "a"));
     remote.native_delivery(&command);
-    assert_eq!(remote.current().unwrap().revision,Revision(2),"valid remote control remains admitted");
-    let remote_observation=remote.observations();
-    let authority=remote_observation.authority.unwrap();
-    assert_eq!(authority.operation_id,"changed-remote");
+    assert_eq!(
+        remote.current().unwrap().revision,
+        Revision(2),
+        "valid remote control remains admitted"
+    );
+    let remote_observation = remote.observations();
+    let authority = remote_observation.authority.unwrap();
+    assert_eq!(authority.operation_id, "changed-remote");
     assert!(authority.changed);
-    assert!(authority.accepted.is_none() && authority.commit_started.is_none()
-        && authority.validation_started.is_none(),"matching local JSON clock plus a local principal cannot relabel mesh origin");
-    command.headers.insert("broker_origin".into(),"local".into());
-    let mut local=consumer(); activate(&mut local,snapshot(1,"a"));
+    assert!(
+        authority.accepted.is_none()
+            && authority.commit_started.is_none()
+            && authority.validation_started.is_none(),
+        "matching local JSON clock plus a local principal cannot relabel mesh origin"
+    );
+    command
+        .headers
+        .insert("broker_origin".into(), "local".into());
+    let mut local = consumer();
+    activate(&mut local, snapshot(1, "a"));
     local.native_delivery(&command);
-    assert_eq!(local.observations().authority.unwrap().accepted,observation.accepted);
+    assert_eq!(
+        local.observations().authority.unwrap().accepted,
+        observation.accepted
+    );
     // A textual local claim without a valid native broker principal is also
     // control evidence only. It cannot mint comparable acceptance time.
-    command.headers=BTreeMap::from([("topic".into(),topic("default")),
-        ("broker_service".into(),"settingsd".into()),("broker_origin".into(),"local".into()),
-        ("settings_observation".into(),serde_json::to_string(&observation).unwrap())]);
-    let mut unverified=consumer(); activate(&mut unverified,snapshot(1,"a"));
+    command.headers = BTreeMap::from([
+        ("topic".into(), topic("default")),
+        ("broker_service".into(), "settingsd".into()),
+        ("broker_origin".into(), "local".into()),
+        (
+            "settings_observation".into(),
+            serde_json::to_string(&observation).unwrap(),
+        ),
+    ]);
+    let mut unverified = consumer();
+    activate(&mut unverified, snapshot(1, "a"));
     unverified.native_delivery(&command);
-    assert!(unverified.observations().authority.unwrap().accepted.is_none());
+    assert!(
+        unverified
+            .observations()
+            .authority
+            .unwrap()
+            .accepted
+            .is_none()
+    );
 }
 
 #[cfg(feature = "native")]

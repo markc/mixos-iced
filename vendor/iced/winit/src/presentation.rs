@@ -168,7 +168,10 @@ mod tests {
         };
         let current = Arc::new(Mutex::new(make(1)));
         let provider = Arc::clone(&current);
-        let retained = binding(1, FrameObserver::with_capture(move || provider.lock().unwrap().clone()));
+        let retained = binding(
+            1,
+            FrameObserver::with_capture(move || provider.lock().unwrap().clone()),
+        );
         let window = Id::unique();
         let mut ledger = Ledger::new(window);
         ledger.drawn(Some(retained.clone()));

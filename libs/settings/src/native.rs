@@ -154,11 +154,13 @@ impl Consumer {
         let observation = delivery.observation;
         match delivery.result {
             Ok(snapshot) => {
-                let identity:crate::consumer::SnapshotIdentity = (&snapshot).into();
+                let identity: crate::consumer::SnapshotIdentity = (&snapshot).into();
                 let work = self.observe(delivery.generation, snapshot);
-                self.observe_authority(observation.filter(|observation| observation.identity == identity));
+                self.observe_authority(
+                    observation.filter(|observation| observation.identity == identity),
+                );
                 work
-            },
+            }
             Err(error) => self.rejected_delivery(error),
         }
     }
@@ -207,7 +209,9 @@ impl Decoded {
             result,
             fingerprint: (command.body.len() <= MAX_SNAPSHOT_BYTES)
                 .then(|| *blake3::hash(command.body.as_bytes()).as_bytes()),
-            observation: command.header("settings_observation").filter(|value| value.len() <= 16 * 1024)
+            observation: command
+                .header("settings_observation")
+                .filter(|value| value.len() <= 16 * 1024)
                 .and_then(|value| serde_json::from_str::<crate::clock::Commit>(value).ok())
                 .map(|mut observation| {
                     if !local_authority_clock(command) {
@@ -224,7 +228,9 @@ impl Decoded {
 }
 
 fn local_authority_clock(command: &IncomingCommand) -> bool {
-    if command.header("broker_origin") != Some("local") { return false; }
+    if command.header("broker_origin") != Some("local") {
+        return false;
+    }
     let mut envelope = bus::wire::BusMessage::new();
     envelope.headers = command.headers.clone();
     matches!(bus::native_session::read_principal(&envelope), Ok(Some(principal))

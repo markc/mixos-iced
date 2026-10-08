@@ -216,7 +216,8 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         // on-screen surface before calling this, so the view is present then.
         self.poll_publish();
         if let Some(view) = self.surface.begin_render_view() {
-            self.surface.set_target_presentation(self.runtime.ui.frame_presentation());
+            self.surface
+                .set_target_presentation(self.runtime.ui.frame_presentation());
             self.runtime.render_into(&view);
             crate::frame_trace::rendered(self.id.0);
             self.surface

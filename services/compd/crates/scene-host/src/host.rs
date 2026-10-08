@@ -791,7 +791,9 @@ impl SceneHost {
         let mut serviced = Serviced::default();
         while let Some(observation) = self.port.try_observation() {
             match observation {
-                Inbound::Registrations(registrations) => self.participants.registrations(registrations),
+                Inbound::Registrations(registrations) => {
+                    self.participants.registrations(registrations)
+                }
                 Inbound::Presentation(notice) => self.participants.notice(notice),
                 _ => unreachable!("observation mailbox contains metadata only"),
             }
@@ -927,7 +929,9 @@ impl SceneHost {
             match message {
                 Inbound::Registered(name) => self.service = Some(name),
                 Inbound::Refused(reason) => self.refused = Some(reason),
-                Inbound::Registrations(registrations) => self.participants.registrations(registrations),
+                Inbound::Registrations(registrations) => {
+                    self.participants.registrations(registrations)
+                }
                 Inbound::Presentation(notice) => self.participants.notice(notice),
                 Inbound::Request(request) => {
                     let generation = self.port.connection_generation();
@@ -1002,30 +1006,59 @@ impl SceneHost {
     // observation metadata neither requests a frame nor marks the UI dirty.
     fn observe_participants(&mut self, lp: &world::state::Loop) {
         use application::participants::Visibility;
-        let windows = lp.inner.comp.registry.windows().filter_map(|record| {
-            Some(crate::participants::Window {
-                id: record.id().0,
-                incarnation: record.generation(),
-                pid: record.pid()?,
-                visibility: if record.minimized() { Visibility::Minimised }
-                    else if !record.mapped() || lp.inner.comp.hidden(record.handle()) { Visibility::Hidden }
-                    else { Visibility::Visible },
+        let windows = lp
+            .inner
+            .comp
+            .registry
+            .windows()
+            .filter_map(|record| {
+                Some(crate::participants::Window {
+                    id: record.id().0,
+                    incarnation: record.generation(),
+                    pid: record.pid()?,
+                    visibility: if record.minimized() {
+                        Visibility::Minimised
+                    } else if !record.mapped() || lp.inner.comp.hidden(record.handle()) {
+                        Visibility::Hidden
+                    } else {
+                        Visibility::Visible
+                    },
+                })
             })
-        }).collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         let session = self.settings.session();
         let value = json!({"pid":std::process::id(),"connection_generation":self.port.settings_generation(),
             "observer_provenance":{"origin":"local","owner":"scene-host","peer_pid":std::process::id()},
             "settings":session.host().consumer().evidence(),
             "settings_observation":session.host().consumer().observations(),
             "installed_frame_stamp":session.frame_stamp().map(|stamp|json!({"activation_epoch":stamp.activation_epoch,"local_revision":stamp.local_revision}))});
-        let frames = self.frame_owners.iter().map(|(scene,(window,frames))| {
-            (scene.clone(),window.raw(),frames.snapshot(),self.host.mapped_output(scene).is_some())
-        }).collect();
+        let frames = self
+            .frame_owners
+            .iter()
+            .map(|(scene, (window, frames))| {
+                (
+                    scene.clone(),
+                    window.raw(),
+                    frames.snapshot(),
+                    self.host.mapped_output(scene).is_some(),
+                )
+            })
+            .collect();
         let previous = self.participants.snapshot();
-        let next = self.participants.sync(&windows,
-            matches!(lp.inner.status_session, world::state::state::StatusSession::Paused),
-            self.port.registered_service_name(),value,frames,false);
-        if next != previous { self.port.publish_participants(next); }
+        let next = self.participants.sync(
+            &windows,
+            matches!(
+                lp.inner.status_session,
+                world::state::state::StatusSession::Paused
+            ),
+            self.port.registered_service_name(),
+            value,
+            frames,
+            false,
+        );
+        if next != previous {
+            self.port.publish_participants(next);
+        }
     }
 
     /// `<service>.panel.changed` once per change of each output's edges or the

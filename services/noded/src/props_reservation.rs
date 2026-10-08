@@ -69,8 +69,14 @@ pub(crate) fn publisher_owner(name: &str) -> Option<&str> {
         return Some("settingsd");
     }
     reserved_owner(name)
-        .or_else(|| name.strip_suffix(".presentation.changed").filter(|owner| !owner.is_empty()))
-        .or_else(|| name.strip_suffix(".participants.changed").filter(|owner| !owner.is_empty()))
+        .or_else(|| {
+            name.strip_suffix(".presentation.changed")
+                .filter(|owner| !owner.is_empty())
+        })
+        .or_else(|| {
+            name.strip_suffix(".participants.changed")
+                .filter(|owner| !owner.is_empty())
+        })
         .or_else(|| {
             name.strip_suffix(".pointer.changed")
                 .filter(|owner| !owner.is_empty())
@@ -159,17 +165,29 @@ pub(crate) fn visible_in_list(name: &str, peer_id: &str) -> bool {
 /// reserved path with a parseable inner, returns the re-serialised
 /// canonical wire bytes.
 pub(crate) fn canonicalize_reserved_inner(topic: &str, inner_wire: &str) -> Option<String> {
-    if !settings_topic(topic) && !topic.ends_with(".presentation.changed") && !topic.ends_with(".participants.changed") {
+    if !settings_topic(topic)
+        && !topic.ends_with(".presentation.changed")
+        && !topic.ends_with(".participants.changed")
+    {
         reserved_owner(topic)?;
     }
     let mut inner = match bus::wire::parse(inner_wire) {
         Ok(m) => m,
         Err(_) => return None,
     };
-    let observation = settings_topic(topic).then(|| inner.get("settings_observation").filter(|value| value.len() <= 16 * 1024).map(str::to_owned)).flatten();
+    let observation = settings_topic(topic)
+        .then(|| {
+            inner
+                .get("settings_observation")
+                .filter(|value| value.len() <= 16 * 1024)
+                .map(str::to_owned)
+        })
+        .flatten();
     inner.headers.clear();
     inner.set("command", topic);
-    if let Some(observation) = observation {inner.set("settings_observation", &observation);}
+    if let Some(observation) = observation {
+        inner.set("settings_observation", &observation);
+    }
     Some(inner.to_wire())
 }
 

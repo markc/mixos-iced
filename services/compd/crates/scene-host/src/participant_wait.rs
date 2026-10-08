@@ -1,82 +1,199 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Finite native requests over copied owner receipts. No periodic reads.
-use std::{collections::{BTreeSet,VecDeque}, future::Future, time::{Duration,Instant}};
 use application::native_actor::Accepted;
 use application::native_queue::Permit;
-use serde_json::{Value,json};
+use serde_json::{Value, json};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    future::Future,
+    time::{Duration, Instant},
+};
 use tokio::sync::watch;
 
 #[derive(Clone)]
-pub(crate) struct Observed {sequence:u64,at:Instant,value:Value}
-#[derive(Clone,Default)]
-pub(crate) struct History {records:VecDeque<Observed>,latest:Value,fingerprint:Value,sequence:u64}
+pub(crate) struct Observed {
+    sequence: u64,
+    at: Instant,
+    value: Value,
+}
+#[derive(Clone, Default)]
+pub(crate) struct History {
+    records: VecDeque<Observed>,
+    latest: Value,
+    fingerprint: Value,
+    sequence: u64,
+}
 impl History {
-    pub(crate) fn observe(&mut self,value:Value,at:Instant)->bool {
-        if self.latest==value {return false;}
-        let mut fingerprint=value.clone();
-        if let Some(rows)=fingerprint["participants"].as_array_mut() {
-            for row in rows {if !row["presentation"].is_null() {row["presentation"]=row["presentation"]["stamp"].clone();}}
+    pub(crate) fn observe(&mut self, value: Value, at: Instant) -> bool {
+        if self.latest == value {
+            return false;
         }
-        if self.records.is_empty() || self.fingerprint!=fingerprint {
-            let Some(sequence)=self.sequence.checked_add(1) else {return false;};
-            self.sequence=sequence;
-            self.records.push_back(Observed {sequence,at,value:value.clone()});
-            if self.records.len()>128 {self.records.pop_front();}
-            self.fingerprint=fingerprint;
+        let mut fingerprint = value.clone();
+        if let Some(rows) = fingerprint["participants"].as_array_mut() {
+            for row in rows {
+                if !row["presentation"].is_null() {
+                    row["presentation"] = row["presentation"]["stamp"].clone();
+                }
+            }
         }
-        self.latest=value;
+        if self.records.is_empty() || self.fingerprint != fingerprint {
+            let Some(sequence) = self.sequence.checked_add(1) else {
+                return false;
+            };
+            self.sequence = sequence;
+            self.records.push_back(Observed {
+                sequence,
+                at,
+                value: value.clone(),
+            });
+            if self.records.len() > 128 {
+                self.records.pop_front();
+            }
+            self.fingerprint = fingerprint;
+        }
+        self.latest = value;
         true
     }
 }
 
-pub(crate) struct Spec { operation:String, services:BTreeSet<String>, timeout:Duration, presented:bool, closed:bool, keys:Option<BTreeSet<String>> }
+pub(crate) struct Spec {
+    operation: String,
+    services: BTreeSet<String>,
+    timeout: Duration,
+    presented: bool,
+    closed: bool,
+    keys: Option<BTreeSet<String>>,
+}
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WireSpec {operation_id:String,services:Vec<String>,timeout_ms:u64,#[serde(default)] until:Option<String>,#[serde(default)] keys:Option<Vec<String>>}
-pub(crate) fn parse(body:&str)->Option<Spec> {
-    if body.len()>16*1024 {return None;}
-    let value:WireSpec=serde_json::from_str(body).ok()?;
-    let (presented,closed)=match value.until.as_deref() {None|Some("settled")=>(false,false),Some("presented")=>(true,false),Some("closed")=>(false,true),_=>return None};
-    let keys=if let Some(rows)=value.keys {
-        if rows.is_empty() || rows.len()>128 {return None;}
-        let mut keys=BTreeSet::new();
-        for key in rows {if key.is_empty() || key.len()>512 || !keys.insert(key) {return None;}}
-        Some(keys)
-    } else {None};
-    let operation=value.operation_id;
-    if operation.is_empty() || operation.len()>128 {return None;}
-    let timeout=value.timeout_ms;
-    if !(1..=60_000).contains(&timeout) {return None;}
-    let rows=value.services;
-    if rows.is_empty() || rows.len()>128 {return None;}
-    let mut services=BTreeSet::new();
-    for service in rows {if service.is_empty() || service.len()>256 || !services.insert(service) {return None;}}
-    Some(Spec {operation,services,timeout:Duration::from_millis(timeout),presented,closed,keys})
+struct WireSpec {
+    operation_id: String,
+    services: Vec<String>,
+    timeout_ms: u64,
+    #[serde(default)]
+    until: Option<String>,
+    #[serde(default)]
+    keys: Option<Vec<String>>,
 }
-
-fn complete(value:&Value,spec:&Spec)->bool {
-    let Some(rows)=value["participants"].as_array() else {return false;};
-    if spec.keys.as_ref().is_some_and(|keys|keys.iter().any(|key|!rows.iter().any(|row|row["key"]==key.as_str()))) {return false;}
-    spec.services.iter().all(|service| {
-        let selected:Vec<_>=rows.iter().filter(|row|row["service"]==service.as_str()
-            && spec.keys.as_ref().is_none_or(|keys|row["key"].as_str().is_some_and(|key|keys.contains(key)))).collect();
-        !selected.is_empty() && selected.iter().all(|row| {
-            if spec.closed {return row["state"]=="closed";}
-            if spec.presented {return row["operation_id"]==spec.operation && row["state"]=="presented";}
-            if row["state"]=="closed" {return true;}
-            row["operation_id"]==spec.operation && matches!(row["state"].as_str(),Some("presented"|"hidden"|"minimised"|"inactive_session"))
-        })
+pub(crate) fn parse(body: &str) -> Option<Spec> {
+    if body.len() > 16 * 1024 {
+        return None;
+    }
+    let value: WireSpec = serde_json::from_str(body).ok()?;
+    let (presented, closed) = match value.until.as_deref() {
+        None | Some("settled") => (false, false),
+        Some("presented") => (true, false),
+        Some("closed") => (false, true),
+        _ => return None,
+    };
+    let keys = if let Some(rows) = value.keys {
+        if rows.is_empty() || rows.len() > 128 {
+            return None;
+        }
+        let mut keys = BTreeSet::new();
+        for key in rows {
+            if key.is_empty() || key.len() > 512 || !keys.insert(key) {
+                return None;
+            }
+        }
+        Some(keys)
+    } else {
+        None
+    };
+    let operation = value.operation_id;
+    if operation.is_empty() || operation.len() > 128 {
+        return None;
+    }
+    let timeout = value.timeout_ms;
+    if !(1..=60_000).contains(&timeout) {
+        return None;
+    }
+    let rows = value.services;
+    if rows.is_empty() || rows.len() > 128 {
+        return None;
+    }
+    let mut services = BTreeSet::new();
+    for service in rows {
+        if service.is_empty() || service.len() > 256 || !services.insert(service) {
+            return None;
+        }
+    }
+    Some(Spec {
+        operation,
+        services,
+        timeout: Duration::from_millis(timeout),
+        presented,
+        closed,
+        keys,
     })
 }
 
-fn on_time<'a>(history:&'a History,spec:&Spec,baseline:u64,deadline:Instant)->Option<&'a Observed> {
-    history.records.iter().find(|observed|observed.sequence>=baseline
-        && observed.at<=deadline && complete(&observed.value,spec))
+fn complete(value: &Value, spec: &Spec) -> bool {
+    let Some(rows) = value["participants"].as_array() else {
+        return false;
+    };
+    if spec.keys.as_ref().is_some_and(|keys| {
+        keys.iter()
+            .any(|key| !rows.iter().any(|row| row["key"] == key.as_str()))
+    }) {
+        return false;
+    }
+    spec.services.iter().all(|service| {
+        let selected: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                row["service"] == service.as_str()
+                    && spec.keys.as_ref().is_none_or(|keys| {
+                        row["key"].as_str().is_some_and(|key| keys.contains(key))
+                    })
+            })
+            .collect();
+        !selected.is_empty()
+            && selected.iter().all(|row| {
+                if spec.closed {
+                    return row["state"] == "closed";
+                }
+                if spec.presented {
+                    return row["operation_id"] == spec.operation && row["state"] == "presented";
+                }
+                if row["state"] == "closed" {
+                    return true;
+                }
+                row["operation_id"] == spec.operation
+                    && matches!(
+                        row["state"].as_str(),
+                        Some("presented" | "hidden" | "minimised" | "inactive_session")
+                    )
+            })
+    })
 }
 
-pub(crate) fn run(request:Accepted,spec:Spec,mut receipts:watch::Receiver<History>)->(Permit,impl Future<Output=Result<(),String>>+Send+'static) {
-    let baseline=receipts.borrow().records.iter().rev().find(|record|record.at<=request.admitted_at())
-        .map_or(0,|record|record.sequence);
+fn on_time<'a>(
+    history: &'a History,
+    spec: &Spec,
+    baseline: u64,
+    deadline: Instant,
+) -> Option<&'a Observed> {
+    history.records.iter().find(|observed| {
+        observed.sequence >= baseline && observed.at <= deadline && complete(&observed.value, spec)
+    })
+}
+
+pub(crate) fn run(
+    request: Accepted,
+    spec: Spec,
+    mut receipts: watch::Receiver<History>,
+) -> (
+    Permit,
+    impl Future<Output = Result<(), String>> + Send + 'static,
+) {
+    let baseline = receipts
+        .borrow()
+        .records
+        .iter()
+        .rev()
+        .find(|record| record.at <= request.admitted_at())
+        .map_or(0, |record| record.sequence);
     request.into_task(move |client,command,admitted| async move {
     let deadline=tokio::time::Instant::from_std(admitted+spec.timeout);
     let mut lifecycle=client.subscribe_state();
@@ -140,44 +257,82 @@ mod tests {
     use super::*;
     #[test]
     fn bounded_wait_refuses_ambiguous_or_unbounded_requests() {
-        assert!(parse(r#"{"operation_id":"op","services":["term","shell"],"timeout_ms":1000}"#).is_some());
-        for body in [r#"{"operation_id":"op","services":["term","term"],"timeout_ms":1000}"#,
+        assert!(
+            parse(r#"{"operation_id":"op","services":["term","shell"],"timeout_ms":1000}"#)
+                .is_some()
+        );
+        for body in [
+            r#"{"operation_id":"op","services":["term","term"],"timeout_ms":1000}"#,
             r#"{"operation_id":"op","operation_id":"other","services":["term"],"timeout_ms":1000}"#,
             r#"{"operation_id":"op","services":["term"],"timeout_ms":60001}"#,
             r#"{"operation_id":"op","services":[],"timeout_ms":1000}"#,
-            r#"{"operation_id":"op","services":["term"],"timeout_ms":1000,"deadline_elapsed":true}"#] {
+            r#"{"operation_id":"op","services":["term"],"timeout_ms":1000,"deadline_elapsed":true}"#,
+        ] {
             assert!(parse(body).is_none());
         }
     }
     #[test]
     fn hidden_phase_is_terminal_only_for_the_actual_changed_operation() {
-        let spec=parse(r#"{"operation_id":"new","services":["term"],"timeout_ms":1000}"#).unwrap();
-        assert!(!complete(&json!({"participants":[{"service":"term","state":"hidden","operation_id":"old"}]}),&spec));
-        assert!(complete(&json!({"participants":[{"service":"term","state":"hidden","operation_id":"new","phase":"applied"}]}),&spec));
-        assert!(!complete(&json!({"participants":[{"service":"term","state":"awaiting_presentation","operation_id":"new"}]}),&spec));
-        assert!(!complete(&json!({"participants":[]}),&spec));
+        let spec =
+            parse(r#"{"operation_id":"new","services":["term"],"timeout_ms":1000}"#).unwrap();
+        assert!(!complete(
+            &json!({"participants":[{"service":"term","state":"hidden","operation_id":"old"}]}),
+            &spec
+        ));
+        assert!(complete(
+            &json!({"participants":[{"service":"term","state":"hidden","operation_id":"new","phase":"applied"}]}),
+            &spec
+        ));
+        assert!(!complete(
+            &json!({"participants":[{"service":"term","state":"awaiting_presentation","operation_id":"new"}]}),
+            &spec
+        ));
+        assert!(!complete(&json!({"participants":[]}), &spec));
         let strict=parse(r#"{"operation_id":"new","services":["shell"],"keys":["shell/control"],"until":"presented","timeout_ms":1000}"#).unwrap();
-        assert!(!complete(&json!({"participants":[{"key":"shell/control","service":"shell","state":"hidden","operation_id":"new"}]}),&strict));
-        assert!(!complete(&json!({"participants":[{"key":"shell/other","service":"shell","state":"presented","operation_id":"new"}]}),&strict));
-        assert!(complete(&json!({"participants":[{"key":"shell/control","service":"shell","state":"presented","operation_id":"new"},
-            {"key":"shell/other","service":"shell","state":"hidden","operation_id":"new"}]}),&strict));
+        assert!(!complete(
+            &json!({"participants":[{"key":"shell/control","service":"shell","state":"hidden","operation_id":"new"}]}),
+            &strict
+        ));
+        assert!(!complete(
+            &json!({"participants":[{"key":"shell/other","service":"shell","state":"presented","operation_id":"new"}]}),
+            &strict
+        ));
+        assert!(complete(
+            &json!({"participants":[{"key":"shell/control","service":"shell","state":"presented","operation_id":"new"},
+            {"key":"shell/other","service":"shell","state":"hidden","operation_id":"new"}]}),
+            &strict
+        ));
     }
 
     #[test]
     fn late_settlement_preserves_predeadline_proof_and_refuses_afterdeadline_proof() {
-        let spec=parse(r#"{"operation_id":"new","services":["term"],"until":"presented","timeout_ms":10}"#).unwrap();
-        let admitted=Instant::now(); let deadline=admitted+Duration::from_millis(10);
-        let hidden=json!({"participants":[{"service":"term","state":"hidden","operation_id":"new"}]});
-        let presented=json!({"participants":[{"service":"term","state":"presented","operation_id":"new"}]});
-        let mut before=History::default();
-        before.observe(hidden.clone(),admitted);
-        before.observe(presented.clone(),admitted+Duration::from_millis(9));
-        before.observe(hidden.clone(),admitted+Duration::from_millis(11));
-        let delayed=on_time(&before,&spec,1,deadline).expect("predeadline proof survives a later hidden event and delayed settlement");
-        assert_eq!(delayed.at,admitted+Duration::from_millis(9));
-        let mut after=History::default(); after.observe(hidden,admitted);
-        after.observe(presented,admitted+Duration::from_millis(11));
-        assert!(complete(&after.latest,&spec),"latest state is genuinely presented");
-        assert!(on_time(&after,&spec,1,deadline).is_none(),"later native proof cannot be marked on time");
+        let spec = parse(
+            r#"{"operation_id":"new","services":["term"],"until":"presented","timeout_ms":10}"#,
+        )
+        .unwrap();
+        let admitted = Instant::now();
+        let deadline = admitted + Duration::from_millis(10);
+        let hidden =
+            json!({"participants":[{"service":"term","state":"hidden","operation_id":"new"}]});
+        let presented =
+            json!({"participants":[{"service":"term","state":"presented","operation_id":"new"}]});
+        let mut before = History::default();
+        before.observe(hidden.clone(), admitted);
+        before.observe(presented.clone(), admitted + Duration::from_millis(9));
+        before.observe(hidden.clone(), admitted + Duration::from_millis(11));
+        let delayed = on_time(&before, &spec, 1, deadline)
+            .expect("predeadline proof survives a later hidden event and delayed settlement");
+        assert_eq!(delayed.at, admitted + Duration::from_millis(9));
+        let mut after = History::default();
+        after.observe(hidden, admitted);
+        after.observe(presented, admitted + Duration::from_millis(11));
+        assert!(
+            complete(&after.latest, &spec),
+            "latest state is genuinely presented"
+        );
+        assert!(
+            on_time(&after, &spec, 1, deadline).is_none(),
+            "later native proof cannot be marked on time"
+        );
     }
 }

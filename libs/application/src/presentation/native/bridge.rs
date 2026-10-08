@@ -32,7 +32,9 @@ pub fn bridge<T, C>(session: Session<T, C>, worker: Worker<T, C>) -> (Ui<T, C>, 
     let (observations, observed) = watch::channel(serde_json::Value::Null);
     let (frame_source, frame_sources) = watch::channel(None);
     let mut observation = observation::Publisher::new(observed, frame_sources);
-    if let Some(client) = worker.client.as_ref() {observation.connect(Arc::clone(client));}
+    if let Some(client) = worker.client.as_ref() {
+        observation.connect(Arc::clone(client));
+    }
     (
         Ui {
             session,
@@ -73,7 +75,14 @@ impl<T, C> Ui<T, C> {
             "settings":self.session.host().consumer().evidence(),
             "settings_observation":self.session.host().consumer().observations(),
             "installed_frame_stamp":stamp});
-        self.observations.send_if_modified(|current| {if *current == next {false} else {*current=next;true}});
+        self.observations.send_if_modified(|current| {
+            if *current == next {
+                false
+            } else {
+                *current = next;
+                true
+            }
+        });
     }
     pub fn session(&self) -> &Session<T, C> {
         &self.session

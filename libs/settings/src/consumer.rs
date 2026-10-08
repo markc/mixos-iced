@@ -272,16 +272,29 @@ impl Consumer {
     #[cfg(feature = "observation")]
     pub fn observations(&self) -> ObservationEvidence<'_> {
         ObservationEvidence {
-            authority: self.authority_observation.as_ref().filter(|(generation, observation)| self.generation == Some(*generation) && self.current().is_some_and(|snapshot| SnapshotIdentity::from(snapshot) == observation.identity)).map(|(_, observation)| observation),
+            authority: self
+                .authority_observation
+                .as_ref()
+                .filter(|(generation, observation)| {
+                    self.generation == Some(*generation)
+                        && self.current().is_some_and(|snapshot| {
+                            SnapshotIdentity::from(snapshot) == observation.identity
+                        })
+                })
+                .map(|(_, observation)| observation),
             received: self.received_observation.as_ref(),
             applied: self.applied_observation.as_ref(),
             presentation_claimed: false,
         }
     }
     #[cfg(feature = "observation")]
-    pub(crate) fn observe_authority(&mut self, observation:Option<crate::clock::Commit>) {
-        self.authority_observation = self.generation.zip(observation)
-            .filter(|(_, observation)| observation.operation_id.len() <= 128 && self.current().is_some_and(|snapshot| SnapshotIdentity::from(snapshot) == observation.identity));
+    pub(crate) fn observe_authority(&mut self, observation: Option<crate::clock::Commit>) {
+        self.authority_observation = self.generation.zip(observation).filter(|(_, observation)| {
+            observation.operation_id.len() <= 128
+                && self.current().is_some_and(|snapshot| {
+                    SnapshotIdentity::from(snapshot) == observation.identity
+                })
+        });
     }
     #[cfg(feature = "observation")]
     fn record_applied(&mut self) {

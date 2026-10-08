@@ -20,37 +20,80 @@ pub(super) struct Publisher {
 }
 
 impl Publisher {
-    pub(super) fn new(metadata:watch::Receiver<Value>, sources:watch::Receiver<Option<Handle>>)->Self {
-        Self {metadata,sources,frames:None,client:None,sending:None,queued:false,open:true}
+    pub(super) fn new(
+        metadata: watch::Receiver<Value>,
+        sources: watch::Receiver<Option<Handle>>,
+    ) -> Self {
+        Self {
+            metadata,
+            sources,
+            frames: None,
+            client: None,
+            sending: None,
+            queued: false,
+            open: true,
+        }
     }
-    pub(super) fn connect(&mut self, client:Arc<SupervisedClient>) {
+    pub(super) fn connect(&mut self, client: Arc<SupervisedClient>) {
         self.sending = None;
         self.client = Some(client);
         self.queued = true;
     }
     fn stage(&mut self) {
-        if self.sending.is_some() || !self.queued {return;}
+        if self.sending.is_some() || !self.queued {
+            return;
+        }
         self.queued = false;
-        let Some(client) = self.client.as_ref().cloned() else {return;};
-        let Some(generation) = settings::native::live_generation(&client) else {return;};
+        let Some(client) = self.client.as_ref().cloned() else {
+            return;
+        };
+        let Some(generation) = settings::native::live_generation(&client) else {
+            return;
+        };
         let mut metadata = self.metadata.borrow().clone();
-        if metadata.is_null() {return;}
+        if metadata.is_null() {
+            return;
+        }
         metadata["service"] = Value::String(client.service_name().to_owned());
         metadata["connection_generation"] = Value::from(generation);
-        metadata["native_frames"] = self.frames.as_ref().map(|frames| crate::frames::snapshot_json(&frames.borrow())).unwrap_or(Value::Null);
-        let Ok(body) = serde_json::to_string(&metadata) else {return;};
+        metadata["native_frames"] = self
+            .frames
+            .as_ref()
+            .map(|frames| crate::frames::snapshot_json(&frames.borrow()))
+            .unwrap_or(Value::Null);
+        let Ok(body) = serde_json::to_string(&metadata) else {
+            return;
+        };
         let mut message = bus::wire::BusMessage::new();
-        message.set("command", &format!("{}.presentation.changed", client.service_name()));
+        message.set(
+            "command",
+            &format!("{}.presentation.changed", client.service_name()),
+        );
         message.body = body;
         let wire = message.to_wire();
         let mut headers = BTreeMap::new();
-        headers.insert("name".into(), format!("{}.presentation.changed", client.service_name()));
+        headers.insert(
+            "name".into(),
+            format!("{}.presentation.changed", client.service_name()),
+        );
         headers.insert("retain".into(), "true".into());
         self.sending = Some(Box::pin(async move {
-            let reply = tokio::time::timeout(Duration::from_secs(1), client.call_with_headers_raw_at_generation(generation, "noded", "topic.publish", &headers, &wire)).await
-                .map_err(|_| "presentation publication deadline elapsed".to_owned())?
-                .map_err(|error| error.to_string())?;
-            if reply.0 != 0 {return Err(format!("presentation publication refused: {}", reply.0));}
+            let reply = tokio::time::timeout(
+                Duration::from_secs(1),
+                client.call_with_headers_raw_at_generation(
+                    generation,
+                    "noded",
+                    "topic.publish",
+                    &headers,
+                    &wire,
+                ),
+            )
+            .await
+            .map_err(|_| "presentation publication deadline elapsed".to_owned())?
+            .map_err(|error| error.to_string())?;
+            if reply.0 != 0 {
+                return Err(format!("presentation publication refused: {}", reply.0));
+            }
             Ok(())
         }));
     }

@@ -711,14 +711,23 @@ impl SubscriptionBroker {
         retain: bool,
         principal: Option<&bus::native_session::BrokerPrincipal>,
     ) -> Result<PublishResult, PublishError> {
-        self.publish_with_registration(name, inner_body, from, from_tx, origin, retain, principal, None).await
+        self.publish_with_registration(
+            name, inner_body, from, from_tx, origin, retain, principal, None,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn publish_with_registration(
-        &self, name:&str, inner_body:&str, from:&str, from_tx:mpsc::Sender<String>,
-        origin:BrokerOrigin, retain:bool, principal:Option<&bus::native_session::BrokerPrincipal>,
-        registration:Option<&str>,
+        &self,
+        name: &str,
+        inner_body: &str,
+        from: &str,
+        from_tx: mpsc::Sender<String>,
+        origin: BrokerOrigin,
+        retain: bool,
+        principal: Option<&bus::native_session::BrokerPrincipal>,
+        registration: Option<&str>,
     ) -> Result<PublishResult, PublishError> {
         if name.starts_with('$') {
             return Err(PublishError::ReservedName);
@@ -793,7 +802,9 @@ impl SubscriptionBroker {
                 inner.headers.remove(*h);
             }
             stamp_broker_origin(&mut inner, origin);
-            if let Some(registration) = registration {inner.set("broker_registration", registration);}
+            if let Some(registration) = registration {
+                inner.set("broker_registration", registration);
+            }
             // Reserved event owners are authenticated by noded before this
             // publish path. Stamp their identity independently of the opaque
             // inner `from`; directed client messages cannot supply this header.

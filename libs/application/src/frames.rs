@@ -101,13 +101,23 @@ impl Default for Handle {
 impl Handle {
     pub fn new() -> Self {
         static OWNERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let owner = OWNERS.fetch_update(std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed, |value| value.checked_add(1)).ok();
+        let owner = OWNERS
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |value| value.checked_add(1),
+            )
+            .ok();
         let (observations, _) = tokio::sync::watch::channel(Snapshot {
             owner,
-            window: None, closed: false, live_generation: None,
-            lifecycle_revision: 0, last_observation: None, last_presented: None,
-            last_observation_revision: None, last_presented_revision: None,
+            window: None,
+            closed: false,
+            live_generation: None,
+            lifecycle_revision: 0,
+            last_observation: None,
+            last_presented: None,
+            last_observation_revision: None,
+            last_presented_revision: None,
         });
         let shared = Arc::new(Shared {
             owner,
@@ -176,7 +186,9 @@ impl Handle {
     /// Wake and retire waits before the application drains native reply tasks.
     pub fn close(&self) {
         let mut state = self.shared.state.lock().unwrap();
-        if state.closed {return;}
+        if state.closed {
+            return;
+        }
         state.closed = true;
         self.shared.publish_locked(&state);
         drop(state);
@@ -216,18 +228,14 @@ impl Handle {
                 let matches = |receipt: &FrameObservation| {
                     receipt.window == expected.window && receipt.stamp == expected.stamp
                 };
-                if let Some(receipt) = state
-                    .last_presented
-                    .as_ref()
-                .filter(|receipt| matches(receipt) && state.last_presented_revision == Some(state.revision))
-                {
+                if let Some(receipt) = state.last_presented.as_ref().filter(|receipt| {
+                    matches(receipt) && state.last_presented_revision == Some(state.revision)
+                }) {
                     return Ok(*receipt);
                 }
-                if let Some(receipt) = state
-                    .last_observation
-                    .as_ref()
-                    .filter(|receipt| matches(receipt) && state.last_observation_revision == Some(state.revision))
-                {
+                if let Some(receipt) = state.last_observation.as_ref().filter(|receipt| {
+                    matches(receipt) && state.last_observation_revision == Some(state.revision)
+                }) {
                     match receipt.outcome {
                         FrameOutcome::Unsupported => return Err(WaitError::Unsupported),
                         FrameOutcome::Exhausted => return Err(WaitError::Exhausted),
@@ -271,13 +279,21 @@ impl Shared {
         self.observations.send_if_modified(|value| {
             let next = Snapshot {
                 owner: self.owner,
-                window: state.window, closed: state.closed, live_generation: state.generation,
+                window: state.window,
+                closed: state.closed,
+                live_generation: state.generation,
                 lifecycle_revision: state.revision,
-                last_observation: state.last_observation, last_presented: state.last_presented,
+                last_observation: state.last_observation,
+                last_presented: state.last_presented,
                 last_observation_revision: state.last_observation_revision,
                 last_presented_revision: state.last_presented_revision,
             };
-            if *value == next {false} else {*value = next; true}
+            if *value == next {
+                false
+            } else {
+                *value = next;
+                true
+            }
         });
     }
     fn capture(self: &Arc<Self>) -> FrameObserver {
@@ -333,7 +349,9 @@ impl Shared {
             state.last_presented_revision = Some(revision);
             changed = true;
         }
-        if changed {self.publish_locked(&state);}
+        if changed {
+            self.publish_locked(&state);
+        }
         drop(state);
         if changed {
             self.changed.notify_waiters();
@@ -343,7 +361,11 @@ impl Shared {
 
 /// Production readback of copied native evidence. This never samples transport,
 /// binds current settings to historical pixels or requests a frame.
-#[cfg(any(feature = "describe", feature = "acceptance", feature = "settings-native"))]
+#[cfg(any(
+    feature = "describe",
+    feature = "acceptance",
+    feature = "settings-native"
+))]
 pub fn observation_json(receipt: FrameObservation) -> serde_json::Value {
     use serde_json::json;
     let outcome = match receipt.outcome {
@@ -364,7 +386,11 @@ pub fn observation_json(receipt: FrameObservation) -> serde_json::Value {
     json!({"window":receipt.window.raw(),"stamp":{"activation_epoch":receipt.stamp.activation_epoch,"local_revision":receipt.stamp.local_revision},"request_id":receipt.request_id,"outcome":outcome})
 }
 
-#[cfg(any(feature = "describe", feature = "acceptance", feature = "settings-native"))]
+#[cfg(any(
+    feature = "describe",
+    feature = "acceptance",
+    feature = "settings-native"
+))]
 pub fn snapshot_json(snapshot: &Snapshot) -> serde_json::Value {
     serde_json::json!({"owner":snapshot.owner,"window":snapshot.window.map(Id::raw),"closed":snapshot.closed,"live_generation":snapshot.live_generation,"lifecycle_revision":snapshot.lifecycle_revision,"last_observation":snapshot.last_observation.map(observation_json),"last_presented":snapshot.last_presented.map(observation_json),"last_observation_revision":snapshot.last_observation_revision,"last_presented_revision":snapshot.last_presented_revision})
 }
@@ -373,33 +399,66 @@ pub fn snapshot_json(snapshot: &Snapshot) -> serde_json::Value {
 /// broker receiver must authenticate registration and real surface lifetime
 /// before passing this value to the participant registry.
 #[cfg(feature = "settings-native")]
-pub fn decode_snapshot_json(value:&serde_json::Value)->Option<Snapshot> {
-    fn optional(value:&serde_json::Value)->Option<Option<u64>> {if value.is_null() {Some(None)} else {value.as_u64().map(Some)}}
-    fn receipt(value:&serde_json::Value)->Option<Option<FrameObservation>> {
-        if value.is_null() {return Some(None);}
+pub fn decode_snapshot_json(value: &serde_json::Value) -> Option<Snapshot> {
+    fn optional(value: &serde_json::Value) -> Option<Option<u64>> {
+        if value.is_null() {
+            Some(None)
+        } else {
+            value.as_u64().map(Some)
+        }
+    }
+    fn receipt(value: &serde_json::Value) -> Option<Option<FrameObservation>> {
+        if value.is_null() {
+            return Some(None);
+        }
         let raw = &value["outcome"];
         let outcome = match raw["kind"].as_str()? {
             "presented" => {
                 let nanoseconds = u32::try_from(raw["nanoseconds"].as_u64()?).ok()?;
-                if nanoseconds >= 1_000_000_000 {return None;}
-                FrameOutcome::Presented {clock_id:optional(&raw["clock_id"])?.map(u32::try_from).transpose().ok()?,
-                    seconds:raw["seconds"].as_u64()?, nanoseconds,
-                    refresh_ns:u32::try_from(raw["refresh_ns"].as_u64()?).ok()?,
-                    output_sequence:raw["output_sequence"].as_u64()?, flags:u32::try_from(raw["flags"].as_u64()?).ok()?}
+                if nanoseconds >= 1_000_000_000 {
+                    return None;
+                }
+                FrameOutcome::Presented {
+                    clock_id: optional(&raw["clock_id"])?
+                        .map(u32::try_from)
+                        .transpose()
+                        .ok()?,
+                    seconds: raw["seconds"].as_u64()?,
+                    nanoseconds,
+                    refresh_ns: u32::try_from(raw["refresh_ns"].as_u64()?).ok()?,
+                    output_sequence: raw["output_sequence"].as_u64()?,
+                    flags: u32::try_from(raw["flags"].as_u64()?).ok()?,
+                }
             }
-            "discarded"=>FrameOutcome::Discarded,"unsupported"=>FrameOutcome::Unsupported,
-            "capacity"=>FrameOutcome::Capacity,"exhausted"=>FrameOutcome::Exhausted,
-            "closed"=>FrameOutcome::Closed,"submission_failed"=>FrameOutcome::SubmissionFailed,_=>return None,
+            "discarded" => FrameOutcome::Discarded,
+            "unsupported" => FrameOutcome::Unsupported,
+            "capacity" => FrameOutcome::Capacity,
+            "exhausted" => FrameOutcome::Exhausted,
+            "closed" => FrameOutcome::Closed,
+            "submission_failed" => FrameOutcome::SubmissionFailed,
+            _ => return None,
         };
-        Some(Some(FrameObservation {window:Id::from_raw(value["window"].as_u64()?),
-            stamp:FrameStamp {activation_epoch:value["stamp"]["activation_epoch"].as_u64()?,local_revision:value["stamp"]["local_revision"].as_u64()?},
-            request_id:optional(&value["request_id"])?,outcome}))
+        Some(Some(FrameObservation {
+            window: Id::from_raw(value["window"].as_u64()?),
+            stamp: FrameStamp {
+                activation_epoch: value["stamp"]["activation_epoch"].as_u64()?,
+                local_revision: value["stamp"]["local_revision"].as_u64()?,
+            },
+            request_id: optional(&value["request_id"])?,
+            outcome,
+        }))
     }
-    Some(Snapshot {owner:optional(&value["owner"])?,window:optional(&value["window"])?.map(Id::from_raw),closed:value["closed"].as_bool()?,
-        live_generation:optional(&value["live_generation"])?,lifecycle_revision:value["lifecycle_revision"].as_u64()?,
-        last_observation:receipt(&value["last_observation"])?,last_presented:receipt(&value["last_presented"])?,
-        last_observation_revision:optional(&value["last_observation_revision"])?,
-        last_presented_revision:optional(&value["last_presented_revision"])?})
+    Some(Snapshot {
+        owner: optional(&value["owner"])?,
+        window: optional(&value["window"])?.map(Id::from_raw),
+        closed: value["closed"].as_bool()?,
+        live_generation: optional(&value["live_generation"])?,
+        lifecycle_revision: value["lifecycle_revision"].as_u64()?,
+        last_observation: receipt(&value["last_observation"])?,
+        last_presented: receipt(&value["last_presented"])?,
+        last_observation_revision: optional(&value["last_observation_revision"])?,
+        last_presented_revision: optional(&value["last_presented_revision"])?,
+    })
 }
 
 #[cfg(test)]
@@ -465,30 +524,39 @@ mod tests {
     fn observation_watch_is_idle_and_preserves_historical_receipt_generation() {
         let handle = Handle::new();
         assert!(handle.snapshot().owner.is_some());
-        assert_eq!(handle.snapshot().owner,handle.clone().snapshot().owner);
-        assert_ne!(handle.snapshot().owner,Handle::new().snapshot().owner);
+        assert_eq!(handle.snapshot().owner, handle.clone().snapshot().owner);
+        assert_ne!(handle.snapshot().owner, Handle::new().snapshot().owner);
         let mut changes = handle.subscribe_observations();
         assert!(!changes.has_changed().unwrap());
         let window = Id::unique();
         handle.set_live_generation(Some(1));
         changes.borrow_and_update();
         let binding = handle.binding(stamp(1));
-        binding.captured().observe(window,Some(1),presented());
+        binding.captured().observe(window, Some(1), presented());
         assert!(changes.has_changed().unwrap());
         let old = changes.borrow_and_update().clone();
-        assert_eq!(old.last_presented_revision,Some(old.lifecycle_revision));
+        assert_eq!(old.last_presented_revision, Some(old.lifecycle_revision));
         handle.set_live_generation(Some(2));
         let current = changes.borrow_and_update().clone();
-        assert_eq!(current.last_presented,old.last_presented);
-        assert_eq!(current.last_presented_revision,old.last_presented_revision);
-        assert_ne!(current.last_presented_revision,Some(current.lifecycle_revision));
+        assert_eq!(current.last_presented, old.last_presented);
+        assert_eq!(current.last_presented_revision, old.last_presented_revision);
+        assert_ne!(
+            current.last_presented_revision,
+            Some(current.lifecycle_revision)
+        );
         let _ = handle.snapshot();
         let _ = handle.binding(stamp(1));
-        assert!(!changes.has_changed().unwrap(),"lookups never publish or manufacture a frame");
-        binding.captured().observe(window,Some(2),presented());
+        assert!(
+            !changes.has_changed().unwrap(),
+            "lookups never publish or manufacture a frame"
+        );
+        binding.captured().observe(window, Some(2), presented());
         let fresh = changes.borrow_and_update().clone();
-        assert_eq!(fresh.last_presented_revision,Some(fresh.lifecycle_revision));
-        assert_eq!(fresh.last_presented.unwrap().request_id,Some(2));
+        assert_eq!(
+            fresh.last_presented_revision,
+            Some(fresh.lifecycle_revision)
+        );
+        assert_eq!(fresh.last_presented.unwrap().request_id, Some(2));
     }
 
     #[test]

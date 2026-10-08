@@ -121,7 +121,10 @@ pub(crate) struct ServiceEntry {
 
 impl ServiceEntry {
     pub(crate) fn registration_incarnation(&self) -> Option<&str> {
-        self.info.meta.get("registration_incarnation").and_then(serde_json::Value::as_str)
+        self.info
+            .meta
+            .get("registration_incarnation")
+            .and_then(serde_json::Value::as_str)
     }
     /// True iff this entry's delivery channel is `other`. Used by the
     /// SPEC 12 §15.5 same-channel registration/dereg guards so a stale
@@ -3979,9 +3982,18 @@ async fn handle_noded_command(
                 // Collision check passed. Now drop any prior name this
                 // connection held under a different alias, then install
                 // the new one.
-                let incarnation = reg.values().find(|entry| entry.same_channel(tx))
-                    .and_then(|entry| entry.registration_incarnation()).map(str::to_owned)
-                    .unwrap_or_else(|| serde_json::to_value(HexBytes::<16>(rand::random())).expect("fixed hexadecimal identity serializes").as_str().unwrap().to_owned());
+                let incarnation = reg
+                    .values()
+                    .find(|entry| entry.same_channel(tx))
+                    .and_then(|entry| entry.registration_incarnation())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| {
+                        serde_json::to_value(HexBytes::<16>(rand::random()))
+                            .expect("fixed hexadecimal identity serializes")
+                            .as_str()
+                            .unwrap()
+                            .to_owned()
+                    });
                 if let Some(old_name) = service_name.as_ref()
                     && old_name != &from
                 {
@@ -4004,7 +4016,10 @@ async fn handle_noded_command(
                 // A registration identity belongs to the actual sender
                 // channel, not a caller PID, wall clock or supplied metadata.
                 // Preserve a genuine refresh/alias on the same channel.
-                info.meta.insert("registration_incarnation".into(), serde_json::Value::String(incarnation));
+                info.meta.insert(
+                    "registration_incarnation".into(),
+                    serde_json::Value::String(incarnation),
+                );
                 reg.insert(
                     from.clone(),
                     ServiceEntry {
@@ -4405,9 +4420,14 @@ async fn handle_noded_command(
             let canonical_body =
                 crate::props_reservation::canonicalize_reserved_inner(&name, &msg.body);
             let body_ref: &str = canonical_body.as_deref().unwrap_or(&msg.body);
-            let registration = state.registry.read().await.get(&peer_id)
+            let registration = state
+                .registry
+                .read()
+                .await
+                .get(&peer_id)
                 .filter(|entry| entry.same_channel(tx))
-                .and_then(|entry| entry.registration_incarnation()).map(str::to_owned);
+                .and_then(|entry| entry.registration_incarnation())
+                .map(str::to_owned);
             match state
                 .broker
                 .publish_with_registration(
@@ -7610,42 +7630,109 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn registration_incarnation_fences_refresh_collision_and_same_name_replacement() {
-        let Some(url) = spawn_broker().await else {return;};
-        let observer=bus::native_client::NodedClient::connect("incarnation-observer",&url).await.unwrap();
-        let mut events=observer.incoming_async().await.unwrap();
-        observer.call_with_headers_raw("noded","topic.subscribe",
-            &std::collections::BTreeMap::from([("name".into(),"noded.props.changed".into())]),"").await.unwrap();
-        let first = bus::native_client::NodedClient::connect("participant-source", &url).await.unwrap();
-        async fn identity(client:&bus::native_client::NodedClient)->String {
-            client.service_inventory().await.unwrap().into_iter().find(|entry| entry.name == "participant-source").unwrap()
-                .meta["registration_incarnation"].as_str().unwrap().to_owned()
+        let Some(url) = spawn_broker().await else {
+            return;
+        };
+        let observer = bus::native_client::NodedClient::connect("incarnation-observer", &url)
+            .await
+            .unwrap();
+        let mut events = observer.incoming_async().await.unwrap();
+        observer
+            .call_with_headers_raw(
+                "noded",
+                "topic.subscribe",
+                &std::collections::BTreeMap::from([("name".into(), "noded.props.changed".into())]),
+                "",
+            )
+            .await
+            .unwrap();
+        let first = bus::native_client::NodedClient::connect("participant-source", &url)
+            .await
+            .unwrap();
+        async fn identity(client: &bus::native_client::NodedClient) -> String {
+            client
+                .service_inventory()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.name == "participant-source")
+                .unwrap()
+                .meta["registration_incarnation"]
+                .as_str()
+                .unwrap()
+                .to_owned()
         }
         let original = identity(&first).await;
         let forged = serde_json::json!({"meta":{"registration_incarnation":"forged"}}).to_string();
-        first.call_with_headers_raw("noded", "noded.register", &std::collections::BTreeMap::from([("from".into(),"participant-source".into())]), &forged).await.unwrap();
-        assert_eq!(identity(&first).await, original, "same sender refresh preserves the broker identity and refuses caller metadata");
-        assert!(bus::native_client::NodedClient::connect("participant-source", &url).await.is_err());
-        assert_eq!(identity(&first).await, original, "collision cannot replace the live owner");
-        async fn get(client:&bus::native_client::NodedClient)->String {
-            let headers = std::collections::BTreeMap::from([("path".into(), "services.incarnations".into())]);
-            client.call_with_headers_raw("noded","noded.props.get",&headers,"").await.unwrap().1
+        first
+            .call_with_headers_raw(
+                "noded",
+                "noded.register",
+                &std::collections::BTreeMap::from([("from".into(), "participant-source".into())]),
+                &forged,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            identity(&first).await,
+            original,
+            "same sender refresh preserves the broker identity and refuses caller metadata"
+        );
+        assert!(
+            bus::native_client::NodedClient::connect("participant-source", &url)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            identity(&first).await,
+            original,
+            "collision cannot replace the live owner"
+        );
+        async fn get(client: &bus::native_client::NodedClient) -> String {
+            let headers =
+                std::collections::BTreeMap::from([("path".into(), "services.incarnations".into())]);
+            client
+                .call_with_headers_raw("noded", "noded.props.get", &headers, "")
+                .await
+                .unwrap()
+                .1
         }
         let before = get(&first).await;
         first.deregister().await.unwrap();
-        let replacement = bus::native_client::NodedClient::connect("participant-source", &url).await.unwrap();
-        let replacement_identity=identity(&replacement).await;
+        let replacement = bus::native_client::NodedClient::connect("participant-source", &url)
+            .await
+            .unwrap();
+        let replacement_identity = identity(&replacement).await;
         assert_ne!(replacement_identity, original);
-        assert_ne!(get(&replacement).await, before, "unchanged service names still produce different atomic property contents");
-        tokio::time::timeout(std::time::Duration::from_secs(2),async {
+        assert_ne!(
+            get(&replacement).await,
+            before,
+            "unchanged service names still produce different atomic property contents"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
-                let event=events.recv().await.expect("live broker observation lane");
-                if event.topic()!=Some("noded.props.changed") {continue;}
-                let Ok(value)=serde_json::from_str::<serde_json::Value>(&event.body) else {continue;};
-                if value["path"]!="services.incarnations" {continue;}
-                if value["new"].as_array().is_some_and(|rows|rows.iter().any(|row|
-                    row["service"]=="participant-source" && row["incarnation"]==replacement_identity)) {break;}
+                let event = events.recv().await.expect("live broker observation lane");
+                if event.topic() != Some("noded.props.changed") {
+                    continue;
+                }
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&event.body) else {
+                    continue;
+                };
+                if value["path"] != "services.incarnations" {
+                    continue;
+                }
+                if value["new"].as_array().is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        row["service"] == "participant-source"
+                            && row["incarnation"] == replacement_identity
+                    })
+                }) {
+                    break;
+                }
             }
-        }).await.expect("coalesced same-name replacement must reach the actual native registry topic");
+        })
+        .await
+        .expect("coalesced same-name replacement must reach the actual native registry topic");
         replacement.close().await;
         first.close().await;
         observer.close().await;

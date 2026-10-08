@@ -91,12 +91,26 @@ impl NodedPropsSnapshot {
                 PropPath::new("services.count").unwrap(),
                 PropValue::from(self.services_registered.len() as u64),
             ),
-            (PropPath::new("services.incarnations").unwrap(), PropValue::List(
-                self.services_incarnations.iter().map(|(service, incarnation)| PropValue::Object(std::collections::BTreeMap::from([
-                    ("service".into(), PropValue::from(service.clone())),
-                    ("incarnation".into(), incarnation.clone().map(PropValue::from).unwrap_or(PropValue::Null)),
-                ]))).collect()
-            )),
+            (
+                PropPath::new("services.incarnations").unwrap(),
+                PropValue::List(
+                    self.services_incarnations
+                        .iter()
+                        .map(|(service, incarnation)| {
+                            PropValue::Object(std::collections::BTreeMap::from([
+                                ("service".into(), PropValue::from(service.clone())),
+                                (
+                                    "incarnation".into(),
+                                    incarnation
+                                        .clone()
+                                        .map(PropValue::from)
+                                        .unwrap_or(PropValue::Null),
+                                ),
+                            ]))
+                        })
+                        .collect(),
+                ),
+            ),
             (
                 PropPath::new("topics.active").unwrap(),
                 PropValue::from(self.topics_active),
@@ -193,7 +207,11 @@ fn describe_path(path: &PropPath) -> Option<PropDescribe> {
             Number,
             "Length of services.registered.",
         )),
-        "services.incarnations" => Some(PropDescribe::leaf(path.clone(), List, "Broker-owned current sender-channel registration identities; same-name replacement changes this atomic list.")),
+        "services.incarnations" => Some(PropDescribe::leaf(
+            path.clone(),
+            List,
+            "Broker-owned current sender-channel registration identities; same-name replacement changes this atomic list.",
+        )),
         "topics.active" => Some(PropDescribe::leaf(
             path.clone(),
             Number,
@@ -222,7 +240,17 @@ pub async fn collect(
         let r = registry.read().await;
         let mut keys: Vec<String> = r.keys().cloned().collect();
         keys.sort();
-        let incarnations = keys.iter().map(|key| (key.clone(), r.get(key).and_then(|entry| entry.registration_incarnation()).map(str::to_owned))).collect();
+        let incarnations = keys
+            .iter()
+            .map(|key| {
+                (
+                    key.clone(),
+                    r.get(key)
+                        .and_then(|entry| entry.registration_incarnation())
+                        .map(str::to_owned),
+                )
+            })
+            .collect();
         (keys, incarnations)
     };
 
