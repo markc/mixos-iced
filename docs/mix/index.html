@@ -243,13 +243,18 @@
 <p>Mix is the MixOS shell and scripting language. The interpreter lives in the
 <code>mix</code> library; <code>cli/mix-shell</code> owns the binary, interactive shell and native ABP
 citizen runtime. The current language version is 0.109.1 and the shell source
-version is 0.109.4.</p>
+version is 0.109.5.</p>
 <p>Use <code>mix builtins --names</code> to discover valid builtin names, and <code>mix builtins &lt;name&gt;</code> for their contracts. <code>mix man overview</code> and <code>mix man syntax</code> explain the
 language and command classifier. Discovery should inspect process status rather
 than stop a sequence when a lookup is invalid.</p>
 <p>Mix scripts use <code>run_argv</code> for local processes and native Bus verbs for application
 control. <code>run_argv_must</code> is appropriate when a non-zero exit must stop the script.
 The public language regression corpus accompanies the interpreter transplant.</p>
+<p>Uncaught script errors print a diagnostic and exit 1, including messages with
+<code>interrupted:false</code> or the word <code>interrupted</code>. Signal outcomes come from actual
+SIGINT/SIGTERM delivery: non-interactive scripts and <code>-c</code> exit 130/143. SIGINT
+on an interactive terminal retains exit 0. Script-defined error codes do not
+impersonate OS signals; <code>--serve</code> retains its graceful shutdown behaviour.</p>
         </article>
         <p class="doc-source"><a href="/mix.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
     </div>
