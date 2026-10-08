@@ -409,7 +409,9 @@ async fn invalid_descriptions_refuse_before_pending_or_frontend_admission() {
         while settings::native::live_generation(&client).is_none() {
             connection.changed().await.unwrap();
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     assert_eq!(client.service_name(), "scene-description-overridden");
     let caller = NodedClient::connect_anonymous(&broker.url).await.unwrap();
     for body in [
