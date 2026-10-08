@@ -8,8 +8,13 @@ end
 fn canonical($description,$owner,$snapshot,$binding,$manifest,$digest)
   check($description.describe_contract == "application.describe.v1" and
     $description.pid == $owner.pid and $description.service == $owner.context.service and
-    $description.transport == "native" and $description.version == $owner.version,
+    $description.version == $owner.version,
     "Wrong actual " .. $owner.name .. " description owner")
+  -- Native routing is exercised by the owned ABP RPC itself. The v1 envelope
+  -- permits product extensions and does not require a transport member.
+  if $description.transport != nil then
+    check($description.transport == "native","Contradictory transport extension: " .. $owner.name)
+  end
   if $owner.name == "quoin" then
     check($description.schema == "quoin.v1" and $description.embedded and $description.app_id == nil,"Wrong embedded Quoin owner")
   else

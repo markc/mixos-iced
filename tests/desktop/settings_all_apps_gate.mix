@@ -105,9 +105,9 @@ fn descriptions($batch,$label)
   $receipts=[]
   for each $app in $R.owners
     $description=$all.current($app.context,$app.pid,$batch.snapshot,$binding,$app.settings_context,15)
+    write_file($app.context.root .. "/description-" .. $label .. ".json",json_encode($description))
     $all.canonical($description,$app,$batch.snapshot,$binding,$manifest,$manifest_digest)
     $observed=time()
-    write_file($app.context.root .. "/description-" .. $label .. ".json",json_encode($description))
     $receipts=concat($receipts,[{name:$app.name,pid:$app.pid,service:$app.context.service,
       current:$description.settings.current,applied:$description.settings.applied,
       resources:$description.resources,observation_upper_bound_ms:($observed-$batch.issued)*1000,
