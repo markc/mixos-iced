@@ -277,6 +277,16 @@ impl SupervisedConnectOptions {
         self.connection.unix = Some(options);
         self
     }
+    /// Bound each authenticated Unix delivery's envelope/body allocation.
+    /// Defaults to 64 KiB. Larger inline contracts can opt into at most 1 MiB;
+    /// queue entry capacities and refusal correlation limits remain unchanged.
+    /// This option does not change TCP delivery or confer trust.
+    pub fn max_delivery_bytes(mut self, bytes: usize) -> Self {
+        assert!((1..=1048576).contains(&bytes), "delivery byte budget must be 1..=1 MiB");
+        self.connection.max_delivery_bytes = Some(bytes);
+        self
+    }
+
     pub fn with_verbs(mut self, verbs: Vec<crate::VerbDescriptor>) -> Self {
         self.connection.verbs = Some(verbs);
         self

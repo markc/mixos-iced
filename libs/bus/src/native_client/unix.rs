@@ -36,9 +36,11 @@ pub struct UnixConnectOptions {
     /// never carries trusted context, even if TCP advertises native-session.
     pub allow_unverified_tcp_fallback: bool,
     /// Opt-in bounded verified command lane (1..=1024). Excess requests receive a uniform refusal; lifecycle notices
-    /// use backpressure rather than being dropped.
-    /// Individual retained commands are limited to 64 KiB of envelope/body.
+    /// report a gap when dropped.
     pub incoming_capacity: Option<usize>,
+    /// Maximum envelope/body bytes per admitted bounded delivery (1..=1 MiB).
+    /// Defaults to 64 KiB; queue capacity still bounds retained memory.
+    pub incoming_max_bytes: usize,
 }
 
 impl UnixConnectOptions {
@@ -50,6 +52,7 @@ impl UnixConnectOptions {
             require_native_session: false,
             allow_unverified_tcp_fallback: false,
             incoming_capacity: None,
+            incoming_max_bytes: 65536,
         }
     }
 
@@ -380,6 +383,9 @@ async fn connect_verified(
     provenance: Option<crate::RegisterProvenance>,
     verbs: Option<Vec<crate::VerbDescriptor>>,
 ) -> Result<VerifiedConnection, ConnectError> {
+    if !(1..=1048576).contains(&options.incoming_max_bytes) {
+        return Err(ConnectError::Protocol(anyhow::anyhow!("invalid verified incoming byte budget")));
+    }
     let path = options.resolved_endpoint();
     let before = verify_path(path, options.broker_account)?;
     let socket = tokio::net::UnixStream::connect(path)
@@ -401,6 +407,7 @@ async fn connect_verified(
         service_name,
         provenance,
         options.incoming_capacity,
+        options.incoming_max_bytes,
         verbs,
     )
     .await

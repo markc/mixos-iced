@@ -55,6 +55,7 @@ enum NativeIncomingSender {
     Verified(mpsc::UnboundedSender<crate::native_client::unix::VerifiedCommand>),
     #[cfg(unix)]
     VerifiedBounded {
+        max_bytes: usize,
         commands: mpsc::Sender<crate::native_client::unix::VerifiedCommand>,
         refusals: mpsc::Sender<crate::native_client::unix::VerifiedCommand>,
         gap: Arc<crate::native_client::unix::VerifiedGap>,
@@ -82,6 +83,7 @@ impl NativeIncomingSender {
             // both would gate every pending reply on an unrelated consumer.
             #[cfg(unix)]
             Self::VerifiedBounded {
+                max_bytes,
                 commands,
                 refusals,
                 gap,
@@ -97,7 +99,7 @@ impl NativeIncomingSender {
                 // a sticky gap instead: the receive owner re-reads its state
                 // exactly as it would for a broker lifecycle gap.
                 if command.id.is_none() {
-                    if bytes > 65536 {
+                    if bytes > *max_bytes {
                         gap.record();
                         return true;
                     }
@@ -113,7 +115,7 @@ impl NativeIncomingSender {
                     };
                 }
                 let event = crate::native_client::unix::VerifiedCommand::new(command, _principal);
-                let refused = if bytes > 65536 {
+                let refused = if bytes > *max_bytes {
                     event
                 } else {
                     match commands.try_send(event) {
@@ -418,6 +420,7 @@ impl NodedClient {
         service_name: &str,
         provenance: Option<crate::RegisterProvenance>,
         incoming_capacity: Option<usize>,
+        incoming_max_bytes: usize,
         declared_verbs: Option<Vec<crate::VerbDescriptor>>,
     ) -> Result<(Self, crate::native_client::unix::VerifiedIncoming)> {
         let (sink, stream) = socket.split();
@@ -438,6 +441,7 @@ impl NodedClient {
                 let gap = Arc::new(crate::native_client::unix::VerifiedGap::new());
                 (
                     NativeIncomingSender::VerifiedBounded {
+                        max_bytes: incoming_max_bytes,
                         commands: tx,
                         refusals: refusal_tx,
                         gap: gap.clone(),
@@ -1509,6 +1513,7 @@ mod verified_bound_tests {
         let (refusal_tx, mut refusals) = mpsc::channel(4);
         let gap = Arc::new(crate::native_client::unix::VerifiedGap::new());
         let sender = NativeIncomingSender::VerifiedBounded {
+            max_bytes: 65536,
             commands: tx,
             refusals: refusal_tx,
             gap: gap.clone(),

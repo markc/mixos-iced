@@ -245,6 +245,58 @@ async fn verified_native_refusal_exhaustion_closes_and_settles_every_correlation
     .expect("bounded native retirement deadline");
 }
 
+#[tokio::test]
+async fn supervised_unix_large_retained_settings_delivery_uses_explicit_byte_budget() {
+    use bus::native_client::{BoundedIncomingEvent, NodedClient, SupervisedClient, UnixConnectOutcome};
+    use std::collections::BTreeMap;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let broker = Broker::start().await;
+        let options = client_options(&broker);
+        let UnixConnectOutcome::VerifiedUnix(publisher) =
+            NodedClient::connect_unix("settingsd", &broker.url, &options, None).await.unwrap()
+        else { panic!("verified publisher") };
+        let topic = "settingsd.desktop.changed.default";
+        let headers = BTreeMap::from([("name".into(), topic.into()), ("retain".into(), "true".into())]);
+        let payload = serde_json::json!({"value": "x".repeat(524288)}).to_string();
+        let inner = BusMessage::new().with_header("command", topic)
+            .with_header("settings_observation", "{\"operation_id\":\"budget-probe\"}")
+            .with_body(&payload);
+        publisher.client().call_with_headers("noded", "topic.publish", &headers, &inner.to_wire()).await.unwrap();
+        let default = SupervisedClient::connect_options("default-budget", &broker.url)
+            .with_unix(options.clone()).bounded_incoming(1)
+            .with_initial_topics(vec![topic.into()]).connect().await.unwrap();
+        let mut default_incoming = default.incoming_bounded().unwrap();
+        assert!(matches!(default_incoming.recv().await, Some(BoundedIncomingEvent::Overflow { .. })));
+        let configured = SupervisedClient::connect_options("large-budget", &broker.url)
+            .max_delivery_bytes(614400).with_unix(options).bounded_incoming(1)
+            .with_initial_topics(vec![topic.into()]).connect().await.unwrap();
+        let mut incoming = configured.incoming_bounded().unwrap();
+        let Some(BoundedIncomingEvent::Command(command)) = incoming.recv().await else { panic!("large retained event admitted") };
+        assert_eq!(command.body, payload);
+        assert_eq!(command.header("settings_observation"), Some("{\"operation_id\":\"budget-probe\"}"));
+        assert_eq!(command.header("broker_service"), Some("settingsd"));
+        assert_eq!(command.header("broker_origin"), Some("local"));
+        let mut envelope = BusMessage::new();
+        envelope.headers = command.headers;
+        assert!(matches!(bus::native_session::read_principal(&envelope), Ok(Some(principal))
+            if principal.assurance == bus::native_session::Assurance::LocalUnix));
+        // Live publication follows the same admission path as retained replay.
+        publisher.client().call_with_headers("noded", "topic.publish", &headers, &inner.to_wire()).await.unwrap();
+        assert!(matches!(incoming.recv().await, Some(BoundedIncomingEvent::Command(command)) if command.body == payload));
+        let oversized = BusMessage::new().with_header("command", topic)
+            .with_body(&serde_json::json!({"value": "y".repeat(716800)}).to_string());
+        publisher.client().call_with_headers("noded", "topic.publish", &headers, &oversized.to_wire()).await.unwrap();
+        assert!(matches!(incoming.recv().await, Some(BoundedIncomingEvent::Overflow { .. })));
+        let (rc, body, _) = publisher.client().call_with_headers_raw("large-budget", "probe.echo", &BTreeMap::new(), &oversized.body).await.unwrap();
+        assert_ne!(rc, 0);
+        assert!(body.contains("OVERLOADED"));
+        assert_eq!(configured.connection_generation(), 1);
+        default.shutdown().await;
+        configured.shutdown().await;
+        publisher.client().close().await;
+    }).await.expect("bounded real broker delivery budget regression");
+}
+
 struct Broker {
     sessions: Arc<tokio::sync::Mutex<session::Sessions>>,
     task: tokio::task::JoinHandle<Result<()>>,
