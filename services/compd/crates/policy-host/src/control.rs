@@ -427,12 +427,24 @@ mod output_scale_tests {
     #[test]
     fn actual_same_name_geometry_replacement_gets_fresh_identity() {
         let make = || {
-            let output = Output::new("DP-1".into(), PhysicalProperties {
-                size: (0, 0).into(), subpixel: Subpixel::Unknown,
-                make: "fixture".into(), model: "fixture".into(),
-            });
-            output.change_current_state(Some(Mode { size: (1600, 1000).into(), refresh: 75_000 }),
-                Some(Transform::Normal), Some(Scale::Integer(1)), Some((40, 20).into()));
+            let output = Output::new(
+                "DP-1".into(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "fixture".into(),
+                    model: "fixture".into(),
+                },
+            );
+            output.change_current_state(
+                Some(Mode {
+                    size: (1600, 1000).into(),
+                    refresh: 75_000,
+                }),
+                Some(Transform::Normal),
+                Some(Scale::Integer(1)),
+                Some((40, 20).into()),
+            );
             output
         };
         let original = make();
@@ -445,7 +457,10 @@ mod output_scale_tests {
         assert_eq!(original.current_mode(), replacement.current_mode());
         assert_eq!(original.current_location(), replacement.current_location());
         let stale = comp_model::output_scale::ScaleSpec {
-            output: original.name(), instance, generation: 3, scale: 1.25,
+            output: original.name(),
+            instance,
+            generation: 3,
+            scale: 1.25,
         };
         assert!(apply_output_scale(&replacement, &stale, replacement_instance, 3, true).is_err());
         assert_eq!(replacement.current_scale().fractional_scale(), 1.0);
