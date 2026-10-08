@@ -818,8 +818,17 @@ fn info_and_windows_list_bodies_are_comps() {
     assert_eq!(rc, 0);
     assert_eq!(
         body.as_ref(),
-        r#"{"backend":"nested","engine":"bevy-0.19/wgpu","event_seq":0,"lost_count":0,"output_count":1,"service":"comp-nested","surface_count":5,"version":"0.37.0"}"#
+        r#"{"backend":"nested","engine":"bevy-0.19/wgpu","event_seq":0,"instance":"fixture","lost_count":0,"output_count":1,"service":"comp-nested","surface_count":5,"version":"0.37.0"}"#
     );
+    let info: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(info["instance"], snapshot.info.instance.as_ref());
+    let mut replacement = fixture();
+    replacement.info.instance = Arc::from("replacement-instance");
+    let (rc, replacement_body) = dispatch_read(&replacement, "comp.info", &Value::Null);
+    assert_eq!(rc, 0);
+    let replacement_info: Value = serde_json::from_str(&replacement_body).unwrap();
+    assert_eq!(replacement_info["instance"], "replacement-instance");
+    assert_ne!(info["instance"], replacement_info["instance"]);
     let list = |args: Value| {
         let (rc, body) = dispatch_read(&snapshot, "comp.windows.list", &args);
         (rc, serde_json::from_str::<Value>(&body).unwrap())

@@ -2216,6 +2216,7 @@ pub fn dispatch_read_with_limit(
                         "version": snapshot.info.version,
                         "backend": snapshot.info.backend,
                         "engine": snapshot.info.engine,
+                        "instance": snapshot.info.instance,
                         "output_count": snapshot.outputs.len(),
                         "surface_count": snapshot.surfaces.len(),
                         "event_seq": snapshot.port.event_seq,
@@ -2513,4 +2514,3 @@ fn describe(snapshot: &CompSnapshot, path: &PropPath) -> Option<String> {
 #[cfg(test)]
 #[path = "snapshot_tests.rs"]
 mod tests;
-

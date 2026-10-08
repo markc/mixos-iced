@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.14
+
+- Include the compositor's actual process instance in the `comp.info` reply,
+  matching its existing snapshot and region selection contract. Cap can fence
+  native region capture and cleanup to the compositor that owns the request.
+
 ## 0.1.13
 
 - Serve canonical embedded Quoin descriptions on the existing shell service,
