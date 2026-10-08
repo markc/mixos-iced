@@ -16,7 +16,7 @@ pub mod native_queue;
 pub use iced_runtime as runtime;
 /// Native app tests use the pinned simulator through their shared host.
 #[cfg(feature = "test-support")]
-pub use iced_test as test;
+pub mod test;
 #[cfg(feature = "tiny-skia")]
 pub use iced_tiny_skia as cpu;
 

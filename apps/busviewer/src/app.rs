@@ -1225,6 +1225,37 @@ mod tests {
         }
     }
     #[test]
+    fn compact_desktop_keeps_discovery_and_modal_actions_visible() {
+        for size in [iced::Size::new(420.0, 240.0), iced::Size::new(458.0, 346.0)] {
+            let mut app = app();
+            app.bootstrap = application::test::desktop_presentation(1.25);
+            let mut sim = application::test::Simulator::with_size(
+                iced::Settings::default(), size, app.view(),
+            );
+            let search = sim.find(widget::Id::new("busviewer-search")).expect("discovery search");
+            assert!(search.visible_bounds().is_some(), "visible search");
+            application::test::assert_visible_bounds(search.bounds(), size);
+            let service = sim.find("example").expect("discovered service");
+            assert!(service.visible_bounds().is_some(), "visible service");
+            application::test::assert_visible_bounds(service.bounds(), size);
+            for text in [label("body"), label("reply")] {
+                let control = sim.find(text).expect("primary call editor label");
+                assert!(control.visible_bounds().is_some(), "visible call editor label");
+                application::test::assert_visible_bounds(control.bounds(), size);
+            }
+            drop(sim);
+            app.dialog = Some(Dialog::About);
+            let mut sim = application::test::Simulator::with_size(
+                iced::Settings::default(), size, app.view(),
+            );
+            let done = sim.find("Done").expect("modal completion");
+            assert!(done.visible_bounds().is_some(), "visible completion");
+            application::test::assert_visible_bounds(done.bounds(), size);
+            sim.click("Done").expect("modal completion remains usable");
+            assert!(sim.into_messages().any(|message| matches!(message, Message::Cancel)));
+        }
+    }
+    #[test]
     fn migrated_runtime_flow_validates_and_sends_once() {
         let mut app = app();
         let _ = app.start_call(target(), "{".into(), None);

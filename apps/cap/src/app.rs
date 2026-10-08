@@ -1624,6 +1624,34 @@ mod tests {
         assert!(app.bus.frames.snapshot().closed);
     }
     use crate::bus::Effect;
+    #[test]
+    fn compact_desktop_keeps_workspace_and_modal_actions_visible() {
+        for size in [iced::Size::new(420.0, 240.0), iced::Size::new(458.0, 346.0)] {
+            let mut app = test_app();
+            app.bootstrap = application::test::desktop_presentation(1.25);
+            let mut sim = application::test::Simulator::with_size(
+                iced::Settings::default(), size, app.view(),
+            );
+            let empty = sim.find(label("empty")).expect("empty workspace");
+            assert!(empty.visible_bounds().is_some(), "visible workspace");
+            application::test::assert_visible_bounds(empty.bounds(), size);
+            use iced::keyboard::key::Named;
+            sim.tap_key(Named::F10);
+            sim.tap_key(Named::Enter);
+            assert!(sim.into_messages().any(|message| matches!(message, Message::Menu(menu::Action::Open))));
+            for dialog in [Dialog::About, Dialog::Properties, Dialog::Shortcuts] {
+                app.dialog = Some(dialog);
+                let mut sim = application::test::Simulator::with_size(
+                    iced::Settings::default(), size, app.view(),
+                );
+                let done = sim.find("Done").expect("modal completion");
+                assert!(done.visible_bounds().is_some(), "visible completion");
+                application::test::assert_visible_bounds(done.bounds(), size);
+                sim.click("Done").expect("modal completion remains usable");
+                assert!(sim.into_messages().any(|message| matches!(message, Message::Keep)));
+            }
+        }
+    }
     fn test_app() -> App {
         let consumer = settings::consumer::Consumer::for_app(
             settings::Binding {

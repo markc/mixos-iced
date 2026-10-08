@@ -1416,4 +1416,33 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn compact_desktop_keeps_menu_and_modal_actions_visible() {
+        use iced::keyboard::key::Named;
+        for size in [iced::Size::new(420.0, 240.0), iced::Size::new(458.0, 346.0)] {
+            let mut app = app();
+            app.bootstrap = application::test::desktop_presentation(1.25);
+            let mut sim = application::test::Simulator::with_size(
+                iced::Settings::default(), size, app.view(),
+            );
+            sim.tap_key(Named::F10);
+            sim.tap_key(Named::ArrowLeft);
+            sim.tap_key(Named::ArrowLeft);
+            sim.tap_key(Named::ArrowDown);
+            sim.tap_key(Named::Enter);
+            assert!(sim.into_messages().any(|message| matches!(message, Message::Action(Action::View(View::Installed)))));
+            for dialog in [Dialog::Shortcuts, Dialog::About] {
+                app.dialog = Some(dialog);
+                let mut sim = application::test::Simulator::with_size(
+                    iced::Settings::default(), size, app.view(),
+                );
+                let done = sim.find("Done").expect("modal completion");
+                assert!(done.visible_bounds().is_some(), "visible completion");
+                application::test::assert_visible_bounds(done.bounds(), size);
+                sim.click("Done").expect("modal completion remains usable");
+                assert!(sim.into_messages().any(|message| matches!(message, Message::Cancel)));
+            }
+        }
+    }
 }
