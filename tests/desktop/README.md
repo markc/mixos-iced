@@ -118,6 +118,13 @@ isolation is tested by testkit; this GUI gate does not claim a dormant-world
 switch route. Nested software readback does not prove physical scanout or VT
 isolation.
 
+`world_ownership_gate.mix REPO BUILD_BIN_DIR` creates a second actual native
+desktop world over the owned Bus. It checks immutable native window homes,
+UUIDs/generations/local slots, dormant public untile, active-world pixels and
+delivered input after return, stale/unknown/capacity refusal and natural client
+retirement. This exercises owning worlds, separately from virtual workspaces.
+It uses the supported-version xdg testkit probe; no new transport is involved.
+
 The standalone `scene_editor_settings_gate.mix` owns separate compositor and
 application brokers. It checks actual light/dark frames, selection and dialogue
 retention, checked cache and embedded fallback, a 65-second cold outage with

@@ -17,8 +17,11 @@ pub fn fullscreen_set(_loop: &mut Loop, window: Window, fullscreen: bool) {
     if fullscreen && window.is_fullscreen() {
         return;
     }
+    let Some(owner) = _loop.inner.world_of_window(&window) else {
+        return;
+    };
     let returning = if !fullscreen {
-        let (comp, space) = _loop.inner.comp_space_mut();
+        let (comp, space) = _loop.inner.comp_world_space_mut(owner);
         dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(&window)
             .and_then(|handle| comp.registry.id_for_handle(&handle))
             .and_then(|id| crate::comp::geometry::tile_return(comp, space, id))
@@ -32,7 +35,7 @@ pub fn fullscreen_set(_loop: &mut Loop, window: Window, fullscreen: bool) {
         returning.map(|target| target.area)
     };
     if !apply(
-        &mut _loop.inner.space_state_mut().state,
+        &mut _loop.inner.space_of_mut(owner).state,
         &window,
         fullscreen,
         target,
@@ -43,7 +46,7 @@ pub fn fullscreen_set(_loop: &mut Loop, window: Window, fullscreen: bool) {
     if fullscreen && let Some(uuid) = window.uuid() {
         _loop.inner.raise_drawable(uuid);
     }
-    let (comp, space) = _loop.inner.comp_space_mut();
+    let (comp, space) = _loop.inner.comp_world_space_mut(owner);
     comp.mark_input_geometry_dirty();
     crate::comp::geometry::refresh_space(comp, space);
     _loop.schedule_redraw(RedrawReason::WindowState);

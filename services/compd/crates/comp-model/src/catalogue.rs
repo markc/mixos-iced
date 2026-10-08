@@ -1,4 +1,4 @@
-//! The `comp.*` catalogue: 37 verbs in four families and 11 topics.
+//! The `comp.*` catalogue: 40 verbs in four families and 11 topics.
 
 pub use crate::observation::{
     CORNER_CLICKED_TOPIC_SUFFIX, CORNER_CLICKED_V2_TOPIC_SUFFIX, CORNER_ENTERED_TOPIC_SUFFIX,
@@ -47,9 +47,11 @@ pub const DIRECT_VERBS: &[&str] = &[
     "comp.windows.list",
 ];
 
-/// The 17 window-family verbs (`{id, generation}`-addressed, plus the
-/// workspace switch).
+/// The 20 owner-control verbs (windows, workspaces and native worlds).
 pub const WINDOW_VERBS: &[&str] = &[
+    "comp.world.list",
+    "comp.world.create",
+    "comp.world.activate",
     "comp.window.tile",
     "comp.window.untile",
     "comp.window.maximize",
@@ -114,12 +116,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_surface_is_37_verbs_and_11_topics() {
+    fn the_surface_is_40_verbs_and_11_topics() {
         assert_eq!(DIRECT_VERBS.len(), 15);
-        assert_eq!(WINDOW_VERBS.len(), 17);
+        assert_eq!(WINDOW_VERBS.len(), 20);
         assert_eq!(INPUT_VERBS.len(), 5);
         let verbs = all_verbs().collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(verbs.len(), 37, "no verb is in two families");
+        assert_eq!(verbs.len(), 40, "no verb is in two families");
         assert!(verbs.iter().all(|verb| verb.starts_with("comp.")));
         assert!(READ_VERBS.iter().all(|verb| DIRECT_VERBS.contains(verb)));
         assert_eq!(TOPIC_SUFFIXES.len(), 11);

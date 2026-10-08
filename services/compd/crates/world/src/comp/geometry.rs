@@ -481,7 +481,10 @@ fn refresh_tiles(
     }
     let mut groups = Vec::new();
     for member in comp.tiles.members() {
-        if member.group.workspace == comp.current_workspace() && !groups.contains(&member.group) {
+        if member.group.workspace == comp.current_workspace()
+            && windows.iter().any(|(id, _)| *id == member.target.id)
+            && !groups.contains(&member.group)
+        {
             groups.push(member.group.clone());
         }
     }
@@ -504,13 +507,15 @@ fn refresh_tiles(
     let mut observation = Vec::with_capacity(groups.len());
     for group in groups {
         let plan = tile_plan(comp, space, windows, &group, None);
-        observation.push((
-            group.clone(),
-            match &plan {
-                Plan::Pending(error) => Some(*error),
-                Plan::Ready(_) => None,
-            },
-        ));
+        let reason = match &plan {
+            Plan::Pending(error) => Some(*error),
+            Plan::Ready(_) => None,
+        };
+        for member in comp.tiles.members().iter().filter(|member| {
+            member.group == group && windows.iter().any(|(id, _)| *id == member.target.id)
+        }) {
+            observation.push((member.target, reason));
+        }
         let Plan::Ready(allocations) = plan else {
             continue;
         };

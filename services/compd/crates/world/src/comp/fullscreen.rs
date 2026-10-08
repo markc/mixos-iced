@@ -109,7 +109,8 @@ pub fn target(lp: &mut Loop, window: &Window) -> Option<(Point<i32, Logical>, Si
             super::band::apply(lp, id, StackBand::Normal, "comp.window");
         }
     }
-    let geometry = target_geometry(&lp.inner.comp, &lp.inner.host_space().state, window)?;
+    let owner = lp.inner.world_of_window(window)?;
+    let geometry = target_geometry(&lp.inner.comp, &lp.inner.space_of(owner).state, window)?;
     Some((geometry.loc, geometry.size))
 }
 
@@ -149,12 +150,15 @@ pub fn service(lp: &mut Loop) {
 /// The engine's `fullscreen_set` returns early for an already-fullscreen window, so
 /// the move is made here.
 pub fn retarget(lp: &mut Loop, window: &Window) {
-    let Some(geometry) = target_geometry(&lp.inner.comp, &lp.inner.host_space().state, window)
+    let Some(owner) = lp.inner.world_of_window(window) else {
+        return;
+    };
+    let Some(geometry) = target_geometry(&lp.inner.comp, &lp.inner.space_of(owner).state, window)
     else {
         return;
     };
     lp.inner
-        .space_state_mut()
+        .space_of_mut(owner)
         .state
         .map_element(window.clone(), geometry.loc, true);
     crate::camera::transform::translate::slot::set_expected_size(window, geometry.size);

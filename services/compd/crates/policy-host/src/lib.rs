@@ -31,6 +31,7 @@ pub mod panel;
 pub mod project;
 pub mod region;
 pub mod truth;
+pub mod worlds;
 pub mod x11;
 pub mod xwayland;
 

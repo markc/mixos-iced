@@ -5,6 +5,41 @@
 use super::*;
 
 #[test]
+fn native_world_routes_are_strict_and_use_canonical_owner_identity() {
+    assert_eq!(
+        parse_window_verb("comp.world.list", &json!({})),
+        Ok(WindowVerb::Op(WindowOp::WorldList))
+    );
+    assert_eq!(
+        parse_window_verb("comp.world.create", &json!({})),
+        Ok(WindowVerb::Op(WindowOp::WorldCreate))
+    );
+    let id = uuid::Uuid::from_u128(1);
+    assert_eq!(
+        parse_window_verb("comp.world.activate", &json!({"id":id.to_string()})),
+        Ok(WindowVerb::Op(WindowOp::WorldActivate { id }))
+    );
+    for verb in ["comp.world.list", "comp.world.create"] {
+        for body in [json!({"id":id}), json!({"name":"test"}), json!([])] {
+            assert!(parse_window_verb(verb, &body).is_err());
+        }
+    }
+    for body in [
+        json!({}),
+        json!({"id":null}),
+        json!({"id":1}),
+        json!({"id":"bad"}),
+        json!({"id":id.simple().to_string()}),
+        json!({"id":id,"generation":1}),
+    ] {
+        assert!(
+            parse_window_verb("comp.world.activate", &body).is_err(),
+            "{body}"
+        );
+    }
+}
+
+#[test]
 fn tile_verbs_keep_strict_original_identity_and_output_contract() {
     let body = json!({"id":7,"generation":11,"output":"o_test"});
     assert_eq!(

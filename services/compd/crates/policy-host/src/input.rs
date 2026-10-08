@@ -394,6 +394,14 @@ fn payload(
 
 // ── the human seat ───────────────────────────────────────────────────────────
 
+/// Keyboard-only grabs also own the human seat, independently of pointer grabs.
+pub fn human_keyboard_owned(human: &smithay::input::Seat<Dispatch>) -> bool {
+    human
+        .get_keyboard()
+        .is_some_and(|keyboard| keyboard.is_grabbed())
+        || human.input_method().keyboard_grabbed()
+}
+
 /// The refusal ladder, then `comp.window.focus`
 /// (with `raise`), then the op with the focus verified.
 fn human_targeted(
@@ -415,10 +423,7 @@ fn human_targeted(
         visible: window
             .as_ref()
             .is_some_and(|window| crate::control::drawn(lp, window)),
-        keyboard_grab: human
-            .get_keyboard()
-            .is_some_and(|keyboard| keyboard.is_grabbed())
-            || human.input_method().keyboard_grabbed(),
+        keyboard_grab: human_keyboard_owned(&human),
         pointer_grab: lp.inner.comp.interactive.is_some()
             || (human
                 .get_pointer()

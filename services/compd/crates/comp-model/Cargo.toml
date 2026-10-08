@@ -25,3 +25,4 @@ surfaces.workspace = true
 ledger.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+uuid.workspace = true
