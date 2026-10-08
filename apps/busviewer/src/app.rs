@@ -1287,7 +1287,7 @@ mod tests {
             #[cfg(feature = "acceptance")]
             for id in [crate::acceptance::BODY_ID, crate::acceptance::REPLY_ID] {
                 let mut reached = false;
-                for _ in 0..100 {
+                for step in 0..100 {
                     let control = sim.find(widget::Id::from(id)).expect("actual editor viewport");
                     let bounds = control.bounds();
                     if let Some(visible) = control.visible_bounds().filter(|visible|
@@ -1299,11 +1299,14 @@ mod tests {
                         break;
                     }
                     let inspector = sim.find(widget::Id::new("busviewer-inspector")).expect("owning inspector viewport");
-                    let application::test::selector::Target::Scrollable { translation, .. } = inspector else {
+                    let application::test::selector::Target::Scrollable { translation, bounds: viewport, .. } = inspector else {
                         panic!("inspector must retain the native scrollable contract");
                     };
+                    if step == 0 || step == 99 {
+                        eprintln!("editor={id} bounds={bounds:?} visible={:?} viewport={viewport:?} translation={translation:?}", control.visible_bounds());
+                    }
                     sim.point_at(iced::Point::new(size.width * 0.8, size.height * 0.4));
-                    let direction = if bounds.center_y() - translation.y < size.height * 0.4 { 8.0 } else { -8.0 };
+                    let direction = if bounds.center_y() - translation.y < viewport.center_y() { 8.0 } else { -8.0 };
                     sim.simulate([iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
                         delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y: direction },
                     })]);
