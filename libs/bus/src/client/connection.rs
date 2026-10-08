@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use tokio::sync::mpsc;
 
 enum Transport {
-    Tcp(NodedClient),
+    Tcp(Box<NodedClient>),
     #[cfg(unix)]
     Unix(std::sync::Arc<crate::native_client::VerifiedConnection>),
 }
@@ -145,7 +145,7 @@ impl Connection {
                         .map(ConnectionIncomingReceiver::Tcp);
                     Ok(Self {
                         name: name.to_owned(),
-                        inner: Transport::Tcp(client),
+                        inner: Transport::Tcp(Box::new(client)),
                         incoming: Mutex::new(incoming),
                     })
                 }
@@ -166,7 +166,7 @@ impl Connection {
             .map(ConnectionIncomingReceiver::Tcp);
         Ok(Self {
             name: name.to_owned(),
-            inner: Transport::Tcp(inner),
+            inner: Transport::Tcp(Box::new(inner)),
             incoming: Mutex::new(incoming),
         })
     }

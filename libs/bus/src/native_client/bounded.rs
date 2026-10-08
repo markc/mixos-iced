@@ -147,8 +147,8 @@ impl BoundedIncomingSender {
     pub(crate) fn try_send_retaining(
         &self,
         command: IncomingCommand,
-    ) -> Result<(), mpsc::error::TrySendError<IncomingCommand>> {
-        self.sender.try_send(command)
+    ) -> Result<(), Box<mpsc::error::TrySendError<IncomingCommand>>> {
+        self.sender.try_send(command).map_err(Box::new)
     }
 
     pub(crate) fn record_overflow(&self, dropped: u64) {
