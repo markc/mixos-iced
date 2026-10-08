@@ -1,0 +1,122 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Real product adapters shared by cold-start and long-outage native gates.
+-- An app carries {name,pid,launcher,window,context,desktop,work_root}.
+$f=require("settings_fixture_lib.mix")
+$h=require("settings_host_lib.mix")
+$pty=require("pty_host_lib.mix")
+$recovery=require("settings_recovery_lib.mix")
+fn check($condition,$message)
+  return $recovery.check($condition,$message)
+end
+fn comp($app,$verb,$body)
+  $owner=$app.desktop
+  return $h.rpc($owner.mix,$owner.bus,$owner.root,$owner.service,$verb,$body)
+end
+fn stable_product($app)
+  if $app.name == "term" then
+    -- Cell geometry may legitimately change with typography; product owners,
+    -- focus, title, structural revision and PTY contents must survive.
+    $tabs=$f.rpc($app.context,"term.tabs",{})
+    $panes=$f.rpc($app.context,"term.panes",{})
+    return {tabs:re_replace($tabs," (cols|rows|x|y|w|h)=[^ \\n]+",""),
+      panes:re_replace($panes," (cols|rows|x|y|w|h)=[^ \\n]+","")}
+  elif $app.name == "cap" then
+    $value=$f.rpc($app.context,"cap.info",{})
+    check(not $value.busy and $value.document != nil,"Cap document not ready")
+    return {document:$value.document,path:$value.path,capture:$value.capture,ui:$value.ui}
+  elif $app.name == "busviewer" then
+    $value=$f.rpc($app.context,"busviewer.info",{})
+    check(not $value.busy,"BusViewer call/discovery still busy")
+    return {selection:$value.selection,body:$value.body,reply:$value.reply,row_key:$value.ui.row_key}
+  else
+    $value=$f.rpc($app.context,"dopus.state",{})
+    return {panes:$value.panes,location_draft:$value.ui.location_draft,places:$value.places,properties:$value.properties}
+  end
+end
+fn prepare_product($app)
+  if $app.name == "term" then
+    comp($app,"comp.window.focus",$app.window)
+    comp($app,"comp.input.key",{seat:"human",window:$app.window,text:'print("RECOVERY_PTY_SENTINEL")'})
+    comp($app,"comp.input.key",{seat:"human",window:$app.window,key:"Return"})
+  elif $app.name == "cap" then
+    $deadline=time()+5
+    while time() < $deadline
+      $info=$f.rpc($app.context,"cap.info",{})
+      if not $info.busy and $info.document != nil then break end
+      sleep(0.05)
+    end
+    check($info.document != nil and not $info.busy,"Cap failed to open owned image")
+    $f.rpc($app.context,"cap.annotate",{kind:"redact",points:[{x:10,y:10},{x:50,y:40}],colour:[0,0,0,255],width:2})
+  elif $app.name == "busviewer" then
+    $deadline=time()+5
+    while $f.rpc($app.context,"busviewer.info",{}).busy and time() < $deadline
+      sleep(0.05)
+    end
+    $f.rpc($app.context,"busviewer.select",{service:$app.context.service,verb:"busviewer.ping"})
+    $f.rpc($app.context,"busviewer.call",{service:$app.context.service,verb:"busviewer.ping",body:"{}"})
+  else
+    $deadline=time()+5
+    while time() < $deadline
+      $state=$f.rpc($app.context,"dopus.state",{})
+      if $state.panes[0].path == $app.work_root .. "/left" and $state.panes[0].rows == 1 then break end
+      sleep(0.05)
+    end
+    $f.rpc($app.context,"dopus.action",{id:"selection.last",pane:0})
+  end
+  $deadline=time()+5
+  $last_error=nil
+  while time() < $deadline
+    try
+      $product=stable_product($app)
+      if $app.name == "term" then
+        check(count_of(to_string($f.rpc($app.context,"term.snapshot",{})),"RECOVERY_PTY_SENTINEL") >= 2,
+          "Actual PTY output not observed")
+      elif $app.name == "cap" then
+        check($product.document.dirty and len($product.document.objects) == 1 and $product.document.undo > 0,
+          "Cap annotation not retained")
+      elif $app.name == "busviewer" then
+        check($product.selection != nil and $product.reply.rc == 0,"Actual selected successful call not retained")
+      else
+        check($product.panes[0].selected == $app.work_root .. "/left/owned-file.txt","Actual owned Dopus selection not observed")
+      end
+      write_file($app.context.root .. "/product-before.json",json_encode($product))
+      return $product
+    catch $pending
+      $last_error=$pending
+      sleep(0.05)
+    end
+  end
+  raise("PRODUCT","Actual product mutation did not settle for " .. $app.name .. ": " .. to_string($last_error))
+end
+fn product_retained($app,$before,$label)
+  $after=stable_product($app)
+  check(deep_eq($after,$before),$label .. " changed actual " .. $app.name .. " product state")
+  if $app.name == "term" then
+    check(count_of(to_string($f.rpc($app.context,"term.snapshot",{})),"RECOVERY_PTY_SENTINEL") >= 2,"Retired actual PTY output")
+  end
+  write_file($app.context.root .. "/product-" .. $label .. ".json",json_encode($after))
+end
+fn stop_app($app)
+  if $app.name == "term" then
+    -- Honest controlled signal retirement; this is not natural quit evidence.
+    check($pty.stop_child({pid:$app.pid,privileged_launcher:false}),"Term survived retirement")
+    check($pty.stop_child({pid:$app.launcher,privileged_launcher:true}),"Term launcher survived retirement")
+  else
+    if $app.name == "cap" then
+      $document=$f.rpc($app.context,"cap.info",{})
+      if $document.document != nil and $document.document.dirty then
+        $saved=$f.rpc($app.context,"cap.export",{path:$app.context.root .. "/retired.png"})
+        check(is_file($app.context.root .. "/retired.png") and not $saved.document.dirty,
+          "Owned Cap document could not be saved before native retirement")
+      end
+    end
+    $f.rpc($app.context,$app.name .. ".quit",{})
+    $deadline=time()+4
+    while process_alive($app.pid) and time() < $deadline
+      sleep(0.02)
+    end
+    check(not process_alive($app.pid),"Native quit failed to retire " .. $app.name)
+  end
+  comp($app,"comp.window.wait",{match:$app.window,until:"gone",timeout_ms:5000})
+end

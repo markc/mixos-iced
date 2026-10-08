@@ -133,6 +133,11 @@ selected successful BusViewer call, Cap annotation/undo,
 or Dopus selection. Per-case JSON artefacts include startup timing, descriptions,
 resource sources, layouts, exact frame receipts and before/after product state.
 Registry usage counters are recorded in descriptions but are not source identity.
+Dopus icon keys include their prepared RGBA tint. Changed-authority comparisons
+normalise only that exact suffix and collapse duplicate identical source
+selections while retaining every icon selection/source field. The native
+receipt can retain both old and new prepared tints. Cached and disconnected
+comparisons keep the complete prepared key and receipt.
 Set `COMPD_KEEP_RUN=1` through Mix's environment options to retain passing
 artefacts; failing runs are retained automatically.
 
@@ -141,3 +146,44 @@ invalid/missing resource retention or stale held preparation retirement. Those
 remain required extensions, with the existing individual native settings gates
 providing their separate short reconnect and preparation-hold checks. A passing
 matrix cannot stand in for those remaining cases or physical VT/GPU acceptance.
+
+`settings_app_outage_gate.mix REPO BUILD_BIN_DIR [APP]` uses the same product
+adapters and owned retirement as the cold matrix. Its exact candidate directory
+also needs `testkit-screenshot`. Omitting APP launches all four together and
+runs one app-broker outage longer than 65 seconds:
+
+```
+mix tests/desktop/settings_app_outage_gate.mix /path/to/mixos /path/to/candidate/bin
+```
+
+The gate primes current authority and real product state, then stops settingsd
+and the app broker. The separate compositor broker stays alive. During the
+outage it checks each actual PID/window owner at both ends, polls process
+liveness, and saves native screenshot artefacts with each app focused. App
+descriptions and fixture verbs are deliberately unavailable during this period;
+the screenshots require visual review and do not assert pixel equality.
+After restarting the same broker endpoint, and before restarting settingsd,
+every app must report unconfirmed LastGood with unchanged installed authority,
+resource sources and product state. Every fixture generation must advance and
+reject the prior generation. Exact native frame receipts and actual root layout
+must still belong to the same PID/window. Authority then rejoins and must be
+confirmed current with the same resources and retained products. An identical
+authority design can confirm the existing activation without replacing it.
+Cap saves its dirty document only after all retention checks; Term uses bounded
+controlled signal retirement rather than claiming natural quit.
+
+Required run evidence is the root/per-app acceptance JSON, descriptions,
+resource receipts, before/reconnected/rejoined products, exact frame receipts,
+layouts, and native before/offline-start/offline-end screenshots. Passing lint
+does not constitute native acceptance.
+
+Invalid/missing resource acceptance remains separate: apply a structurally valid
+resource reference whose set is absent, then one whose manifest digest is wrong;
+observe the rejected desired authority identity and diagnostic while installed
+authority/resources/stamp and product remain LastGood, followed by successful
+restoration and exact native presentation. Stale preparation remains separate:
+hold each app's real preparation barrier, supersede its authority or connection
+generation, release it, and prove the held candidate never installs using an
+observable activation history, then present the winning current stamp. Merely
+observing the final current snapshot cannot prove that intervening candidate
+was never installed. Neither remaining case is claimed by the outage matrix.
