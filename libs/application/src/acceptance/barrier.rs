@@ -1226,6 +1226,8 @@ mod tests {
             run.clone(),
             Duration::from_millis(60),
         );
+        // The lifetime begins at arm(), not when the caller starts waiting.
+        let started = Instant::now();
         controller
             .arm(arm(&run, "dopus.before_execute", "hold-1"))
             .unwrap();
@@ -1234,7 +1236,6 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let started = Instant::now();
         let result = permit.wait_blocking();
         assert!(started.elapsed() >= Duration::from_millis(60));
         assert_eq!(
