@@ -162,7 +162,7 @@ try
       if $case == "cached" then $recovery.cached($fallback,$primed) end
       if $case == "corrupt" then $recovery.corrupt_diagnostic($fallback) end
       $before=$recovery.observe($app.context,$app.identity,$fallback,"fallback")
-      $product=prepare_product($app)
+      $retained_product=prepare_product($app)
       -- A distinct authority design proves a real install, rather than
       -- requiring a new preparation merely to confirm an identical cache.
       $rejoin_start=start_authority()
@@ -178,7 +178,7 @@ try
       check($after.target.stamp.activation_epoch > $before.target.stamp.activation_epoch,
         "Changed authority design did not install a new activation")
       check(deep_eq($after.resources,$recovery.resource_identity($primed)),"Rejoin changed authority resource source identity")
-      product_retained($app,$product)
+      product_retained($app,$retained_product)
       write_file($app.context.root .. "/acceptance.json",json_encode({app:$name,case:$case,
         cold:true,fallback:$kind,authority_absent:true,corrupt_diagnostic:$case == "corrupt",
         same_pid:true,same_window:true,product_retained:true,exact_frame:true,
