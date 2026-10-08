@@ -335,10 +335,10 @@ async fn worker(
     // and native startup working. The started client persists through Fatal —
     // only the one gen-0 name-taken fallback below replaces it.
     let mut name = service.to_string();
-    let options = match ::bus::client_helpers::local_supervised_options(&name, &url) {
+    let options = match ::settings::native::supervised_options(&name, &url) {
         Ok(options) => options,
         Err(error) => {
-            let _ = ready.send(Err(error.to_string()));
+            let _ = ready.send(Err(error.message));
             return;
         }
     };
@@ -558,10 +558,10 @@ async fn worker(
                         }
                         name = fallback;
                         let options =
-                            match ::bus::client_helpers::local_supervised_options(&name, &url) {
+                            match ::settings::native::supervised_options(&name, &url) {
                                 Ok(options) => options,
                                 Err(error) => {
-                                    eprintln!("term: verified Bus configuration: {error}");
+                                    eprintln!("term: verified Bus configuration: {}", error.message);
                                     break;
                                 }
                             };

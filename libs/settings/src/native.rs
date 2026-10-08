@@ -12,6 +12,15 @@ use std::time::Duration;
 
 pub const BOOTSTRAP_BUDGET: Duration = Duration::from_secs(1);
 
+/// Configure the app-owned receiver for the canonical snapshot body plus its
+/// bounded observation/routing envelope. The generic Bus default stays small;
+/// native settings actors explicitly accept this existing settings contract.
+pub fn supervised_options(service: &str, url: &str) -> Result<bus::SupervisedConnectOptions, Diagnostic> {
+    bus::client_helpers::local_supervised_options(service, url)
+        .map(|options| options.max_delivery_bytes(MAX_SNAPSHOT_BYTES + 64 * 1024))
+        .map_err(|error| Diagnostic::new("native_profile", "broker", error.to_string()))
+}
+
 /// Sample a coherent lifecycle/generation pair on the UI loop. Holding the
 /// watch read guard prevents a state transition between the two observations.
 pub fn live_generation(client: &Client) -> Option<u64> {

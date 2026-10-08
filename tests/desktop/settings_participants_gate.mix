@@ -62,6 +62,7 @@ fn apply($changes,$label)
   $issued=time()
   $accepted=rpc("settingsd","settings.apply",{binding:$binding,expected_incarnation:$old.incarnation,
     expected_revision:$old.revision,operation_id:"all-apps-" .. $label,changes:$changes,reset:[]})
+  write_file($R.run.path .. "/authority-apply-" .. $label .. ".json",json_encode($accepted))
   $snapshot=rpc("settingsd","settings.get",{binding:$binding}).snapshot
   check($snapshot.incarnation == $old.incarnation and $snapshot.revision != $old.revision,"Batch did not advance authority")
   return {snapshot:$snapshot,issued:$issued,accept_reply_observed:time(),reply:$accepted,operation_id:"all-apps-" .. $label}
@@ -132,6 +133,9 @@ fn simultaneously_alive()
 end
 fn participant_presentations($batch,$label)
   $records=[]
+  write_file($R.run.path .. "/authority-describe-" .. $label .. ".json",json_encode(rpc("settingsd","settings.describe",{})))
+  write_file($R.run.path .. "/authority-get-" .. $label .. ".json",json_encode(rpc("settingsd","settings.get",{binding:$binding})))
+  write_file($R.run.path .. "/native-inventory-" .. $label .. ".json",json_encode(rpc("noded","noded.inventory",{})))
   for each $app in $R.owners
     if $app.name != "quoin" then comp("comp.window.focus",$app.window) end
     $live=shell("app.describe",{}).participants
@@ -140,10 +144,12 @@ fn participant_presentations($batch,$label)
       and $row.state != "hidden" and $row.state != "closed")
     check(len($matches) == 1,"Actual single visible participant not available: " .. $app.name)
     $key=$matches[0].key
+    write_file($R.run.path .. "/participant-live-" .. $label .. "-" .. $app.name .. ".json",json_encode($live))
+    write_file($R.run.path .. "/participant-owner-" .. $label .. "-" .. $app.name .. ".json",json_encode($f.rpc($app.context,"app.describe",{})))
     $receipt=shell("app.participants.wait",{operation_id:$batch.operation_id,services:[$app.context.service],keys:[$key],until:"presented",timeout_ms:3000})
+    write_file($R.run.path .. "/participant-" .. $label .. "-" .. $app.name .. ".json",json_encode($receipt))
     $record=$participants.exact_presented($receipt,$batch.operation_id,$app.context.service,$key,$app.pid,$h.identity($batch.snapshot))
     $records=concat($records,[$record])
-    write_file($R.run.path .. "/participant-" .. $label .. "-" .. $app.name .. ".json",json_encode($receipt))
   end
   return {records:$records,population:to_string(len($records)) .. " distinct live participants for one changed operation",
     environment:"owned nested compositor; all owners concurrent; sequential native reveal after authority change",
