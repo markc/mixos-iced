@@ -175,9 +175,15 @@ impl Probe {
         if !self.restore_overlay_on_leave || !(self.overlay_fullscreen || self.overlay_maximized) {
             return;
         }
-        let Some(toplevel) = &self.toplevel else { return; };
-        if self.overlay_fullscreen { toplevel.unset_fullscreen(); }
-        if self.overlay_maximized { toplevel.unset_maximized(); }
+        let Some(toplevel) = &self.toplevel else {
+            return;
+        };
+        if self.overlay_fullscreen {
+            toplevel.unset_fullscreen();
+        }
+        if self.overlay_maximized {
+            toplevel.unset_maximized();
+        }
         say("overlay_restore_requested");
         self.restore_overlay_on_leave = false;
     }
@@ -1095,11 +1101,18 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Probe {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            xdg_toplevel::Event::Configure { width, height, states } => {
+            xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } => {
                 state.toplevel_size = (width, height);
-                let configured = |wanted: xdg_toplevel::State| states.chunks_exact(4).any(|bytes| {
-                    u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) == wanted as u32
-                });
+                let configured = |wanted: xdg_toplevel::State| {
+                    states.chunks_exact(4).any(|bytes| {
+                        u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+                            == wanted as u32
+                    })
+                };
                 state.overlay_fullscreen = configured(xdg_toplevel::State::Fullscreen);
                 state.overlay_maximized = configured(xdg_toplevel::State::Maximized);
             }
@@ -1180,14 +1193,25 @@ mod tests {
     fn overlay_restore_on_leave_is_explicit_and_has_no_effect_without_a_role() {
         let plain = parse_options(std::iter::empty()).unwrap();
         assert!(!plain.restore_overlay_on_leave);
-        let enabled = parse_options(["--restore-overlay-on-leave".into(), "--seats".into()].into_iter()).unwrap();
+        let enabled =
+            parse_options(["--restore-overlay-on-leave".into(), "--seats".into()].into_iter())
+                .unwrap();
         assert!(enabled.restore_overlay_on_leave && enabled.seats);
-        let mut probe = Probe { restore_overlay_on_leave: true, ..Probe::default() };
+        let mut probe = Probe {
+            restore_overlay_on_leave: true,
+            ..Probe::default()
+        };
         probe.restore_overlay();
-        assert!(probe.restore_overlay_on_leave, "ordinary focus loss cannot consume the overlay test");
+        assert!(
+            probe.restore_overlay_on_leave,
+            "ordinary focus loss cannot consume the overlay test"
+        );
         probe.overlay_fullscreen = true;
         probe.restore_overlay();
-        assert!(probe.restore_overlay_on_leave, "no actual xdg role means no request or receipt");
+        assert!(
+            probe.restore_overlay_on_leave,
+            "no actual xdg role means no request or receipt"
+        );
     }
 
     #[test]
