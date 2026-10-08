@@ -247,6 +247,10 @@ selection, ask another application to process something, or coordinate several
 services over the ABP Bus. It is an ordinary executable <code>.mix</code> script, using the
 same language as a script launched directly. Calling it a macro describes its
 use by an application, not another language or file format.</p>
+<p>The accepted <a href="/decisions/2026-10-08-mix-programs-and-documents/">two-family target</a>
+keeps macros executable <code>.mix</code>; configuration, scenes and data fixtures migrate
+to <code>.mx</code> through the next major Mix refactor. A document cannot become a macro
+merely by appearing in the macro folder.</p>
 <p>Every native GUI app is now required to expose the shared macro facility. The
 <a href="/decisions/2026-10-08-application-macros/">decision</a> is accepted; implementation
 across the desktop is pending. <strong>Ced already has its own macro runner.</strong> Other

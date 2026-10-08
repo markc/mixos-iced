@@ -4,16 +4,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Mix is the MixOS shell and scripting language. The interpreter lives in the mix library; cli/mix-shell owns the binary, interactive shell and native ABP…">
+    <meta name="description" content="Execution refusal, strict document parsing, schema bindings and migration requirements for .mix and .mx files.">
     <!-- Favicons from share/brand: the SVG follows the visitor's light/dark preference. -->
     <link rel="icon" href="/favicon.ico?v=c34fdc68c4" sizes="any">
     <link rel="icon" type="image/svg+xml" href="/web/favicon.svg?v=51993ccf9f">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-light.png?v=b7dd291dfa" media="(prefers-color-scheme: light)">
     <link rel="icon" type="image/png" sizes="32x32" href="/web/brand/favicon-32-dark.png?v=e6873d12a3" media="(prefers-color-scheme: dark)">
     <link rel="apple-touch-icon" sizes="180x180" href="/web/brand/apple-touch-icon.png?v=d578c3d9bb">
-    <title>Mix — MixOS</title>
-    <link rel="canonical" href="https://mixos.dev/mix/">
-    <link rel="alternate" type="text/markdown" href="/mix.md" title="Markdown source">
+    <title>Mix program and document file-family contract — MixOS</title>
+    <link rel="canonical" href="https://mixos.dev/spec/mix/2026-10-08-programs-and-documents/">
+    <link rel="alternate" type="text/markdown" href="/spec/mix/2026-10-08-programs-and-documents.md" title="Markdown source">
     <meta name="mixos-build" content="87a61ef09456">
     <link rel="preload" href="/web/fonts/icons.woff2?v=3a1086a40a" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="/web/fonts/sans.woff2?v=22f05185ef" as="font" type="font/woff2" crossorigin>
@@ -214,7 +214,13 @@
                 <div class="panel-title">On this page</div>
                 <div class="panel-content">
                     <nav id="toc-nav">
-                        <a href="#programs-and-documents">Programs and documents</a>
+                        <a href="#1-families-not-dialects">1. Families, not dialects</a>
+                        <a href="#2-programfile-admission">2. Program/file admission</a>
+                        <a href="#3-document-readers-and-schemas">3. Document readers and schemas</a>
+                        <a href="#4-restricted-bindings-and-action-authority">4. Restricted bindings and action authority</a>
+                        <a href="#5-legacy-compatibility-and-migration">5. Legacy compatibility and migration</a>
+                        <a href="#6-component-integration-and-deployment">6. Component integration and deployment</a>
+                        <a href="#7-required-acceptance-matrix">7. Required acceptance matrix</a>
                     </nav>
                 </div>
             </div>
@@ -239,42 +245,164 @@
 <main id="content" tabindex="-1">
     <div id="doc-view" class="content-section">
         <article id="content-doc" class="prose" data-pagefind-body>
-<h1 id="mix">Mix</h1>
-<p>Mix is the MixOS shell and scripting language. The interpreter lives in the
-<code>mix</code> library; <code>cli/mix-shell</code> owns the binary, interactive shell and native ABP
-citizen runtime. The current language version is 0.109.1 and the shell source
-version is 0.109.4.</p>
-<p>Use <code>mix builtins --names</code> to discover valid builtin names, and <code>mix builtins &lt;name&gt;</code> for their contracts. <code>mix man overview</code> and <code>mix man syntax</code> explain the
-language and command classifier. Discovery should inspect process status rather
-than stop a sequence when a lookup is invalid.</p>
-<p>Mix scripts use <code>run_argv</code> for local processes and native Bus verbs for application
-control. <code>run_argv_must</code> is appropriate when a non-zero exit must stop the script.
-The public language regression corpus accompanies the interpreter transplant.</p>
-<h2 id="programs-and-documents">Programs and documents</h2>
-<p>The accepted target for the next major Mix refactor and deployment is two file
-families:</p>
-<table><thead><tr><th>Extension</th><th>Meaning</th></tr></thead><tbody>
-<tr><td><code>.mix</code></td><td>Executable Mix program: macro, behaviour, service, module, installer or test</td></tr>
-<tr><td><code>.mx</code></td><td>Declarative Mix document: configuration, scene, theme, catalogue, manifest or data specification</td></tr>
+<h1 id="mix-program-and-document-file-family-contract">Mix program and document file-family contract</h1>
+<p>Status: accepted target contract, version 1.0.0, 2026-10-08. Planned for the next
+major Mix refactor/deployment; no current-binary conformance is claimed. Authority:
+<a href="/decisions/2026-10-08-mix-programs-and-documents/">programs and documents decision</a>.</p>
+<h2 id="1-families-not-dialects">1. Families, not dialects</h2>
+<p><code>.mix</code> is executable Mix. <code>.mx</code> is a declarative Mix document. Macro, behaviour,
+module, task, installer and resident citizen are executable roles; configuration,
+theme, spec, catalogue, manifest, policy and scene are document schemas/purposes.
+The public API vocabulary is program/document, not safe/unsafe script flavours.</p>
+<p>The same interpreter and program grammar serve every executable role. Full
+language access remains subject to caller OS permissions and existing host
+capability policy; it does not imply privileged execution. Schema binding
+evaluation uses the existing pure expression implementation, never a second
+general interpreter or a quietly expanded builtin allowlist.</p>
+<p>Canonical new data filenames end in <code>.mx</code>, for example <code>node.mx</code>, <code>settings.mx</code>,
+<code>theme.mx</code>, <code>scene.mx</code>, <code>template.mx</code> and <code>authority.mx</code>. Stems follow existing
+repository naming rules and describe purpose where useful; no new compound
+suffix is required to select a trust class. Executable test gates remain <code>.mix</code>;
+their declarative fixtures become <code>.mx</code>.</p>
+<h2 id="2-programfile-admission">2. Program/file admission</h2>
+<p>All file-based program entry points refuse <code>.mx</code> before evaluating any content:</p>
+<ul>
+<li>Direct CLI program execution, <code>--serve</code>, interactive file execution and every
+serve initial load, reload candidate and committed generation.</li>
+<li><code>source</code>, <code>include</code>, <code>require</code>, prelude/startup file loading and any equivalent
+executable file reader in the library or an embedder.</li>
+<li>App macro runners, scene behaviour launchers and automation dispatchers.</li>
+</ul>
+<p>Provide a stable structured refusal code and diagnostic saying that the file is
+a document and requires a document reader. Exact code registration occurs with
+the implementation. <code>--no-lint</code> and normal script flags do not bypass admission;
+there is no general execute-document override.</p>
+<p>Check both the requested path and resolved file target, including symlinks, with
+one shared policy used across callers. <code>.MX</code> is also refused on executable paths;
+writers emit lowercase <code>.mx</code>. Filename admission is not a comprehensive security
+boundary: renaming, explicit source-string evaluation and intentionally running
+a program remain under the caller's authority. Strict parsing is what keeps
+document consumption non-executing.</p>
+<p>Anonymous program source (<code>-c</code>, stdin, library source-string APIs) remains
+explicitly executable input, with existing capability policy. Document readers
+must never pass document bytes to those APIs or reclassify a failed parse as
+program source. Do not disable ordinary stdin/REPL workflows to simulate content
+provenance that the runtime cannot establish.</p>
+<p>Document checking/linting is non-executing. CLI <code>--check</code>/check/lint handling of
+<code>.mx</code> must validate as a document, or return a clear unsupported-schema/kind
+diagnostic. It must never report executable syntax checks as document validation.
+The implementation must define this UX and its machine-readable output, without
+silently guessing an executable fallback.</p>
+<h2 id="3-document-readers-and-schemas">3. Document readers and schemas</h2>
+<p>Generic <code>.mx</code> documents use the existing strict parser: literals, lists, maps,
+comments and the existing round-trip encoding. It refuses variables, calls,
+command substitutions, interpolation, statements and executable separators.
+<code>load_data</code> remains a data-only API and is documented for <code>.mx</code>; parsing failure
+is terminal for that load. It does not invent filenames or dispatch script code.</p>
+<p>Application/service-owned documents additionally validate their owning schema.
+The caller may supply schema identity and version, or the document may declare
+them; if both do, disagreement is refused. Generic literal data need not carry
+an app schema. Schema identity/version are semantic, not another filename family.
+Existing numeric <code>schema</code> fields do not have to be converted to strings merely
+to rename files. Migration must preserve each owning schema's version semantics.</p>
+<p>Scene <code>.mx</code> documents retain their current <code>---</code> header envelope and fenced
+strict-data widget map in this first refactor. The existing scene reader handles
+that structure; the generic strict reader does not become a scene interpreter.
+A consumer explicitly selects its document reader/kind. An unknown kind/schema,
+invalid envelope, malformed widget map or invalid binding produces a document
+error. No candidate reader is ever the executable parser.</p>
+<p>Do not couple extension migration to a rewrite of scene metadata or layouts.
+If a common strict-data scene envelope is useful later, version it and provide
+a migration independently. Existing layout, model, action-name, diff and source
+round-trip contracts must remain intact in this release.</p>
+<h2 id="4-restricted-bindings-and-action-authority">4. Restricted bindings and action authority</h2>
+<p>Only schema-declared fields can interpret restricted expression strings. In all
+other fields the identical string is literal data. The scene binding compiler
+retains its model/item roots, allowed operations, dependency tracking and size,
+time and aggregate list-row limits. Calls, assignments, shell forms, process
+launches, file writes and Bus requests cannot be smuggled in through a binding.</p>
+<p>Data may name an action implemented by a trusted application/program, but cannot
+supply a general executable action body. A workflow document or rule catalogue
+is not a bypass for the normal activation/authority of the program consuming it.
+Do not introduce automatic command-string evaluation, executable includes or
+download-and-run behaviour into document readers.</p>
+<p>Non-executing is not synonymous with consequence-free: schemas must still bound
+resource use and validate referenced paths/assets/settings according to their
+own contracts. The file-family change does not promise that every configuration
+value or action reference is appropriate for every consumer.</p>
+<h2 id="5-legacy-compatibility-and-migration">5. Legacy compatibility and migration</h2>
+<p>Inventory every data consumer and producer, not just files with recognised
+suffixes. Include generated runtime state, embedded include_str fixtures, startup
+configuration, tests, asset manifests, scenes, watched paths, install collectors,
+public guides and private hub automation. Distinguish code/data from its actual
+reader; names such as <code>data.mix</code> can be executable helper modules and must not be
+renamed blindly. No bulk suffix replacement or executable grammar change.</p>
+<p>Use explicit rollout phases:</p>
+<ol>
+<li>Readers gain <code>.mx</code> support and legacy data compatibility. Program paths refuse
+<code>.mx</code>. Record capability/version evidence on every deployment target.</li>
+<li>Migrate source fixtures and literals, install collectors and app/service path
+resolvers. Deploy coupled binary/script bundles while retaining legacy files
+needed by unmigrated callers.</li>
+<li>Switch owning writers to canonical <code>.mx</code> only after their readers are ready.
+Migrate user files explicitly and retain recoverable originals and a receipt.</li>
+<li>Remove legacy spellings only after every supported consumer and tested rollback
+is accounted for, through a documented compatibility-removal release.</li>
+</ol>
+<p>Generic <code>load_data(path)</code> uses the literal supplied path; it must not silently
+rewrite arbitrary <code>.mix</code> filenames. Owning configuration/scene resolvers may
+support old/new alternatives explicitly. If both exist, compare typed semantic
+values under the owning schema: equivalent copies get a visible migration
+diagnostic; differing copies are a conflict requiring explicit resolution. A
+malformed canonical file does not cause a quiet fallback to an old file.
+Declared precedence or explicit operator selection must be observable.</p>
+<p>Migration tools run in Mix through native facilities, with a preview/report,
+idempotent apply, ownership checks, originals and bounded failure recovery. Do
+not rewrite schema versions, erase comments, overwrite user edits or convert
+operational identities without a specific migration requirement. Preserve state
+and registry format identities, hashes/signature domains and frozen ABP bytes.
+Any affected signed artefact is reissued through its existing native authority;
+renaming a signed path is not permission to edit signed content in place.</p>
+<h2 id="6-component-integration-and-deployment">6. Component integration and deployment</h2>
+<p><code>libs/strict</code>, <code>libs/expr</code> and <code>libs/scene</code> keep their headless separation from
+the full Mix interpreter. <code>libs/mix</code> and <code>cli/mix-shell</code> share program admission;
+<code>libs/config</code> and owning services/apps handle document paths/schema validation.
+Use existing install collectors and native deployment/lifecycle facilities. No
+new broker, alternate node-control transport or duplicate parser is introduced.</p>
+<p>This is a coordinated binary/library/consumer refactor, not a stand-alone CLI
+rename. Build provenance must identify the exact revision, language/library and
+binary versions, enabled features, test receipts and installed document formats.
+Select the actual release number and compatibility window in its release record.
+The current source baseline is language 0.109.1 / binary 0.109.4; that is not the
+new release or evidence about every installed target.</p>
+<p>Qualify an isolated native target before any working desktop, then roll through
+explicitly selected native targets. Stage readers before documents and writers;
+verify the real ABP path, loaded scenes/configuration and executable macros. The
+self-contained VT-native image carries all readers, interpreter and documents.
+It must not depend on host packages or host desktop/session resources.</p>
+<p>Rollback includes compatible binary, consumer scripts and document/state copies.
+Restoring only the previous binary after a filename migration is insufficient.
+Candidate reload failure must preserve the accepted evaluator and managed children.
+Frozen Cosmix nodes keep their old spellings until separately migrated; no broad
+fleet deploy or production restart follows merely from accepting this spec.</p>
+<h2 id="7-required-acceptance-matrix">7. Required acceptance matrix</h2>
+<table><thead><tr><th>Boundary</th><th>Required evidence</th></tr></thead><tbody>
+<tr><td>Program admission</td><td>Valid and malicious <code>.mx</code> refused by direct CLI, serve/reload, REPL file launch, source/include/require, macro and library file APIs before a marker effect occurs; cover symlinks, uppercase and <code>--no-lint</code></td></tr>
+<tr><td>Strict data</td><td>Valid <code>.mx</code> round-trips; variables, calls, interpolation, substitutions and statements refuse; errors cannot enter executable fallback</td></tr>
+<tr><td>Scenes</td><td>Existing fixtures renamed without semantic change; pure bindings resolve, effectful bindings refuse, resource bounds and layout/model diffs still pass</td></tr>
+<tr><td>Schema selection</td><td>Known versions work; unknown/mismatched schema/kind, invalid fields and malformed canonical files refuse visibly</td></tr>
+<tr><td>Legacy coexistence</td><td>Old/new readers, generated writers, equal/conflicting duplicate files, missing paths, idempotent migration and interruption recovery behave as specified</td></tr>
+<tr><td>Native applications</td><td>Ced macro/undo remains executable <code>.mix</code>; all six app consumers, Quoin scenes and relevant service configuration load through their real native path</td></tr>
+<tr><td>Packaging/identity</td><td>New image has required documents/readers; signed path changes use the native authority; freeze checks confirm no ABP wire/domain-byte changes</td></tr>
+<tr><td>Deployment/recovery</td><td>Exact candidate build runs on isolated target; selected-target rollout reports loaded formats and final state; old binary-plus-data rollback actually restores service/scene/macro behaviour</td></tr>
 </tbody></table>
-<p>All program roles use the same language. Documents use strict parsing and an
-owning schema where applicable. Only declared binding fields may evaluate the
-existing restricted, side-effect-free expression subset. Data strings otherwise
-remain literal. A schema is a contract/validator, not necessarily another file.</p>
-<p>This is an <strong>accepted target, not a completed runtime migration</strong>. Current
-consumers still use <code>*.conf.mix</code>, <code>*.spec.mix</code>, <code>*.data.mix</code>, <code>scene.mix</code> and other
-legacy data names. Keep their working paths until upgraded readers are deployed.
-Do not rename executable helper modules such as a scene library's <code>data.mix</code>.</p>
-<p>The refactor must refuse <code>.mx</code> through executable file loaders and retain strict
-document errors without code/shell fallback. Scenes keep their current envelope
-and pure bindings initially. Readers upgrade before files and writers; rollback
-includes compatible binaries, scripts and documents.</p>
-<p>New purposes use existing programs or versioned document schemas. Another file
-family or evaluation mode requires an architectural decision. See the
-<a href="/decisions/2026-10-08-mix-programs-and-documents/">decision</a> and
-<a href="/spec/mix/2026-10-08-programs-and-documents/">file-family contract</a>.</p>
+<p>Implement declarative fixtures as <code>.mx</code> and executable integration gates as <code>.mix</code>.
+Use negative tests with observable marker effects rather than tests that merely
+check an extension helper. Successful docs builds, renamed files or mock readers
+do not establish runtime conformance. No extra script families may be introduced
+as a shortcut around these boundaries.</p>
         </article>
-        <p class="doc-source"><a href="/mix.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
+        <p class="doc-source"><a href="/spec/mix/2026-10-08-programs-and-documents.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
     </div>
 </main>
 <script src="/web/base.js?v=2652b9bc10"></script>

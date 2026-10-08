@@ -11,6 +11,11 @@ not proof of compliance with every requirement below. No ABP wire bytes change.
 
 Authority: [application macro decision](../../decisions/2026-10-08-application-macros.md).
 
+The later [two-family decision](../../decisions/2026-10-08-mix-programs-and-documents.md)
+keeps every executable macro `.mix` and makes declarative metadata/fixtures `.mx`
+after their readers migrate. A macro runner must refuse `.mx` execution. Existing
+Ced headers and legacy document compatibility remain as specified below.
+
 ## 1. Scope and ownership
 
 Every native GUI app supports this contract. A scene-backed application surface
@@ -221,6 +226,7 @@ Required evidence:
   documented context/operations and a real acceptance example are declared and
   verified. Deferred existing apps remain explicit failing rollout work.
 
-Add machine-checkable `*.spec.mix` fixtures and a Mix integration gate during
-implementation. A declaration alone is not execution evidence. Version changes
+Add machine-checkable `.mx` data fixtures and an executable `.mix` integration
+gate during implementation, using legacy `*.spec.mix` only while readers migrate.
+A declaration alone is not execution evidence. Version changes
 to headers/context require compatibility and migration, not a silent rewrite.

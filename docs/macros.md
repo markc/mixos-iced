@@ -11,6 +11,11 @@ services over the ABP Bus. It is an ordinary executable `.mix` script, using the
 same language as a script launched directly. Calling it a macro describes its
 use by an application, not another language or file format.
 
+The accepted [two-family target](decisions/2026-10-08-mix-programs-and-documents.md)
+keeps macros executable `.mix`; configuration, scenes and data fixtures migrate
+to `.mx` through the next major Mix refactor. A document cannot become a macro
+merely by appearing in the macro folder.
+
 Every native GUI app is now required to expose the shared macro facility. The
 [decision](decisions/2026-10-08-application-macros.md) is accepted; implementation
 across the desktop is pending. **Ced already has its own macro runner.** Other

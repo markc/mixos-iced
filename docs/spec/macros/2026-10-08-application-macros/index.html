@@ -250,6 +250,10 @@
 and all-app rollout are pending. Existing Ced support is the initial reference,
 not proof of compliance with every requirement below. No ABP wire bytes change.</p>
 <p>Authority: <a href="/decisions/2026-10-08-application-macros/">application macro decision</a>.</p>
+<p>The later <a href="/decisions/2026-10-08-mix-programs-and-documents/">two-family decision</a>
+keeps every executable macro <code>.mix</code> and makes declarative metadata/fixtures <code>.mx</code>
+after their readers migrate. A macro runner must refuse <code>.mx</code> execution. Existing
+Ced headers and legacy document compatibility remain as specified below.</p>
 <h2 id="1-scope-and-ownership">1. Scope and ownership</h2>
 <p>Every native GUI app supports this contract. A scene-backed application surface
 also has a macro entry; compd/Quoin hosts the shared adapter and supplies its
@@ -422,8 +426,9 @@ folders and native service wiring without host desktop/session dependencies.</li
 documented context/operations and a real acceptance example are declared and
 verified. Deferred existing apps remain explicit failing rollout work.</li>
 </ul>
-<p>Add machine-checkable <code>*.spec.mix</code> fixtures and a Mix integration gate during
-implementation. A declaration alone is not execution evidence. Version changes
+<p>Add machine-checkable <code>.mx</code> data fixtures and an executable <code>.mix</code> integration
+gate during implementation, using legacy <code>*.spec.mix</code> only while readers migrate.
+A declaration alone is not execution evidence. Version changes
 to headers/context require compatibility and migration, not a silent rewrite.</p>
         </article>
         <p class="doc-source"><a href="/spec/macros/2026-10-08-application-macros.md"><i data-lucide="file-text"></i> This page as Markdown</a></p>
