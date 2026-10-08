@@ -357,14 +357,22 @@ impl PendingResponseTable {
         responder_tx: &mpsc::Sender<String>,
     ) -> Vec<(String, PendingResponse)> {
         let mut map = self.map.write().await;
-        let ids: Vec<String> = map.iter()
+        let ids: Vec<String> = map
+            .iter()
             .filter(|(_, p)| p.responder_tx.same_channel(responder_tx))
-            .map(|(id, _)| id.clone()).collect();
-        ids.into_iter().filter_map(|id| map.remove(&id).map(|pending| {
-            self.protection.lock().unwrap_or_else(|error| error.into_inner())
-                .retain(&id, pending.traffic_class);
-            (id, pending)
-        })).collect()
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| {
+                map.remove(&id).map(|pending| {
+                    self.protection
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .retain(&id, pending.traffic_class);
+                    (id, pending)
+                })
+            })
+            .collect()
     }
 }
 
@@ -3151,8 +3159,12 @@ async fn handle_socket(socket: WebSocket, mut state: AppState, transport: Transp
             message: "recipient connection retired before response".into(),
             details: Default::default(),
         };
-        let reply = session_delivery_error(&error, pending.caller_verified,
-            Some(&pending.caller_id), None);
+        let reply = session_delivery_error(
+            &error,
+            pending.caller_verified,
+            Some(&pending.caller_id),
+            None,
+        );
         let _ = pending.caller_tx.try_send(reply.to_wire());
     }
 
