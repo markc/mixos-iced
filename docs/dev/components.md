@@ -22,7 +22,7 @@ checked separately by the layering gate.
 | [term-test-broker](https://github.com/markc/mixos/blob/main/apps/term/crates/term-test-broker/Cargo.toml) | term | app | core | none | 0.1.1 |
 | [mix-shell](https://github.com/markc/mixos/blob/main/cli/mix-shell/Cargo.toml) | mix-shell | cli | mix | public | 0.109.4 |
 | [appearance](https://github.com/markc/mixos/blob/main/libs/appearance/Cargo.toml) | appearance | lib | desktop | none | 0.1.1 |
-| [application](https://github.com/markc/mixos/blob/main/libs/application/Cargo.toml) | application | lib | desktop | public | 0.1.24 |
+| [application](https://github.com/markc/mixos/blob/main/libs/application/Cargo.toml) | application | lib | desktop | public | 0.1.25 |
 | [assets](https://github.com/markc/mixos/blob/main/libs/assets/Cargo.toml) | assets | lib | core | public | 0.1.2 |
 | [buildinfo](https://github.com/markc/mixos/blob/main/libs/buildinfo/Cargo.toml) | buildinfo | lib | core | none | 0.1.1 |
 | [bus](https://github.com/markc/mixos/blob/main/libs/bus/Cargo.toml) | bus | lib | core | none | 0.1.1 |
@@ -34,10 +34,10 @@ checked separately by the layering gate.
 | [mix](https://github.com/markc/mixos/blob/main/libs/mix/Cargo.toml) | mix | lib | mix | public | 0.109.1 |
 | [props](https://github.com/markc/mixos/blob/main/libs/props/Cargo.toml) | props | lib | core | none | 0.1.1 |
 | [scene](https://github.com/markc/mixos/blob/main/libs/scene/Cargo.toml) | scene | lib | core | none | 0.1.1 |
-| [settings](https://github.com/markc/mixos/blob/main/libs/settings/Cargo.toml) | settings | lib | core | public | 0.3.6 |
+| [settings](https://github.com/markc/mixos/blob/main/libs/settings/Cargo.toml) | settings | lib | core | public | 0.3.7 |
 | [strict](https://github.com/markc/mixos/blob/main/libs/strict/Cargo.toml) | strict | lib | core | none | 0.1.1 |
 | [toolkit](https://github.com/markc/mixos/blob/main/libs/toolkit/Cargo.toml) | toolkit | lib | desktop | public | 0.2.10 |
-| [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | public | 0.1.15 |
+| [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | public | 0.1.17 |
 | [comp-model](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-model/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [comp-service](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-service/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [decor](https://github.com/markc/mixos/blob/main/services/compd/crates/decor/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
@@ -69,8 +69,8 @@ checked separately by the layering gate.
 | [world](https://github.com/markc/mixos/blob/main/services/compd/crates/world/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [x11-wm](https://github.com/markc/mixos/blob/main/services/compd/crates/x11-wm/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [editd](https://github.com/markc/mixos/blob/main/services/editd/Cargo.toml) | editd | service | core | public | 0.2.0 |
-| [noded](https://github.com/markc/mixos/blob/main/services/noded/Cargo.toml) | noded | service | core | public | 0.18.3 |
+| [noded](https://github.com/markc/mixos/blob/main/services/noded/Cargo.toml) | noded | service | core | public | 0.18.4 |
 | [mesh-trust](https://github.com/markc/mixos/blob/main/services/noded/crates/mesh-trust/Cargo.toml) | noded | service | core | none | 0.1.1 |
 | [mesh](https://github.com/markc/mixos/blob/main/services/noded/crates/mesh/Cargo.toml) | noded | service | core | none | 0.1.1 |
-| [settingsd](https://github.com/markc/mixos/blob/main/services/settingsd/Cargo.toml) | settingsd | service | core | public | 0.1.2 |
+| [settingsd](https://github.com/markc/mixos/blob/main/services/settingsd/Cargo.toml) | settingsd | service | core | public | 0.1.3 |
 | [native-gallery](https://github.com/markc/mixos/blob/main/tools/native-gallery/Cargo.toml) | native-gallery | tool | desktop | none | 0.1.1 |

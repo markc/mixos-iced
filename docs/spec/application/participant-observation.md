@@ -40,7 +40,9 @@ actual native receipt and matching boot/clock. Foreign or absent clocks and
 history lost on restart are unavailable. Quantiles require measured samples;
 sequential observation deadlines are only upper bounds.
 
-This checkpoint supplies the production seams and pure boundary tests. Wiring
-the participant registry to native registration/retirement topics and the
-simultaneous seven-owner native matrix remain acceptance work. No polling or
+The [native owner contract](native-participants.md) wires these seams to the
+existing scene-host registry subscriber, actual broker sender incarnations and
+authenticated Unix peer PIDs. The simultaneous seven-owner gate distinguishes
+native installed/presented receipts from palette evidence and physical VT
+proof. Exact-candidate runtime acceptance remains required. No polling or
 parallel authority is authorised by this observation contract.

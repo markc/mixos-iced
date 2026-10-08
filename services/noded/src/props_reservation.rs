@@ -69,6 +69,8 @@ pub(crate) fn publisher_owner(name: &str) -> Option<&str> {
         return Some("settingsd");
     }
     reserved_owner(name)
+        .or_else(|| name.strip_suffix(".presentation.changed").filter(|owner| !owner.is_empty()))
+        .or_else(|| name.strip_suffix(".participants.changed").filter(|owner| !owner.is_empty()))
         .or_else(|| {
             name.strip_suffix(".pointer.changed")
                 .filter(|owner| !owner.is_empty())
@@ -157,21 +159,38 @@ pub(crate) fn visible_in_list(name: &str, peer_id: &str) -> bool {
 /// reserved path with a parseable inner, returns the re-serialised
 /// canonical wire bytes.
 pub(crate) fn canonicalize_reserved_inner(topic: &str, inner_wire: &str) -> Option<String> {
-    if !settings_topic(topic) {
+    if !settings_topic(topic) && !topic.ends_with(".presentation.changed") && !topic.ends_with(".participants.changed") {
         reserved_owner(topic)?;
     }
     let mut inner = match bus::wire::parse(inner_wire) {
         Ok(m) => m,
         Err(_) => return None,
     };
+    let observation = settings_topic(topic).then(|| inner.get("settings_observation").filter(|value| value.len() <= 16 * 1024).map(str::to_owned)).flatten();
     inner.headers.clear();
     inner.set("command", topic);
+    if let Some(observation) = observation {inner.set("settings_observation", &observation);}
     Some(inner.to_wire())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_observation_requires_its_registered_owner_and_safe_inner() {
+        let topic = "term.presentation.changed";
+        assert_eq!(publisher_owner(topic), Some("term"));
+        assert!(may_subscribe(topic));
+        assert!(may_publish(topic, "term"));
+        assert!(!may_publish(topic, "other"));
+        assert!(!may_publish(topic, "anon-1"));
+        let hostile = "---\ncommand: delete\nfrom: forged\nbroker_registration: forged\n---\n{}";
+        let safe = bus::parse(&canonicalize_reserved_inner(topic, hostile).unwrap()).unwrap();
+        assert_eq!(safe.get("command"), Some(topic));
+        assert_eq!(safe.get("broker_registration"), None);
+        assert_eq!(safe.get("from"), None);
+    }
 
     #[test]
     fn scoped_settings_snapshot_is_public_but_owned_by_settingsd() {

@@ -1,13 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! One host CLOCK_MONOTONIC domain, explicitly fenced by boot identity.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stamp {
     pub boot_id: String,
     pub clock_id: u32,
     pub nanoseconds: u64,
+}
+
+/// Optional observation envelope, never part of snapshot or durable receipts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Commit {
+    pub operation_id: String,
+    pub identity: crate::consumer::SnapshotIdentity,
+    pub changed: bool,
+    pub validation_started: Option<Stamp>,
+    pub commit_started: Option<Stamp>,
+    pub accepted: Option<Stamp>,
 }
 
 /// Failure produces missing evidence, never zero or wall-clock substitution.

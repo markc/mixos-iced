@@ -1,6 +1,6 @@
 # Desktop settings contract
 
-Status: accepted initial authority contract, version 0.1.2. Full desktop consumer
+Status: accepted initial authority contract, version 0.1.3. Full desktop consumer
 integration remains in development. No frozen ABP wire bytes change.
 
 `settingsd` serves one explicitly initialised profile in the initial slice.
@@ -148,7 +148,7 @@ Fresh decoded topic deliveries use Reducer.observe. Captured tickets are for
 asynchronous completions; a new delivery can advance the state while an older
 bound read is pending, and that read cannot roll the revision back.
 
-The settings library API is now 0.3.6; the contract is 0.1.2 and the snapshot
+The settings library API is now 0.3.7; the contract is 0.1.3 and the snapshot
 schema remains 1. The shared consumer performs subscribe-before-get over the
 host's
 existing supervised Bus connection through its optional native executor. It

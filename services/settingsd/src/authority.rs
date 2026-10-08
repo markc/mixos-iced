@@ -5,15 +5,7 @@ use settings::*;
 
 /// Runtime observation of one actual validated durable commit. It is not
 /// persisted/reconstructed on restart and never enters the snapshot digest.
-#[derive(Clone, serde::Serialize)]
-pub struct CommitObservation {
-    pub operation_id: String,
-    pub identity: settings::consumer::SnapshotIdentity,
-    pub changed: bool,
-    pub validation_started: Option<settings::clock::Stamp>,
-    pub commit_started: Option<settings::clock::Stamp>,
-    pub accepted: Option<settings::clock::Stamp>,
-}
+pub type CommitObservation = settings::clock::Commit;
 
 pub struct Authority {
     pub store: Store,

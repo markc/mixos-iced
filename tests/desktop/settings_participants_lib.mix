@@ -1,0 +1,51 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- Pure reduction of native operation-fenced monotonic receipts.
+fn check($ok,$message) if not $ok then raise("PARTICIPANTS",$message) end end
+fn quantiles($samples)
+  for each $sample in $samples
+    check(type($sample) == "number" and $sample >= 0,"Non-numeric or negative native timing")
+  end
+  $ordered=sort_by($samples,fn($sample)=$sample)
+  if len($ordered) == 0 then return {count:0,estimator:"nearest-rank",p50_ns:nil,p95_ns:nil,max_ns:nil} end
+  return {count:len($ordered),estimator:"nearest-rank",
+    p50_ns:$ordered[ceil(len($ordered)*0.5)-1],p95_ns:$ordered[ceil(len($ordered)*0.95)-1],max_ns:$ordered[len($ordered)-1]}
+end
+fn exact_presented($receipt,$operation,$service,$key,$pid,$identity)
+  check($receipt.contract == "application.participants.wait.v1" and not $receipt.deadline_elapsed,"Native participant presentation deadline")
+  check($receipt.operation_id == $operation and $receipt.until == "presented","Wrong native wait operation/criterion")
+  $rows=filter($receipt.observations.participants,fn($row)=$row.service == $service and $row.key == $key)
+  check(len($rows) == 1,"Missing or ambiguous actual participant key")
+  $row=$rows[0]
+  check($row.pid == $pid and $row.operation_id == $operation and $row.state == "presented" and $row.phase == "presented","Wrong actual participant owner or phase")
+  check(deep_eq($row.current,$identity) and deep_eq($row.applied,$identity),"Participant snapshot identity mismatch")
+  check($row.presentation != nil and $row.registration_incarnation != nil and $row.surface_incarnation != nil,"Missing native presentation provenance")
+  check($row.provenance.origin == "local" and $row.provenance.peer_pid == $pid,"Untrusted native timing owner")
+  -- Null timing is honest unavailability, never a substitute observation bound.
+  return $row
+end
+fn trace_counts($text)
+  check(not contains($text,"stage=trace_limit"),"Native frame trace exhausted")
+  $out={frames:0,submitted:0,empty:0,observer_only_submitted:0,masks:[]}
+  -- ledger::redraw::RedrawReason::{Bus,Publish}: slots18/19, as the existing
+  -- idle_probe reducer. Other product/native causes remain separate evidence.
+  $observer=bor(bshl(1,18),bshl(1,19))
+  for each $line in lines($text)
+    if contains($line,"FRAME_TRACE ") then
+      $drops=re_find($line,"dropped=([0-9]+)")
+      check(len($drops) == 1 and to_number($drops[0].groups[0]) == 0,"Native frame trace lost observations")
+    end
+    if contains($line,"stage=comp_frame_reasons ") then
+      $fields=re_find($line,"subject=([0-9]+) detail=([0-9]+)")
+      check(len($fields) == 1,"Malformed actual frame reason record")
+      $mask=to_number($fields[0].groups[0]); $empty=to_number($fields[0].groups[1])
+      $out.frames=$out.frames+1
+      $out.masks=concat($out.masks,[$mask])
+      if $empty == 1 then $out.empty=$out.empty+1
+      else
+        $out.submitted=$out.submitted+1
+        if band($mask,$observer) != 0 and band($mask,bnot($observer)) == 0 then $out.observer_only_submitted=$out.observer_only_submitted+1 end
+      end
+    end
+  end
+  return $out
+end

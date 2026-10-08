@@ -218,6 +218,9 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
     );
     let mut settings = bus.take_settings_ui().expect("GUI settings endpoint");
     settings.reconcile(bus.settings_generation());
+    let frames = application::frames::Handle::new();
+    frames.set_live_generation(bus.settings_generation());
+    settings.bind_frames(frames.clone());
     let ui_font = theme.ui_font;
     let run_id: u32 = rand::random();
     let controller = Controller::new(config.clone(), run_id, false);
@@ -234,7 +237,7 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
         config,
         theme,
         settings,
-        frames: application::frames::Handle::new(),
+        frames,
         registered: false,
         bootstrap_paths: paths,
         bootstrap_opens: Vec::new(),

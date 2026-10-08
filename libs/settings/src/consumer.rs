@@ -69,6 +69,7 @@ pub struct ObservationPoint {
 #[cfg(feature = "observation")]
 #[derive(Serialize)]
 pub struct ObservationEvidence<'a> {
+    pub authority: Option<&'a crate::clock::Commit>,
     pub received: Option<&'a ObservationPoint>,
     pub applied: Option<&'a ObservationPoint>,
     pub presentation_claimed: bool,
@@ -173,6 +174,8 @@ pub struct Consumer {
     received_observation: Option<ObservationPoint>,
     #[cfg(feature = "observation")]
     applied_observation: Option<ObservationPoint>,
+    #[cfg(feature = "observation")]
+    authority_observation: Option<(u64, crate::clock::Commit)>,
 }
 impl Consumer {
     pub fn for_app(binding: Binding, app: &str) -> Result<Self, Diagnostic> {
@@ -232,6 +235,8 @@ impl Consumer {
             received_observation: None,
             #[cfg(feature = "observation")]
             applied_observation: None,
+            #[cfg(feature = "observation")]
+            authority_observation: None,
         })
     }
     pub fn binding(&self) -> &Binding {
@@ -267,10 +272,16 @@ impl Consumer {
     #[cfg(feature = "observation")]
     pub fn observations(&self) -> ObservationEvidence<'_> {
         ObservationEvidence {
+            authority: self.authority_observation.as_ref().filter(|(generation, observation)| self.generation == Some(*generation) && self.current().is_some_and(|snapshot| SnapshotIdentity::from(snapshot) == observation.identity)).map(|(_, observation)| observation),
             received: self.received_observation.as_ref(),
             applied: self.applied_observation.as_ref(),
             presentation_claimed: false,
         }
+    }
+    #[cfg(feature = "observation")]
+    pub(crate) fn observe_authority(&mut self, observation:Option<crate::clock::Commit>) {
+        self.authority_observation = self.generation.zip(observation)
+            .filter(|(_, observation)| observation.operation_id.len() <= 128 && self.current().is_some_and(|snapshot| SnapshotIdentity::from(snapshot) == observation.identity));
     }
     #[cfg(feature = "observation")]
     fn record_applied(&mut self) {

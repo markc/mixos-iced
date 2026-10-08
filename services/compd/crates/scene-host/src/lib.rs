@@ -25,6 +25,8 @@ use world::state::Loop;
 mod appearance;
 pub mod conf;
 mod description;
+mod participants;
+mod participant_wait;
 pub mod host;
 mod icons;
 mod images;

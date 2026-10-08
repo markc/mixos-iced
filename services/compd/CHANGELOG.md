@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.17
+
+- Reduce native participant observations on the existing scene-host event pass,
+  fenced by broker registration, Unix peer PID and actual window incarnation.
+  Expose copied records through describe, retained owner events and bounded
+  app.participants.wait requests without periodic reads or observer redraws.
+- Keep immutable queued presentation metadata on actual graphics Backings so
+  ring-depth changes preserve the provenance of retained published pixels.
+
 ## 0.1.15
 
 - Report client-committed fullscreen in window projections and state replies.

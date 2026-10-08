@@ -1,5 +1,12 @@
 # vendor/iced: local patches
 
+## Captured callback documentation
+
+The stable FrameObserver provider captures actual per-request generation
+provenance without invalidating the unchanged view's future callback provider.
+Document `captured()` for strict iced_core public API linting. Historical
+receipt ownership remains explicit; description reads never relabel pixels.
+
 ## Failed pre-commit presentation and capacity recovery
 
 The shared native presentation helper tracks whether the actual pre-present hook

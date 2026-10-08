@@ -5,6 +5,7 @@
 {
   schema: 1,
   verbs: [
+    {name:"app.participants.wait", owner:"scene-host", version:"0.1.17", status:"accepted"},
     {name:"app.acceptance.describe", owner:"application", version:"0.1.14", status:"accepted"},
     {name:"app.acceptance.layout", owner:"application", version:"0.1.14", status:"accepted"},
     {name:"app.acceptance.barrier.arm", owner:"application", version:"0.1.14", status:"accepted"},

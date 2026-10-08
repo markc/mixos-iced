@@ -659,7 +659,8 @@ async fn worker(
         // diagnostic, distinct from any later write fault.
         None => Worker::offline(build),
     };
-    let (ui, mut lane) = bridge(Session::new(consumer), settings_worker);
+    let (mut ui, mut lane) = bridge(Session::new(consumer), settings_worker);
+    ui.bind_frames(frames.clone());
     let mut outbox = Outbox::default();
     if lane.connect(Arc::clone(&client)) {
         outbox.push(Delivery::Settings);

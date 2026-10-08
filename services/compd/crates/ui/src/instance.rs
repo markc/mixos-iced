@@ -30,13 +30,6 @@ use crate::space::{IcedSpace, Transform};
 // ── Concrete instance ──────────────────────────────────────────────────
 
 pub struct IcedInstance<U: IcedUi> {
-    frame_bindings: std::collections::BTreeMap<
-        usize,
-        (
-            iced_core::window::Id,
-            iced_core::window::presentation::FrameBinding,
-        ),
-    >,
     pub(crate) id: HandleId,
     pub(crate) smithay_id: Id,
     pub(crate) commit: CommitCounter,
@@ -163,9 +156,7 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         iced_core::window::Id,
         iced_core::window::presentation::FrameBinding,
     )> {
-        self.frame_bindings
-            .get(&self.surface.published_slot()?)
-            .cloned()
+        self.surface.published_presentation()
     }
     fn handle_id(&self) -> HandleId {
         self.id
@@ -225,13 +216,7 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         // on-screen surface before calling this, so the view is present then.
         self.poll_publish();
         if let Some(view) = self.surface.begin_render_view() {
-            if let Some(slot) = self.surface.target_slot() {
-                if let Some(binding) = self.runtime.ui().frame_presentation() {
-                    self.frame_bindings.insert(slot, binding);
-                } else {
-                    self.frame_bindings.remove(&slot);
-                }
-            }
+            self.surface.set_target_presentation(self.runtime.ui.frame_presentation());
             self.runtime.render_into(&view);
             crate::frame_trace::rendered(self.id.0);
             self.surface
@@ -252,7 +237,6 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         self.surface.is_resident()
     }
     fn release_backing(&mut self) {
-        self.frame_bindings.clear();
         self.surface.release();
     }
     fn ensure_backing(
@@ -261,9 +245,6 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         wgpu_ctx: &WgpuGlContext,
         gles: &mut GlesRenderer,
     ) -> Result<(), SurfaceError> {
-        if !self.surface.is_resident() {
-            self.frame_bindings.clear();
-        }
         self.surface.ensure(render_node, wgpu_ctx, gles)
     }
     fn sync_depth(
@@ -273,11 +254,7 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         gles: &mut GlesRenderer,
         want: usize,
     ) -> Result<(), SurfaceError> {
-        let before = self.surface.slot_count();
         self.surface.sync_depth(render_node, wgpu_ctx, gles, want)?;
-        if before != self.surface.slot_count() {
-            self.frame_bindings.clear();
-        }
         Ok(())
     }
     fn texture_handle(&self) -> Option<&smithay::backend::renderer::gles::GlesTexture> {
@@ -301,7 +278,6 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         );
 
         self.surface.resize(render_node, wgpu_ctx, gles, new_size)?;
-        self.frame_bindings.clear();
 
         // println!("Scale factor just updated.");
         self.scale_factor = scale_factor;
@@ -910,7 +886,6 @@ pub(crate) fn build_instance<U: IcedUi>(
     let size_px = (surface.size.w as u32, surface.size.h as u32);
     let runtime = IcedRuntime::new(ui, engine, size_px, scale_factor);
     IcedInstance {
-        frame_bindings: std::collections::BTreeMap::new(),
         scale_factor,
         id,
         smithay_id: Id::new(),

@@ -626,6 +626,7 @@ pub struct SceneHost {
     refused: Option<String>,
     surfaces: BTreeMap<String, Surface>,
     frame_owners: BTreeMap<String, (application::iced::window::Id, application::frames::Handle)>,
+    participants: crate::participants::Participants,
     /// Layout requests for mapped scenes whose first render is still due.
     /// Keep the admitted request intact for provenance/reconnect checks.
     pending_layouts: Vec<Request>,
@@ -686,6 +687,7 @@ impl SceneHost {
             refused: None,
             surfaces: BTreeMap::new(),
             frame_owners: BTreeMap::new(),
+            participants: crate::participants::Participants::default(),
             pending_layouts: Vec::new(),
             output_names: BTreeMap::new(),
             placed: BTreeMap::new(),
@@ -769,6 +771,7 @@ impl SceneHost {
             let (rc, value) = match crate::description::complete(identity, self.settings.session())
             {
                 Ok(mut value) => {
+                    value["participants"] = self.participants.snapshot();
                     value["installed_frame_stamp"]=self.settings.session().frame_stamp().map(|stamp|json!({"activation_epoch":stamp.activation_epoch,"local_revision":stamp.local_revision})).unwrap_or(Value::Null);
                     value["native_scene_frames"]=json!(self.frame_owners.iter().map(|(scene,(_,frames))|json!({"scene":scene,"mapped":self.host.store.scene(scene).is_some_and(|entry|entry.mounted().is_some()),"frames":application::frames::snapshot_json(&frames.snapshot())})).collect::<Vec<_>>());
                     (0, value)
@@ -786,6 +789,13 @@ impl SceneHost {
             frames.set_live_generation(self.port.settings_generation());
         }
         let mut serviced = Serviced::default();
+        while let Some(observation) = self.port.try_observation() {
+            match observation {
+                Inbound::Registrations(registrations) => self.participants.registrations(registrations),
+                Inbound::Presentation(notice) => self.participants.notice(notice),
+                _ => unreachable!("observation mailbox contains metadata only"),
+            }
+        }
         let panels = &mut self.host.panels;
         let port = &self.port;
         for _changed in self.settings.drain_with(
@@ -801,10 +811,11 @@ impl SceneHost {
             self.appearance_generation = self.appearance_generation.wrapping_add(1);
             serviced.changed = true;
         }
-        serviced.answered += self.service_descriptions();
         let Some(monitor) =
             dispatcher::wire::trait_::wire_trait::WireTrait::active_output(&lp.inner)
         else {
+            self.observe_participants(lp);
+            serviced.answered += self.service_descriptions();
             return serviced;
         };
         let name = monitor.name();
@@ -916,6 +927,8 @@ impl SceneHost {
             match message {
                 Inbound::Registered(name) => self.service = Some(name),
                 Inbound::Refused(reason) => self.refused = Some(reason),
+                Inbound::Registrations(registrations) => self.participants.registrations(registrations),
+                Inbound::Presentation(notice) => self.participants.notice(notice),
                 Inbound::Request(request) => {
                     let generation = self.port.connection_generation();
                     if request.verb == SceneVerb::Layout
@@ -980,7 +993,39 @@ impl SceneHost {
             }
         }
         self.publish_panels(output);
+        self.observe_participants(lp);
+        serviced.answered += self.service_descriptions();
         serviced
+    }
+
+    // Copy actual owner state on the existing event pass. Reading or receiving
+    // observation metadata neither requests a frame nor marks the UI dirty.
+    fn observe_participants(&mut self, lp: &world::state::Loop) {
+        use application::participants::Visibility;
+        let windows = lp.inner.comp.registry.windows().filter_map(|record| {
+            Some(crate::participants::Window {
+                id: record.id().0,
+                incarnation: record.generation(),
+                pid: record.pid()?,
+                visibility: if record.minimized() { Visibility::Minimised }
+                    else if !record.mapped() || lp.inner.comp.hidden(record.handle()) { Visibility::Hidden }
+                    else { Visibility::Visible },
+            })
+        }).collect::<Vec<_>>();
+        let session = self.settings.session();
+        let value = json!({"pid":std::process::id(),"connection_generation":self.port.settings_generation(),
+            "observer_provenance":{"origin":"local","owner":"scene-host","peer_pid":std::process::id()},
+            "settings":session.host().consumer().evidence(),
+            "settings_observation":session.host().consumer().observations(),
+            "installed_frame_stamp":session.frame_stamp().map(|stamp|json!({"activation_epoch":stamp.activation_epoch,"local_revision":stamp.local_revision}))});
+        let frames = self.frame_owners.iter().map(|(scene,(window,frames))| {
+            (scene.clone(),window.raw(),frames.snapshot(),self.host.mapped_output(scene).is_some())
+        }).collect();
+        let previous = self.participants.snapshot();
+        let next = self.participants.sync(&windows,
+            matches!(lp.inner.status_session, world::state::state::StatusSession::Paused),
+            self.port.registered_service_name(),value,frames,false);
+        if next != previous { self.port.publish_participants(next); }
     }
 
     /// `<service>.panel.changed` once per change of each output's edges or the

@@ -580,10 +580,8 @@ pub(crate) fn reconcile(
         });
         // A registry/world replacement is a new surface incarnation even when
         // its scene name survives. Never let its callback adopt the old pixels.
-        if live.is_none() {
-            if let Some((_, frames)) = frame_owners.remove(name) {
-                frames.close();
-            }
+        if live.is_none() && let Some((_, frames)) = frame_owners.remove(name) {
+            frames.close();
         }
         let (frame_window, frames) = frame_owners.entry(name.clone()).or_insert_with(|| {
             (

@@ -151,8 +151,14 @@ impl Consumer {
         if &delivery.binding != self.binding() || self.generation() != Some(delivery.generation) {
             return None;
         }
+        let observation = delivery.observation;
         match delivery.result {
-            Ok(snapshot) => self.observe(delivery.generation, snapshot),
+            Ok(snapshot) => {
+                let identity:crate::consumer::SnapshotIdentity = (&snapshot).into();
+                let work = self.observe(delivery.generation, snapshot);
+                self.observe_authority(observation.filter(|observation| observation.identity == identity));
+                work
+            },
             Err(error) => self.rejected_delivery(error),
         }
     }
@@ -167,6 +173,7 @@ pub struct Decoded {
     generation: u64,
     result: Result<Snapshot, Diagnostic>,
     fingerprint: Option<[u8; 32]>,
+    observation: Option<crate::clock::Commit>,
 }
 impl Decoded {
     /// Exact same bounded broker payload on the same captured binding/socket.
@@ -176,6 +183,7 @@ impl Decoded {
             && self.generation == other.generation
             && self.fingerprint.is_some()
             && self.fingerprint == other.fingerprint
+            && self.observation == other.observation
     }
     pub fn from_command(binding: &Binding, command: &IncomingCommand) -> Option<Self> {
         if command.topic() != Some(topic(&binding.profile).as_str())
@@ -199,6 +207,8 @@ impl Decoded {
             result,
             fingerprint: (command.body.len() <= MAX_SNAPSHOT_BYTES)
                 .then(|| *blake3::hash(command.body.as_bytes()).as_bytes()),
+            observation: command.header("settings_observation").filter(|value| value.len() <= 16 * 1024)
+                .and_then(|value| serde_json::from_str::<crate::clock::Commit>(value).ok()),
         })
     }
 }

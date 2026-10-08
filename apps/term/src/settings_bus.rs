@@ -381,7 +381,8 @@ async fn worker(
         Some(dirs) => settings_worker.with_cache_directory(dirs.cache().join("settings")),
         None => settings_worker,
     };
-    let (ui, mut lane) = bridge(Session::with_context(consumer, initial), settings_worker);
+    let (mut ui, mut lane) = bridge(Session::with_context(consumer, initial), settings_worker);
+    ui.bind_frames(frames.clone());
     wake_ui(&wake, lane.connect(Arc::clone(&client)));
     if ready
         .send(Ok((Arc::clone(&shared), ui, bootstrap)))

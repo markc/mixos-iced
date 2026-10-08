@@ -1,6 +1,6 @@
 [package]
 name = "application"
-version = "0.1.24"
+version = "0.1.25"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -29,7 +29,7 @@ raster-probe = ["tiny-skia", "iced_tiny_skia/raster-probe"]
 native-frame-probe = ["iced/native-frame-probe"]
 test-support = ["dep:iced_test", "iced/selector"]
 settings = ["dep:settings", "dep:appearance", "dep:design", "dep:toolkit", "appearance/resources"]
-settings-native = ["settings", "settings/native", "dep:tokio", "dep:bus", "dep:assets", "dep:serde"]
+settings-native = ["settings", "settings/native", "dep:tokio", "dep:bus", "dep:assets", "dep:serde", "dep:serde_json"]
 settings-cache = ["settings-native", "settings/cache", "dep:config", "dep:serde"]
 # Read-only layout inspection; enables the narrow selector-only iced query
 # support. Not in defaults.

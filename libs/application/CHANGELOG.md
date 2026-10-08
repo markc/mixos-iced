@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.25
+
+- Publish actual frame-owner observation changes through the existing native
+  lane; retain receipt lifecycle provenance across reconnects. Pure reads and
+  unchanged views never manufacture a presentation or periodic redraw.
+- Admit copied external receipts to the shared bounded participant registry.
+
 ## 0.1.24
 
 - Share bounded participant phase/state observations and expose exact native

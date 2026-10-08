@@ -1353,7 +1353,7 @@ checked separately by the layering gate.
 | [term-test-broker](https://github.com/markc/mixos/blob/main/apps/term/crates/term-test-broker/Cargo.toml) | term | app | core | none | 0.1.1 |
 | [mix-shell](https://github.com/markc/mixos/blob/main/cli/mix-shell/Cargo.toml) | mix-shell | cli | mix | public | 0.109.4 |
 | [appearance](https://github.com/markc/mixos/blob/main/libs/appearance/Cargo.toml) | appearance | lib | desktop | none | 0.1.1 |
-| [application](https://github.com/markc/mixos/blob/main/libs/application/Cargo.toml) | application | lib | desktop | public | 0.1.24 |
+| [application](https://github.com/markc/mixos/blob/main/libs/application/Cargo.toml) | application | lib | desktop | public | 0.1.25 |
 | [assets](https://github.com/markc/mixos/blob/main/libs/assets/Cargo.toml) | assets | lib | core | public | 0.1.2 |
 | [buildinfo](https://github.com/markc/mixos/blob/main/libs/buildinfo/Cargo.toml) | buildinfo | lib | core | none | 0.1.1 |
 | [bus](https://github.com/markc/mixos/blob/main/libs/bus/Cargo.toml) | bus | lib | core | none | 0.1.1 |
@@ -1365,10 +1365,10 @@ checked separately by the layering gate.
 | [mix](https://github.com/markc/mixos/blob/main/libs/mix/Cargo.toml) | mix | lib | mix | public | 0.109.1 |
 | [props](https://github.com/markc/mixos/blob/main/libs/props/Cargo.toml) | props | lib | core | none | 0.1.1 |
 | [scene](https://github.com/markc/mixos/blob/main/libs/scene/Cargo.toml) | scene | lib | core | none | 0.1.1 |
-| [settings](https://github.com/markc/mixos/blob/main/libs/settings/Cargo.toml) | settings | lib | core | public | 0.3.6 |
+| [settings](https://github.com/markc/mixos/blob/main/libs/settings/Cargo.toml) | settings | lib | core | public | 0.3.7 |
 | [strict](https://github.com/markc/mixos/blob/main/libs/strict/Cargo.toml) | strict | lib | core | none | 0.1.1 |
 | [toolkit](https://github.com/markc/mixos/blob/main/libs/toolkit/Cargo.toml) | toolkit | lib | desktop | public | 0.2.10 |
-| [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | public | 0.1.15 |
+| [compd](https://github.com/markc/mixos/blob/main/services/compd/Cargo.toml) | compd | service | desktop | public | 0.1.17 |
 | [comp-model](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-model/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [comp-service](https://github.com/markc/mixos/blob/main/services/compd/crates/comp-service/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [decor](https://github.com/markc/mixos/blob/main/services/compd/crates/decor/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
@@ -1400,10 +1400,10 @@ checked separately by the layering gate.
 | [world](https://github.com/markc/mixos/blob/main/services/compd/crates/world/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [x11-wm](https://github.com/markc/mixos/blob/main/services/compd/crates/x11-wm/Cargo.toml) | compd | service | desktop | none | 0.1.1 |
 | [editd](https://github.com/markc/mixos/blob/main/services/editd/Cargo.toml) | editd | service | core | public | 0.2.0 |
-| [noded](https://github.com/markc/mixos/blob/main/services/noded/Cargo.toml) | noded | service | core | public | 0.18.3 |
+| [noded](https://github.com/markc/mixos/blob/main/services/noded/Cargo.toml) | noded | service | core | public | 0.18.4 |
 | [mesh-trust](https://github.com/markc/mixos/blob/main/services/noded/crates/mesh-trust/Cargo.toml) | noded | service | core | none | 0.1.1 |
 | [mesh](https://github.com/markc/mixos/blob/main/services/noded/crates/mesh/Cargo.toml) | noded | service | core | none | 0.1.1 |
-| [settingsd](https://github.com/markc/mixos/blob/main/services/settingsd/Cargo.toml) | settingsd | service | core | public | 0.1.2 |
+| [settingsd](https://github.com/markc/mixos/blob/main/services/settingsd/Cargo.toml) | settingsd | service | core | public | 0.1.3 |
 | [native-gallery](https://github.com/markc/mixos/blob/main/tools/native-gallery/Cargo.toml) | native-gallery | tool | desktop | none | 0.1.1 |
 
 ---
@@ -1968,6 +1968,92 @@ optional capabilities; the canonical identity envelope remains v1.
 
 ---
 
+<!-- page: https://mixos.dev/spec/application/native-participants/ (source: https://mixos.dev/spec/application/native-participants.md) -->
+
+# Native participant observations
+
+The existing scene-host registry subscriber owns `application.participants.v1`.
+Its `app.describe` extension `participants` and retained
+`<service>.participants.changed` topic contain the same copied owner record.
+Observing a record does not request a redraw, install settings or set authority.
+
+External application records arrive on owner-protected
+`<application-service>.presentation.changed`, contract
+`application.presentation.v1`. The local broker supplies the registration
+incarnation and native Unix principal. The receiver requires explicit local
+origin, the current registration incarnation and payload PID equal to the
+actual Unix peer PID. It joins exactly one actual native window with that PID;
+ambiguous multi-window associations are unavailable. The native window ID and
+generation are separate from the producer's frame window and connection
+generation. Same-name replacement retires old observation ownership even if
+the name list never changed. Registry history and pending notice maps are
+bounded; retired callbacks cannot regain admission after tombstone eviction.
+
+Quoin scene records use the compositor's actual per-scene FrameHandles. Queued
+pixel stamps live on graphics Backings and survive ring moves. A replacement or
+released Backing clears its metadata. A generation change preserves historical
+receipt provenance, but old receipts cannot certify a current generation.
+
+Each row contains service, PID, registration incarnation, connection generation,
+native-window identity, frame-window identity and surface incarnation; current
+and applied snapshot identities; phase, state, resource evidence and optional
+actual presentation receipt. Visible, hidden, minimised, inactive session and
+closed states remain distinct. A hidden or inactive buffer is never presented
+merely because settings were applied. A physical VT claim additionally needs a
+real native seat transition; nested session state is not physical proof.
+
+`app.participants.wait` accepts exactly:
+
+```json
+{"operation_id":"changed-operation","services":["term","shell"],"timeout_ms":1000}
+```
+
+Operation ID is nonempty and at most 128 bytes. Service names are unique,
+nonempty and at most 256 bytes; there are 1–128 services. Timeout is 1–60000 ms.
+The bounded request uses owner watch changes and one absolute deadline from
+admission, with lifecycle/generation cancellation. It returns
+`application.participants.wait.v1`, operation ID, expected services,
+`deadline_elapsed` and `observations`. Completion requires every requested
+service to have actual matching changed-operation records in presented or
+explicit nonvisible states, or a real closed record. On expiry, incomplete
+eligible live rows become nonresponsive while their actual phase remains
+unchanged. Missing rows remain missing, not manufactured participants.
+
+On-time completion requires the selected phase to have actually been observed
+by the owner no later than the admission deadline. A predeadline receipt may
+settle later and still succeed; a receipt first observed after the deadline
+cannot succeed on time. The owner retains up to 128 meaningful phase changes
+with private monotonic observation times, independent of authority acceptance
+times. Exhausted history refuses with `PARTICIPANT_HISTORY_GAP`; it never
+invents a missing earlier receipt. Repeated unchanged frames do not replace the
+first observation of the same phase and stamp.
+
+Optional `until` is `settled` (default), `presented` or `closed`. `closed`
+requires actual retirement of every selected owner. `presented` requires
+actual matching operation presentation for every selected row; hidden,
+minimised, inactive and closed rows cannot complete it. Optional `keys` is a
+unique list of 1–128 exact participant keys, at most 512 bytes each. Every key
+must exist and each requested service must have a selected row. This selects
+one real Quoin scene without claiming that its hidden sibling scenes presented.
+The reply echoes the selected keys and criterion.
+
+Authority observation uses the optional bounded `settings_observation` header
+on the existing protected settings snapshot topic. The snapshot body, digest
+and schema are unchanged. New durable changed operations may carry original
+acceptance timing; no-op, old replay, lookup and restart do not invent it.
+Latency requires matching operation identity, installed stamp and actual frame
+receipt, plus authenticated local source and equal boot/clock identities.
+Unavailable timing is null. Hidden, inactive and closed rows never supply new
+presentation samples. Quantiles must use real monotonic samples and report
+sample count, environment and estimator; sequential observation bounds are
+separate evidence.
+
+This contract is additive. Source implementation alone is not native or KMS
+acceptance; the exact published candidate must pass broker, lifecycle and
+seven-owner runtime gates.
+
+---
+
 <!-- page: https://mixos.dev/spec/application/participant-observation/ (source: https://mixos.dev/spec/application/participant-observation.md) -->
 
 # Native participant observation
@@ -2012,9 +2098,11 @@ actual native receipt and matching boot/clock. Foreign or absent clocks and
 history lost on restart are unavailable. Quantiles require measured samples;
 sequential observation deadlines are only upper bounds.
 
-This checkpoint supplies the production seams and pure boundary tests. Wiring
-the participant registry to native registration/retirement topics and the
-simultaneous seven-owner native matrix remain acceptance work. No polling or
+The [native owner contract](native-participants.md) wires these seams to the
+existing scene-host registry subscriber, actual broker sender incarnations and
+authenticated Unix peer PIDs. The simultaneous seven-owner gate distinguishes
+native installed/presented receipts from palette evidence and physical VT
+proof. Exact-candidate runtime acceptance remains required. No polling or
 parallel authority is authorised by this observation contract.
 
 ---
@@ -2023,7 +2111,7 @@ parallel authority is authorised by this observation contract.
 
 # Desktop settings contract
 
-Status: accepted initial authority contract, version 0.1.2. Full desktop consumer
+Status: accepted initial authority contract, version 0.1.3. Full desktop consumer
 integration remains in development. No frozen ABP wire bytes change.
 
 `settingsd` serves one explicitly initialised profile in the initial slice.
@@ -2171,7 +2259,7 @@ Fresh decoded topic deliveries use Reducer.observe. Captured tickets are for
 asynchronous completions; a new delivery can advance the state while an older
 bound read is pending, and that read cannot roll the revision back.
 
-The settings library API is now 0.3.6; the contract is 0.1.2 and the snapshot
+The settings library API is now 0.3.7; the contract is 0.1.3 and the snapshot
 schema remains 1. The shared consumer performs subscribe-before-get over the
 host's
 existing supervised Bus connection through its optional native executor. It

@@ -109,6 +109,9 @@ impl<T> Ring<T> {
     pub fn target(&self) -> &T {
         &self.slots[self.cursor]
     }
+    pub fn target_mut(&mut self) -> &mut T {
+        &mut self.slots[self.cursor]
+    }
     /// Metadata owners bind to the actual ring slot, never the newest model.
     pub fn target_index(&self) -> usize {
         self.cursor

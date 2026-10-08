@@ -1,5 +1,11 @@
 # settings contract changes
 
+## 0.3.7
+
+Carry optional typed authority observation in the protected native snapshot
+delivery header. Exact snapshot bytes, schema and digest remain unchanged.
+Consumer timing remains generation and snapshot-identity fenced.
+
 ## 0.3.6
 
 Add optional monotonic delivery/application observations and shared clock

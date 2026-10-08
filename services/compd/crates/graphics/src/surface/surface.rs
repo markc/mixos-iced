@@ -46,6 +46,8 @@ pub struct IcedSurface {
 pub struct Backing {
     wgpu_texture: wgpu::Texture,
     gles_texture: GlesTexture,
+    /// Metadata belongs to these exact pixels and moves with this backing.
+    presentation: Option<(iced_core::window::Id, iced_core::window::presentation::FrameBinding)>,
 }
 
 impl std::fmt::Debug for IcedSurface {
@@ -143,6 +145,12 @@ impl IcedSurface {
     }
     pub fn target_slot(&self) -> Option<usize> {
         self.backing.as_ref().map(|ring| ring.target_index())
+    }
+    pub fn set_target_presentation(&mut self, binding: Option<(iced_core::window::Id, iced_core::window::presentation::FrameBinding)>) {
+        if let Some(ring) = self.backing.as_mut() {ring.target_mut().presentation = binding;}
+    }
+    pub fn published_presentation(&self) -> Option<(iced_core::window::Id, iced_core::window::presentation::FrameBinding)> {
+        self.backing.as_ref().and_then(|ring| ring.published().presentation.clone())
     }
     pub fn published_slot(&self) -> Option<usize> {
         self.backing.as_ref().map(|ring| ring.published_index())
@@ -256,6 +264,7 @@ impl Backing {
         Ok(Self {
             wgpu_texture,
             gles_texture,
+            presentation: None,
         })
     }
 }

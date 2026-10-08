@@ -43,6 +43,7 @@ pub(crate) const MESH_FROM_HEADER: &str = "mesh_from";
 /// supplied headers with these names are unconditionally overwritten
 /// (§ 3.11.2 security property).
 pub const RESERVED_HEADERS: &[&str] = &[
+    "broker_registration",
     "topic",
     "topic_seq",
     "topic_stale",
@@ -74,6 +75,7 @@ pub(crate) fn strip_broker_origin(message: &mut BusMessage) -> bool {
     let before = message.headers.len();
     message.headers.retain(|name, _| {
         ![
+            "broker_registration",
             BROKER_ORIGIN_HEADER,
             BROKER_PEER_HEADER,
             BROKER_SERVICE_HEADER,
@@ -709,6 +711,15 @@ impl SubscriptionBroker {
         retain: bool,
         principal: Option<&bus::native_session::BrokerPrincipal>,
     ) -> Result<PublishResult, PublishError> {
+        self.publish_with_registration(name, inner_body, from, from_tx, origin, retain, principal, None).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn publish_with_registration(
+        &self, name:&str, inner_body:&str, from:&str, from_tx:mpsc::Sender<String>,
+        origin:BrokerOrigin, retain:bool, principal:Option<&bus::native_session::BrokerPrincipal>,
+        registration:Option<&str>,
+    ) -> Result<PublishResult, PublishError> {
         if name.starts_with('$') {
             return Err(PublishError::ReservedName);
         }
@@ -782,6 +793,7 @@ impl SubscriptionBroker {
                 inner.headers.remove(*h);
             }
             stamp_broker_origin(&mut inner, origin);
+            if let Some(registration) = registration {inner.set("broker_registration", registration);}
             // Reserved event owners are authenticated by noded before this
             // publish path. Stamp their identity independently of the opaque
             // inner `from`; directed client messages cannot supply this header.

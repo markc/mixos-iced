@@ -174,15 +174,18 @@ impl App {
         settings: Settings,
         bus: Handle,
         bootstrap: appearance::settings::Prepared,
-        settings_ui: Ui<()>,
+        mut settings_ui: Ui<()>,
         selection: Selection,
     ) -> Self {
+        let frames = application::frames::Handle::new();
+        frames.set_live_generation(bus.settings_generation());
+        settings_ui.bind_frames(frames.clone());
         Self {
             settings,
             bus,
             bootstrap,
             settings_ui,
-            frames: application::frames::Handle::new(),
+            frames,
             launch_selection: selection.clone(),
             selection,
             snapshot: Snapshot::default(),

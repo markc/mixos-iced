@@ -1,5 +1,11 @@
 # settingsd contract changes
 
+## 0.1.3
+
+Include bounded runtime authority observation in the existing protected snapshot
+topic header. Replayed, restarted and unchanged operations do not acquire a new
+durable acceptance or presentation time.
+
 ## 0.1.2
 
 Add optional runtime commit observation outside the snapshot and durable
