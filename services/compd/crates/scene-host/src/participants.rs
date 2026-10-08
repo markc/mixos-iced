@@ -33,6 +33,11 @@ struct Association {
     last_request: Option<u64>,
 }
 
+struct Target {
+    window: Option<(u64, u64)>,
+    visibility: Visibility,
+}
+
 pub(crate) struct Participants {
     registry: participants::Registry,
     clock: Option<Clock>,
@@ -114,9 +119,9 @@ impl Participants {
         registration: String,
         value: Value,
         snapshot: frames::Snapshot,
-        window: Option<(u64, u64)>,
-        visibility: Visibility,
+        target: Target,
     ) {
+        let Target { window, visibility } = target;
         let Some(pid) = value["pid"].as_u64() else {
             return;
         };
@@ -332,16 +337,15 @@ impl Participants {
                 notice.registration,
                 notice.value,
                 snapshot,
-                Some((window.id, window.incarnation)),
-                visibility,
+                Target { window: Some((window.id, window.incarnation)), visibility },
             );
         }
         let local_keys: BTreeSet<_> = local_frames
             .iter()
             .map(|(scene, _, _, _)| format!("{}/{scene}", local_service.unwrap_or("")))
             .collect();
-        if let Some(service) = local_service {
-            if let Some(registration) = self.registrations.get(service).cloned() {
+        if let Some(service) = local_service
+            && let Some(registration) = self.registrations.get(service).cloned() {
                 for (scene, frame_owner, snapshot, shown) in local_frames {
                     let visibility = if inactive {
                         Visibility::InactiveSession
@@ -358,11 +362,9 @@ impl Participants {
                         registration.clone(),
                         value,
                         snapshot,
-                        None,
-                        visibility,
+                        Target { window: None, visibility },
                     );
                 }
-            }
         }
         let mut rows = Vec::new();
         for (key, owner) in &self.owners {

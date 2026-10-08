@@ -273,7 +273,10 @@ fn capture_palette($app,$snapshot,$label,$width,$sample_x)
   while time() < $deadline
     run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:10,env:$n.client_env($R.session,{})})
     $image=$pixels.ppm($path)
-    $inside=$pixels.pixel($image,round(($width-2)*$output.scale),round(400*$output.scale))
+    -- The actual Ced scrollbar occupies the rightmost pixels. Sample the
+    -- document base clear of it; the 32-pixel width step still puts this
+    -- point beyond the previous buffer, so stale pixels cannot pass.
+    $inside=$pixels.pixel($image,round(($width-16)*$output.scale),round(400*$output.scale))
     $outside=$pixels.pixel($image,round(($width+2)*$output.scale),round(400*$output.scale))
     $sample=$pixels.pixel($image,round($sample_x*$output.scale),round(400*$output.scale))
     $matches=abs($outside[0]-255) <= 3 and $outside[1] <= 3 and abs($outside[2]-255) <= 3
@@ -437,7 +440,7 @@ try
     simultaneously_alive()
     retained($round.label)
     $frames=observe_frames($round.label)
-    $width=1000+len($R.rounds)*2
+    $width=1000+len($R.rounds)*32
     $ced_palette=capture_palette($ced,$batch.snapshot,$round.label,$width,200)
     $editor_palette=capture_palette($editor,$batch.snapshot,$round.label,$width+1,5)
     $quoin_palette=quoin_capture($batch.snapshot,$round.label,"all-apps-control")
