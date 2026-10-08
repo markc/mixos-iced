@@ -93,7 +93,9 @@ fn product_retained($app,$before,$label)
   $after=stable_product($app)
   check(deep_eq($after,$before),$label .. " changed actual " .. $app.name .. " product state")
   if $app.name == "term" then
-    check(count_of(to_string($f.rpc($app.context,"term.snapshot",{})),"RECOVERY_PTY_SENTINEL") >= 2,"Retired actual PTY output")
+    $snapshot=$f.rpc($app.context,"term.snapshot",{})
+    write_file($app.context.root .. "/pty-snapshot-" .. $label .. ".json",json_encode($snapshot))
+    check(count_of(to_string($snapshot),"RECOVERY_PTY_SENTINEL") >= 2,"Retired actual PTY output")
   end
   write_file($app.context.root .. "/product-" .. $label .. ".json",json_encode($after))
 end
