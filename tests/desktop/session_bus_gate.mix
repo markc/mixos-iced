@@ -72,6 +72,9 @@ try
     check(not exists($unit_root .. $name),"Fixture unit exists")
   end
   mkdir($root,{parents:true})
+  mkdir($root .. "/runtime",{parents:true})
+  chmod($root .. "/runtime",0o700)
+  mkdir($root .. "/data",{parents:true})
   write_new($root .. "/profile.env","DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent-host-bus\nDBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent-system-bus\nDBUS_STARTER_ADDRESS=unix:path=/nonexistent-starter-bus\nDBUS_STARTER_BUS_TYPE=session\nXDG_RUNTIME_DIR=" .. $root .. "/runtime\nXDG_DATA_DIRS=" .. $root .. "/data\n",0o600)
   $source=read_file($repo .. "/session/units/session-dbus@.service")
   -- Sole fixture differences: root account, unique target/unit names, exact
