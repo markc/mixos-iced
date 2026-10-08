@@ -167,8 +167,10 @@ fn run(node: &str, directory: &Path) -> Result<()> {
     let c = expected(window, 3, [43, 173, 97, 255]);
     let d = expected(window, 4, [211, 127, 23, 255]);
     let e = expected(window, 5, [61, 109, 229, 255]);
-    let f = expected(window, 6, [157, 67, 199, 255]);
-    let g = expected(window, 7, [101, 233, 47, 255]);
+    let retired_resize = expected(window, 6, [89, 19, 139, 255]);
+    let f = expected(window, 7, [157, 67, 199, 255]);
+    let retired_release = expected(window, 8, [227, 53, 181, 255]);
+    let g = expected(window, 9, [101, 233, 47, 255]);
     surface.sync_depth(node, &ctx, &mut gles, 2)?;
     assert_eq!(surface.slot_count(), 2);
     draw(&mut surface, &ctx, &mut gles, &a, true)?;
@@ -213,6 +215,12 @@ fn run(node: &str, directory: &Path) -> Result<()> {
     complete(&mut surface, &ctx, &mut gles)?;
     inspect(&surface, &ctx, &mut gles, directory, "depth-one-fresh", &e)?;
     surface.sync_depth(node, &ctx, &mut gles, 3)?;
+    draw(&mut surface, &ctx, &mut gles, &retired_resize, true)?;
+    fresh(&directory.join("before-resize.json"), format!(
+        "{{\"pending\":{},\"published_slot\":{},\"target_slot\":{},\"generation\":{},\"submitted_epoch\":{}}}\n",
+        surface.has_pending(), surface.published_slot().unwrap(),
+        surface.target_slot().unwrap(), surface.generation(),
+        retired_resize.binding.stamp.activation_epoch).as_bytes())?;
     let old_texture = surface.gles_texture().unwrap().tex_id();
     surface.resize(node, &ctx, &mut gles, (9, 7).into())?;
     assert_eq!(surface.generation(), 0);
@@ -223,7 +231,7 @@ fn run(node: &str, directory: &Path) -> Result<()> {
     inspect(&surface, &ctx, &mut gles, directory, "resize-first-fresh", &f)?;
     // Retire with a real submitted frame, then require ensure's fresh target to
     // start without any old stamp or observer before it is drawn again.
-    draw(&mut surface, &ctx, &mut gles, &b, true)?;
+    draw(&mut surface, &ctx, &mut gles, &retired_release, true)?;
     make_current(&mut gles);
     surface.release();
     assert!(!surface.is_resident());
@@ -234,6 +242,11 @@ fn run(node: &str, directory: &Path) -> Result<()> {
     surface.sync_depth(node, &ctx, &mut gles, 3)?;
     assert_eq!(surface.generation(), 0);
     assert!(surface.published_presentation().is_none(), "ensure inherited retired binding");
+    // Drive all genuine outstanding queue callbacks before drawing the new
+    // binding: retired work cannot repopulate metadata in the replacement ring.
+    complete(&mut surface, &ctx, &mut gles)?;
+    assert_eq!(surface.generation(), 0);
+    assert!(surface.published_presentation().is_none(), "retired callback revived binding");
     draw(&mut surface, &ctx, &mut gles, &g, true)?;
     complete(&mut surface, &ctx, &mut gles)?;
     inspect(&surface, &ctx, &mut gles, directory, "ensure-first-fresh", &g)?;
