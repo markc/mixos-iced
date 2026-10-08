@@ -1,0 +1,84 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- Actual IME-v2 protocol grab must fence native world activation.
+-- The client releases its real protocol grab after one finite lifetime;
+-- test output is inspection evidence, never an application control path.
+if len(args()) != 2 then raise("ARGS","REPO BUILD_BIN_DIR") end
+$repo=args()[0]
+$bin=args()[1]
+$n=require("nested_host_lib.mix")
+$R={run:nil,bus:nil,session:nil,children:[],ok:false}
+fn check($condition,$message)
+  if not $condition then raise("IME_OWNER",$message) end
+end
+fn call($verb,$body)
+  return $n.call($R.session.service,$verb,$body)
+end
+fn rpc($verb,$body)
+  $reply=call($verb,$body)
+  check($reply.rc == 0,$verb .. ": " .. json_encode($reply))
+  return $reply.result
+end
+fn log_event($path,$needle)
+  for $attempt=1 to 1000
+    if is_file($path) and contains(read_file($path),$needle) then return end
+    sleep(0.02)
+  end
+  raise("IME_OWNER","Missing actual protocol receipt: " .. $needle)
+end
+try
+  $R.run=$n.new_run("/var/tmp/ime-world-ownership")
+  $root=$R.run.path
+  $R.bus=$n.private_bus({dir:$root,name:"ime-world-ownership",noded:$bin .. "/noded"})
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  -- Exercise production default-open manager authorisation. No production
+  -- restriction is bypassed; a configured restricted IME is a separate case.
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:false,decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"ime-world",run:$R.run,config:$root .. "/cfg/settings.json",host_renderer:"pixman",software:true,scale:1,env:{HOME:$root .. "/home"}})
+  check($n.wait_ready($R.session,30),"Owned compositor did not register")
+  rpc("comp.props.set",{path:"input.host.passthrough",value:false})
+  $initial=rpc("comp.world.list",{})
+  $other=rpc("comp.world.create",{}).id
+  $window_pid=spawn([$bin .. "/testkit-input-probe","--app-id","dev.mixos.IMEWorldOwner","--seconds","90"],{env:$n.client_env($R.session,{}),stdout:{file:$root .. "/window.log"},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$window_pid])
+  $window=rpc("comp.window.wait",{match:{app_id:"dev.mixos.IMEWorldOwner"},until:"presented",timeout_ms:15000}).window
+  check($window.pid == $window_pid,"Main window does not name owned client")
+  $target={id:$window.id,generation:$window.generation}
+  rpc("comp.window.focus",merge($target,{raise:true}))
+  $before=rpc("comp.world.list",{})
+  $log=$root .. "/ime.log"
+  $ime=spawn([$bin .. "/testkit-ime-probe","12000"],{env:$n.client_env($R.session,{}),stdout:{file:$log},stderr:"stdout",detach:true})
+  $R.children=concat($R.children,[$ime])
+  log_event($log,"ime_grab_ready pid=" .. to_string($ime) .. " seat=seat0")
+  check(not contains(read_file($log),"ime_grab_released"),"Actual grab expired before refusal admission")
+  check(rpc("comp.props.get",{path:"focus.pointer_grab"}) == "none","IME ownership case has a pointer grab")
+  $refused=call("comp.world.activate",{id:$other})
+  check($refused.rc >= 10 and $refused.result.error == "busy" and $refused.result.reason == "seat_owned","Actual IME keyboard owner did not refuse activation")
+  $held=rpc("comp.world.list",{})
+  check(deep_eq($before,$held) and $held.active == $initial.active and $held.spawn_target == $initial.spawn_target,"Refused activation changed native worlds/windows")
+  $live=rpc("comp.props.get",{path:"windows.s" .. to_string($window.id)})
+  check($live.pid == $window_pid and $live.generation == $window.generation and $live.visible,"Refused activation retired/reassigned the live client")
+  write_file($root .. "/held.json",json_encode({before:$before,after:$held,window:$live,refusal:$refused}))
+  log_event($log,"ime_grab_released pid=" .. to_string($ime) .. " seat=seat0")
+  $activated=rpc("comp.world.activate",{id:$other})
+  check($activated.changed and $activated.active == $other and $activated.spawn_target == $other,"World activation failed after real protocol release")
+  $returned=rpc("comp.world.activate",{id:$initial.active})
+  check($returned.changed,"Original world return was not real")
+  rpc("comp.window.wait",{match:$target,until:"presented",timeout_ms:10000})
+  $after=rpc("comp.world.list",{})
+  check(deep_eq($before,$after),"Protocol release and world return changed native owner/geometry")
+  write_file($root .. "/released.json",json_encode({activation:$activated,returned:$returned,worlds:$after}))
+  print("PASS actual input-method-v2 ownership: real human keyboard grab, pointer ungrabbed, activation refusal with unchanged owners, protocol release and native world return")
+  $R.ok=true
+catch $message
+  print("FAIL " .. $message)
+finally
+  if $R.session != nil then $n.stop($R.session,not $R.ok); $n.restore_env($R.session) end
+  for each $pid in reverse($R.children)
+    if process_alive($pid) then $n.stop_owned($pid) end
+  end
+  if $R.bus != nil then $n.restore_bus($R.bus) end
+  if $R.run != nil then $n.finish_run($R.run,$R.ok) end
+end
+if not $R.ok then exit(1) end
