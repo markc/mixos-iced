@@ -385,10 +385,21 @@ fn output_allocation_and_topology_fences_are_exact_read_only_leaves() {
     let output = snapshot.outputs.get_mut("o_dp_1").unwrap();
     output.instance = instance.clone();
     output.generation = 17;
-    assert_eq!(snapshot.select(&["outputs", "o_dp_1", "instance"]), Some(json!(instance)));
-    assert_eq!(snapshot.select(&["outputs", "o_dp_1", "generation"]), Some(json!(17)));
-    assert!(crate::observation::validate_set_request("outputs.o_dp_1.instance", &json!("replacement")).is_err());
-    assert!(crate::observation::validate_set_request("outputs.o_dp_1.generation", &json!(18)).is_err());
+    assert_eq!(
+        snapshot.select(&["outputs", "o_dp_1", "instance"]),
+        Some(json!(instance))
+    );
+    assert_eq!(
+        snapshot.select(&["outputs", "o_dp_1", "generation"]),
+        Some(json!(17))
+    );
+    assert!(
+        crate::observation::validate_set_request("outputs.o_dp_1.instance", &json!("replacement"))
+            .is_err()
+    );
+    assert!(
+        crate::observation::validate_set_request("outputs.o_dp_1.generation", &json!(18)).is_err()
+    );
 }
 
 #[test]

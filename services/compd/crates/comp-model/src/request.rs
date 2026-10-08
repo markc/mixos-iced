@@ -780,7 +780,9 @@ fn timeout_arg(
 pub fn parse_window_verb(verb: &str, args: &Value) -> Result<WindowVerb, ControlReply> {
     let empty = serde_json::Map::new();
     match verb {
-        "comp.output.scale" => Ok(WindowVerb::Op(WindowOp::OutputScale(crate::output_scale::parse(args)?))),
+        "comp.output.scale" => Ok(WindowVerb::Op(WindowOp::OutputScale(
+            crate::output_scale::parse(args)?,
+        ))),
         "comp.hardware.snapshot" => {
             args_object(args, &empty, &[])?;
             Ok(WindowVerb::Op(WindowOp::HardwareSnapshot))

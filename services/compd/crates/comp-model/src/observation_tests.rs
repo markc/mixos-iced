@@ -50,7 +50,10 @@ fn ingress_gate_admits_every_writable_leaf_family() {
             assert!(validate_set_request(&path, &value).is_ok());
         }
         for value in [json!(0), json!("true"), Value::Null] {
-            assert!(matches!(validate_set_request(&path, &value), Err(SetValidationError::InvalidValue { .. })));
+            assert!(matches!(
+                validate_set_request(&path, &value),
+                Err(SetValidationError::InvalidValue { .. })
+            ));
         }
     }
     assert!(validate_set_request("input.corners.enabled", &json!(true)).is_ok());
@@ -164,24 +167,74 @@ fn panel_request_refusals_name_the_offending_argument() {
     let base = json!({"output":"DP-1","edge":"left","surface":"quoin-panel-1"});
     let with = |extra: Value| {
         let mut args = base.clone();
-        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
         args
     };
     for (verb, args, field) in [
-        ("comp.panel.hold", with(json!({"holder":"typo","acquire":true})), "holder"),
-        ("comp.panel.hold", with(json!({"holder":"popup"})), "acquire"),
-        ("comp.panel.hold", with(json!({"holder":"popup","acquire":true,"mode":"hidden"})), "mode"),
-        ("comp.panel.hold", with(json!({"holder":"popup","acquire":true,"sticky":true})), "sticky"),
+        (
+            "comp.panel.hold",
+            with(json!({"holder":"typo","acquire":true})),
+            "holder",
+        ),
+        (
+            "comp.panel.hold",
+            with(json!({"holder":"popup"})),
+            "acquire",
+        ),
+        (
+            "comp.panel.hold",
+            with(json!({"holder":"popup","acquire":true,"mode":"hidden"})),
+            "mode",
+        ),
+        (
+            "comp.panel.hold",
+            with(json!({"holder":"popup","acquire":true,"sticky":true})),
+            "sticky",
+        ),
         ("comp.panel.mode", with(json!({"mode":"revealed"})), "mode"),
-        ("comp.panel.mode", with(json!({"mode":"hidden","edge":"middle"})), "edge"),
-        ("comp.panel.mode", with(json!({"mode":"hidden","surface":""})), "surface"),
-        ("comp.panel.mode", with(json!({"mode":"hidden","acquire":false})), "acquire"),
+        (
+            "comp.panel.mode",
+            with(json!({"mode":"hidden","edge":"middle"})),
+            "edge",
+        ),
+        (
+            "comp.panel.mode",
+            with(json!({"mode":"hidden","surface":""})),
+            "surface",
+        ),
+        (
+            "comp.panel.mode",
+            with(json!({"mode":"hidden","acquire":false})),
+            "acquire",
+        ),
         ("comp.panel.mode", json!([1]), "args"),
-        ("comp.panel.hold", with(json!({"output":7,"holder":"popup","acquire":true})), "output"),
-        ("comp.panel.hold", with(json!({"holder":"popup","acquire":"yes"})), "acquire"),
-        ("comp.panel.hold", with(json!({"holder":["popup"],"acquire":true})), "holder"),
-        ("comp.panel.mode", json!({"output":"DP-1","edge":"left","mode":"hidden"}), "surface"),
-        ("comp.panel.mode", json!({"output":"DP-1","surface":"s","mode":"hidden"}), "edge"),
+        (
+            "comp.panel.hold",
+            with(json!({"output":7,"holder":"popup","acquire":true})),
+            "output",
+        ),
+        (
+            "comp.panel.hold",
+            with(json!({"holder":"popup","acquire":"yes"})),
+            "acquire",
+        ),
+        (
+            "comp.panel.hold",
+            with(json!({"holder":["popup"],"acquire":true})),
+            "holder",
+        ),
+        (
+            "comp.panel.mode",
+            json!({"output":"DP-1","edge":"left","mode":"hidden"}),
+            "surface",
+        ),
+        (
+            "comp.panel.mode",
+            json!({"output":"DP-1","surface":"s","mode":"hidden"}),
+            "edge",
+        ),
     ] {
         let Err(reply) = PanelRequest::parse(verb, &args) else {
             panic!("{verb} {args} must be refused");
@@ -544,7 +597,11 @@ fn corner_hold_property_is_unknown() {
 #[test]
 fn event_sequence_exhaustion_offers_max_once_then_stops() {
     let mut seq = EventSeq::default();
-    assert_eq!((seq.next_seq(), seq.next_seq()), (Some(1), Some(2)), "starts at 1");
+    assert_eq!(
+        (seq.next_seq(), seq.next_seq()),
+        (Some(1), Some(2)),
+        "starts at 1"
+    );
     let mut seq = EventSeq::starting_after(u64::MAX - 1);
     assert_eq!(seq.next_seq(), Some(u64::MAX));
     assert_eq!(seq.next_seq(), None);
@@ -653,7 +710,10 @@ fn every_topic_body_carries_its_event_seq() {
     for (record, body) in records.iter().zip(bodies) {
         let wire = record.wire();
         assert_eq!(wire.body, body, "{}", record.topic_suffix());
-        assert_eq!(wire.get("event_seq"), Some(record.event_seq().to_string().as_str()));
+        assert_eq!(
+            wire.get("event_seq"),
+            Some(record.event_seq().to_string().as_str())
+        );
         assert_eq!(wire.get("command"), Some(record.topic_suffix()));
     }
 }
@@ -677,7 +737,10 @@ fn a_gap_names_its_last_lost_sequence_count_and_cause() {
     let wire = gap_message(FOCUS_TOPIC_SUFFIX, gap, 5);
     assert_eq!(wire.get("command"), Some("focus.changed"));
     assert_eq!(wire.get("event_seq"), Some("42"));
-    assert_eq!(wire.body, r#"{"cause":"outbox.overflow","gap":true,"lost_count":5}"#);
+    assert_eq!(
+        wire.body,
+        r#"{"cause":"outbox.overflow","gap":true,"lost_count":5}"#
+    );
 }
 
 #[test]
@@ -690,11 +753,29 @@ fn corner_values_apply_and_report_old_and_new() {
         (PropValue::U64(200), PropValue::U64(350))
     );
     assert_eq!(config.dwell_ms, 350);
-    assert!(publishes_prop_change("input.corners.dwell_ms", &PropValue::U64(200), &PropValue::U64(350)));
-    assert!(!publishes_prop_change("port.event_seq", &PropValue::U64(1), &PropValue::U64(2)));
-    assert!(!publishes_prop_change("dmabuf.accepted", &PropValue::U64(1), &PropValue::U64(2)));
-    assert_eq!(read_only_or_unknown("surfaces.s1.title"), SetValidationError::ReadOnly);
-    assert_eq!(read_only_or_unknown("nonsense"), SetValidationError::UnknownPath);
+    assert!(publishes_prop_change(
+        "input.corners.dwell_ms",
+        &PropValue::U64(200),
+        &PropValue::U64(350)
+    ));
+    assert!(!publishes_prop_change(
+        "port.event_seq",
+        &PropValue::U64(1),
+        &PropValue::U64(2)
+    ));
+    assert!(!publishes_prop_change(
+        "dmabuf.accepted",
+        &PropValue::U64(1),
+        &PropValue::U64(2)
+    ));
+    assert_eq!(
+        read_only_or_unknown("surfaces.s1.title"),
+        SetValidationError::ReadOnly
+    );
+    assert_eq!(
+        read_only_or_unknown("nonsense"),
+        SetValidationError::UnknownPath
+    );
     assert_eq!(
         Corner::ALL.map(Corner::summoned_edge),
         ["left", "top", "bottom", "right"]

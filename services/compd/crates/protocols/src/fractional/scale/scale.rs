@@ -1,7 +1,7 @@
-use std::time::Instant;
-use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 pub use crate::fractional::config::{DebounceCycle, FractionalScaleConfig};
 use crate::fractional::debounce::run_tick;
+use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use std::time::Instant;
 
 /// What a surface was last told. `scale` is the value the CLIENT currently holds;
 /// `idle` is how the surface was CLASSIFIED on the last pass. Keeping the two apart
@@ -16,7 +16,10 @@ pub struct Published {
 impl Published {
     /// Mapped but invisible on every pane: `1.0`, the protocol identity scale, so
     /// the client can release its hi-res buffers.
-    pub const IDLE: Self = Self { scale: 1.0, idle: true };
+    pub const IDLE: Self = Self {
+        scale: 1.0,
+        idle: true,
+    };
 
     /// Visible on at least one pane, at its sharpest pane's lattice scale.
     pub fn visible(scale: f64) -> Self {
@@ -59,7 +62,14 @@ impl Fractional {
 
     /// Debounce the pending batch; `true` means submit all of it now.
     pub fn tick(&mut self, pending: Option<u64>) -> bool {
-        let r = run_tick(&self.cfg, self.last_observed, self.cycle, self.armed, self.last_emit_at, pending);
+        let r = run_tick(
+            &self.cfg,
+            self.last_observed,
+            self.cycle,
+            self.armed,
+            self.last_emit_at,
+            pending,
+        );
         self.last_observed = r.last_observed;
         self.cycle = r.cycle;
         self.armed = r.armed;

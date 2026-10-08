@@ -1293,10 +1293,15 @@ fn world_activation_and_creation_obey_session_lock_but_listing_does_not_mutate()
 fn output_scale_uses_finite_native_mutation_and_session_lock_gate() {
     let args = json!({"output":"DP-1","instance":"00000000-0000-0000-0000-000000000001","generation":1,"scale":1.25});
     let op = comp_model::request::parse_window_verb("comp.output.scale", &args).unwrap();
-    let comp_model::request::WindowVerb::Op(op) = op else { panic!("scale must remain finite"); };
+    let comp_model::request::WindowVerb::Op(op) = op else {
+        panic!("scale must remain finite");
+    };
     assert!(matches!(&op, WindowOp::OutputScale(_)));
     assert!(super::locked_refusal(&op, true).is_some());
     assert!(super::locked_refusal(&op, false).is_none());
-    assert!(matches!(comp_model::request::classify("comp.output.scale", &args, false), Ok(comp_model::request::Request::Window(_))));
+    assert!(matches!(
+        comp_model::request::classify("comp.output.scale", &args, false),
+        Ok(comp_model::request::Request::Window(_))
+    ));
     assert!(comp_model::request::classify("comp.output.scale", &args, true).is_err());
 }

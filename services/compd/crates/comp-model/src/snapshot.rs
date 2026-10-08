@@ -857,9 +857,10 @@ impl OutputSnapshot {
     fn node_kind(&self, path: &[&str]) -> Option<SnapshotNodeKind> {
         match path {
             [] | ["usable"] => Some(SnapshotNodeKind::Object),
-            ["name" | "instance" | "generation" | "default" | "x" | "y" | "width" | "height" | "scale" | "refresh_mhz"] => {
-                Some(SnapshotNodeKind::Leaf)
-            }
+            [
+                "name" | "instance" | "generation" | "default" | "x" | "y" | "width" | "height"
+                | "scale" | "refresh_mhz",
+            ] => Some(SnapshotNodeKind::Leaf),
             ["usable", tail @ ..] => self.usable.node_kind(tail),
             ["presentation", tail @ ..] => serialised_node_kind(self.presentation.as_ref()?, tail),
             _ => None,
