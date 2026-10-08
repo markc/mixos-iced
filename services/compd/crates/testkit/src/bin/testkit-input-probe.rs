@@ -319,10 +319,18 @@ fn parse_colour(value: &str) -> Result<[u8; 3], String> {
 impl Options {
     /// A delay never holds the initial mapping or an unchanged-size configure.
     /// The bool selects the existing ACK-with-old-buffer commit policy.
-    fn commit_delay(&self, current: Option<(i32, i32)>, target: (i32, i32)) -> Option<(Duration, bool)> {
+    fn commit_delay(
+        &self,
+        current: Option<(i32, i32)>,
+        target: (i32, i32),
+    ) -> Option<(Duration, bool)> {
         let current = current?;
-        if current == target { return None; }
-        let (delay, commit_old) = self.delay_state_commit.map(|delay| (delay, false))
+        if current == target {
+            return None;
+        }
+        let (delay, commit_old) = self
+            .delay_state_commit
+            .map(|delay| (delay, false))
             .or_else(|| self.delay_size_commit.map(|delay| (delay, true)))?;
         ((delay.0, delay.1) == target).then_some((delay.2, commit_old))
     }
@@ -553,7 +561,10 @@ fn run() -> Result<(), String> {
             let resizing = current
                 .as_ref()
                 .is_none_or(|canvas| (canvas.width, canvas.height) != (width, height));
-            let delay = options.commit_delay(current.as_ref().map(|canvas| (canvas.width, canvas.height)), (width, height));
+            let delay = options.commit_delay(
+                current.as_ref().map(|canvas| (canvas.width, canvas.height)),
+                (width, height),
+            );
             if let Some((interval, commit_old)) = delay {
                 if delayed_commit.is_none() {
                     delayed_commit = Some((width, height, Instant::now() + interval));
@@ -563,7 +574,9 @@ fn run() -> Result<(), String> {
                         surface.commit();
                         say(&format!("deferred_commit {width} {height}"));
                     } else {
-                        queue.flush().map_err(|error| format!("flush held ACK failed: {error}"))?;
+                        queue
+                            .flush()
+                            .map_err(|error| format!("flush held ACK failed: {error}"))?;
                         say(&format!("state_ack_held {width} {height} serial={serial}"));
                     }
                 }
@@ -1073,19 +1086,60 @@ mod tests {
 
     #[test]
     fn delayed_state_commit_is_strict_and_only_holds_a_mapped_resize() {
-        let parse = |value: &str| parse_options(["--delay-state-commit".into(), value.into()].into_iter());
-        for value in ["0x600:1", "800x-1:1", "800x600:0", "800x600:60001", "800x600", "800:1", "800x600:bad"] {
+        let parse =
+            |value: &str| parse_options(["--delay-state-commit".into(), value.into()].into_iter());
+        for value in [
+            "0x600:1",
+            "800x-1:1",
+            "800x600:0",
+            "800x600:60001",
+            "800x600",
+            "800:1",
+            "800x600:bad",
+        ] {
             assert!(parse(value).is_err(), "{value}");
         }
         let options = parse("800x600:60000").unwrap();
-        assert_eq!(options.commit_delay(None, (800, 600)), None, "initial mapping must not stall");
-        assert_eq!(options.commit_delay(Some((800, 600)), (800, 600)), None, "same-size state changes are immediate");
+        assert_eq!(
+            options.commit_delay(None, (800, 600)),
+            None,
+            "initial mapping must not stall"
+        );
+        assert_eq!(
+            options.commit_delay(Some((800, 600)), (800, 600)),
+            None,
+            "same-size state changes are immediate"
+        );
         assert_eq!(options.commit_delay(Some((320, 240)), (640, 480)), None);
-        assert_eq!(options.commit_delay(Some((320, 240)), (800, 600)), Some((Duration::from_secs(60), false)), "held state must not commit the old buffer");
-        let legacy = parse_options(["--delay-size-commit".into(), "800x600:1000".into()].into_iter()).unwrap();
-        assert_eq!(legacy.commit_delay(Some((320, 240)), (800, 600)), Some((Duration::from_secs(1), true)));
-        for flags in [["--delay-size-commit", "--delay-state-commit"], ["--delay-state-commit", "--delay-size-commit"], ["--delay-state-commit", "--delay-state-commit"]] {
-            assert!(parse_options([flags[0].into(), "800x600:1".into(), flags[1].into(), "800x600:1".into()].into_iter()).is_err());
+        assert_eq!(
+            options.commit_delay(Some((320, 240)), (800, 600)),
+            Some((Duration::from_secs(60), false)),
+            "held state must not commit the old buffer"
+        );
+        let legacy =
+            parse_options(["--delay-size-commit".into(), "800x600:1000".into()].into_iter())
+                .unwrap();
+        assert_eq!(
+            legacy.commit_delay(Some((320, 240)), (800, 600)),
+            Some((Duration::from_secs(1), true))
+        );
+        for flags in [
+            ["--delay-size-commit", "--delay-state-commit"],
+            ["--delay-state-commit", "--delay-size-commit"],
+            ["--delay-state-commit", "--delay-state-commit"],
+        ] {
+            assert!(
+                parse_options(
+                    [
+                        flags[0].into(),
+                        "800x600:1".into(),
+                        flags[1].into(),
+                        "800x600:1".into()
+                    ]
+                    .into_iter()
+                )
+                .is_err()
+            );
         }
     }
 
