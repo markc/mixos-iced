@@ -193,6 +193,7 @@ fn compact_desktop()
   $compact_output_rows=comp("comp.props.get",{path:"outputs"})
   check(len(keys($compact_output_rows)) == 1,"Compact proof requires one native output")
   $compact_output=$compact_output_rows[keys($compact_output_rows)[0]]
+  write_file($R.run.path .. "/compact-output.json",json_encode($compact_output))
   check($compact_output.scale == 2.5 and $compact_output.width == 1536 and $compact_output.height == 864,"Actual compact logical output or scale differs")
   $compact_area=$compact_output.usable
   $compact_layouts=[]
@@ -530,6 +531,7 @@ try
   write_file($root .. "/cfg/preferences.json",json_encode({scene_host:true,scene_service:"all-apps-fallback",decorations_ssd:false}))
   $R.session=$n.start({bin:$bin .. "/compd",tag:"all-apps",run:$R.run,config:$root .. "/cfg/settings.json",
     host_renderer:"pixman",software:true,scale:$requested_scale,max_secs:900,
+    logical_size:(if $compact_mode then {width:1536,height:864} else nil end),
     width:(if $compact_mode then 1536 else 1280 end)*$requested_scale,height:(if $compact_mode then 864 else 800 end)*$requested_scale,
     env:merge(env_for($root .. "/compositor-home"),{COMPD_FRAME_TRACE:"1",COMPD_FRAME_TRACE_FILE:$root .. "/frame-trace.log",COMPD_FRAME_TRACE_LIMIT:"1000000"})})
   check($n.wait_ready($R.session,30),"Owned compositor did not register")

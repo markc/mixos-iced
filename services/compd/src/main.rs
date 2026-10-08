@@ -417,6 +417,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "backend-winit")]
         cli::Backend::Nested => {
+            nested::window::factory::factory::set_size(cli.nested_size);
             // `--scale` overrides the host window's scale for the nested output.
             nested::window::factory::factory::set_scale(cli::output_scale(
                 &cli,

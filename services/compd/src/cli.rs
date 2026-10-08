@@ -9,6 +9,7 @@
 //! | flag | compd |
 //! |---|---|
 //! | `--nested` | nested (winit) backend |
+//! | `--nested-size WIDTHxHEIGHT` | initial logical window size; requires explicit `--nested`; omitted preserves the backend default |
 //! | `--kms`, `kms-live` | KMS backend (`kms-live` is the subcommand spelling) |
 //! | (neither) | both compiled in: nested when `WAYLAND_DISPLAY`/`DISPLAY` is set, else KMS |
 //! | `--socket NAME` | the Wayland socket name (default: the next free `wayland-N`) |
@@ -54,10 +55,12 @@ pub struct Cli {
     /// `--scale`: the requested output scale, already range-checked and
     /// rounded to 1/120. `None` is the backend default ([`output_scale`]).
     pub scale: Option<f64>,
+    /// Explicit initial nested window size in logical output pixels.
+    pub nested_size: Option<(u32, u32)>,
 }
 
 const USAGE: &str = "usage: compd [--nested | --kms | kms-live] [--socket NAME] \
-[--device PATH] [--connector NAME] [--scale S] [--kms-confirm] [--config-file PATH] \
+[--device PATH] [--connector NAME] [--scale S] [--nested-size WIDTHxHEIGHT] [--kms-confirm] [--config-file PATH] \
 [--bus-service NAME] [--scene-service NAME] [--version] [--help]";
 
 fn refuse(msg: &str) -> ! {
@@ -121,6 +124,12 @@ pub fn parse_from(args: impl Iterator<Item = String>, version: &str) -> Cli {
                     Err(why) => refuse(&format!("--scale {v}: {why}")),
                 }
             }
+            "--nested-size" => {
+                let v = value("--nested-size");
+                cli.nested_size = Some(parse_nested_size(&v).unwrap_or_else(|why| {
+                    refuse(&format!("--nested-size {v}: {why}"))
+                }));
+            }
             "--kms-confirm" => {
                 // An opt-in human gate on a KMS takeover. compd never asks
                 // (agentic-first: unattended is the default), so it is a no-op.
@@ -153,7 +162,27 @@ pub fn parse_from(args: impl Iterator<Item = String>, version: &str) -> Cli {
     if cli.backend == Some(Backend::Nested) && (cli.device.is_some() || cli.connector.is_some()) {
         refuse("--device/--connector apply to the KMS backend, not --nested");
     }
+    if cli.nested_size.is_some() && cli.backend != Some(Backend::Nested) {
+        refuse("--nested-size requires explicit --nested");
+    }
     cli
+}
+
+/// Bounded logical dimensions; the largest supported scale must still fit
+/// signed compositor coordinates without saturating a floating-point cast.
+pub fn parse_nested_size(value: &str) -> Result<(u32, u32), &'static str> {
+    let (width, height) = value.split_once('x').ok_or("expected WIDTHxHEIGHT")?;
+    let dimension = |part: &str| {
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err("dimensions must be positive decimal integers");
+        }
+        let number: u32 = part.parse().map_err(|_| "dimension overflow")?;
+        if number == 0 || number > (i32::MAX as u32) / 4 {
+            return Err("dimension outside supported coordinate range");
+        }
+        Ok(number)
+    };
+    Ok((dimension(width)?, dimension(height)?))
 }
 
 /// The smallest and largest output scale compd accepts.
@@ -234,6 +263,16 @@ mod tests {
         let c = p(&["--nested", "--socket", "wayland-77"]);
         assert_eq!(c.backend, Some(Backend::Nested));
         assert_eq!(c.socket.as_deref(), Some("wayland-77"));
+    }
+
+    #[test]
+    fn nested_size_is_explicit_bounded_and_accepts_both_flag_forms() {
+        assert_eq!(p(&["--nested", "--nested-size", "1536x864"]).nested_size, Some((1536, 864)));
+        assert_eq!(p(&["--nested-size=420x240", "--nested"]).nested_size, Some((420, 240)));
+        assert_eq!(p(&["--nested"]).nested_size, None);
+        for bad in ["", "0x1", "1x0", "-1x2", "+1x2", "1.5x2", "1X2", "1x2x3", "4294967296x2", "536870912x2"] {
+            assert!(parse_nested_size(bad).is_err(), "accepted {bad}");
+        }
     }
 
     #[test]

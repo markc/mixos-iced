@@ -67,6 +67,13 @@ Nested, inside another Wayland session:
 compd --nested --socket wayland-compd --config-file=settings.json
 ```
 
+`--nested-size WIDTHxHEIGHT` requests the initial nested window size in logical
+output pixels and requires explicit `--nested`. For example,
+`--nested-size 1536x864 --scale 2.5` requests a 3840×2160 physical window.
+The host may constrain the real window; query the actual output rather than
+assuming the request was honoured. Omitting the size preserves the existing
+backend default. This option does not apply to KMS outputs.
+
 On a VT, through the seat (libseat/seatd):
 
 ```

@@ -11,6 +11,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// as `f64` bits; 0 = none, follow the host window's scale factor. One value
 /// for the process (per-output scale is a later step).
 static SCALE: AtomicU64 = AtomicU64::new(0);
+// Both dimensions are positive, so zero unambiguously means the old default.
+static SIZE: AtomicU64 = AtomicU64::new(0);
+
+/// Set the initial logical window size before constructing the backend.
+pub fn set_size(size: Option<(u32, u32)>) {
+    SIZE.store(size.map_or(0, |(width, height)| (u64::from(width) << 32) | u64::from(height)), Ordering::Relaxed);
+}
+
+fn physical_size(size: (u32, u32), scale: f64) -> (u32, u32) {
+    ((f64::from(size.0) * scale).round() as u32, (f64::from(size.1) * scale).round() as u32)
+}
 
 /// Set (or clear) the nested output scale. Call before `wire`; a value that is
 /// not finite and positive clears it.
@@ -38,19 +49,32 @@ pub struct WinitWindow {
 pub fn create() -> Result<WinitWindow, String> {
     info!("Init winit backend");
 
-    // With compd's `--scale S` the window asks for 1280x800 × S PHYSICAL px, so
-    // the nested output is the same 1280x800 LOGICAL at any S and a gate's
+    // With compd's `--scale S` the window asks for the requested logical size
+    // (1280x800 by default) × S PHYSICAL px, so a gate's
     // coordinates mean what they mean at 1.0. The host
     // must have room for it (the gates run a 3840x2160 host at S != 1).
-    // Without it, smithay's default: 1280x800 in the host's logical px.
-    let (backend, winit) = match SCALE.load(Ordering::Relaxed) {
-        0 => WinitBackend::init::<GlesRenderer>(),
-        bits => {
-            use smithay::reexports::winit::{dpi::PhysicalSize, window::WindowAttributes};
-            let s = f64::from_bits(bits);
+    // Without either override, preserve smithay's default; an explicit size
+    // without --scale uses the host's logical pixels.
+    let packed_size = SIZE.load(Ordering::Relaxed);
+    let requested_size = (packed_size != 0).then_some(((packed_size >> 32) as u32, packed_size as u32));
+    let (backend, winit) = match (SCALE.load(Ordering::Relaxed), requested_size) {
+        (0, None) => WinitBackend::init::<GlesRenderer>(),
+        (0, Some((width, height))) => {
+            use smithay::reexports::winit::{dpi::LogicalSize, window::WindowAttributes};
             WinitBackend::init_from_attributes::<GlesRenderer>(
                 WindowAttributes::default()
-                    .with_surface_size(PhysicalSize::new((1280.0 * s).round() as u32, (800.0 * s).round() as u32))
+                    .with_surface_size(LogicalSize::new(width, height))
+                    .with_title("Smithay")
+                    .with_visible(true),
+            )
+        }
+        (bits, size) => {
+            use smithay::reexports::winit::{dpi::PhysicalSize, window::WindowAttributes};
+            let s = f64::from_bits(bits);
+            let (width, height) = physical_size(size.unwrap_or((1280, 800)), s);
+            WinitBackend::init_from_attributes::<GlesRenderer>(
+                WindowAttributes::default()
+                    .with_surface_size(PhysicalSize::new(width, height))
                     .with_title("Smithay")
                     .with_visible(true),
             )
@@ -107,4 +131,16 @@ pub fn create() -> Result<WinitWindow, String> {
         winit_backend: backend,
         winit_loop: winit,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::physical_size;
+
+    #[test]
+    fn requested_logical_size_scales_the_real_window_pixels() {
+        assert_eq!(physical_size((1536, 864), 2.5), (3840, 2160));
+        assert_eq!(physical_size((1280, 800), 1.25), (1600, 1000));
+        assert_eq!(physical_size((421, 241), 1.5), (632, 362));
+    }
 }

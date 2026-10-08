@@ -707,6 +707,7 @@ fn start($opts)
   $cenv["MIXOS_VAR"] = $run .. "/var"
   $argv = [$bin, "--nested", "--socket", $socket, "--bus-service", $service, "--config-file=" .. $opts["config"]]
   if $opts.scale != nil then push($argv, "--scale=" .. to_string($opts.scale)) end
+  if $opts.logical_size != nil then push($argv, "--nested-size=" .. to_string($opts.logical_size.width) .. "x" .. to_string($opts.logical_size.height)) end
   $cp = spawn($argv, {env: $cenv, stdout: {file: $log}, stderr: "stdout", detach: true})
   $pids = [$cp, $hp]
   if $dbus_pid != nil then
