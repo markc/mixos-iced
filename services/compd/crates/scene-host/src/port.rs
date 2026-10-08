@@ -1252,8 +1252,8 @@ fn decode_registrations(value: &Value) -> Option<BTreeMap<String, String>> {
         if service.is_empty() || service.len() > 256 || !services.insert(service) {
             return None;
         }
-        // Legacy registrations have no broker incarnation. They cannot supply
-        // participant proof, but must not erase unrelated verified owners.
+        // Entries without a broker incarnation cannot supply participant proof,
+        // but must not erase unrelated verified owners.
         let incarnation = row.get("incarnation")?;
         if incarnation.is_null() {
             continue;
