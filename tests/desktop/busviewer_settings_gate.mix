@@ -150,12 +150,16 @@ try
   check(len($editor.records) == 1 and $editor.aliases[0].status == "found","Actual body editor layout unavailable: " .. json_encode($editor))
   $bounds=$editor.records[0].visible_bounds
   check($bounds != nil and $bounds[2] > 20 and $bounds[3] > 20,"Body editor not visibly editable")
-  comp("comp.window.focus",$viewer.window)
-  comp("comp.input.pointer.move",{seat:"human",window:$viewer.window,x:$bounds[0]+10,y:$bounds[1]+10,corners:false})
-  comp("comp.input.pointer.button",{seat:"human",button:"left",action:"press"})
-  comp("comp.input.pointer.button",{seat:"human",button:"left",action:"release"})
-  comp("comp.input.key",{seat:"human",key:"a",modifiers:["ctrl"]})
-  comp("comp.input.key",{seat:"human",text:'{"unfinished":true}'})
+  $focus=comp("comp.window.focus",$viewer.window)
+  check($focus.focused == true,"Native window focus refused: " .. json_encode($focus))
+  $move=comp("comp.input.pointer.move",{seat:"human",window:$viewer.window,x:$bounds[0]+10,y:$bounds[1]+10,corners:false})
+  $press=comp("comp.input.pointer.button",{seat:"human",window:$viewer.window,button:"left",action:"press"})
+  $release=comp("comp.input.pointer.button",{seat:"human",window:$viewer.window,button:"left",action:"release"})
+  $select=comp("comp.input.key",{seat:"human",window:$viewer.window,key:"a",modifiers:["ctrl"]})
+  $typed=comp("comp.input.key",{seat:"human",window:$viewer.window,text:'{"unfinished":true}'})
+  $input={focus:$focus,move:$move,press:$press,release:$release,select:$select,typed:$typed}
+  write_file($root .. "/input-editor.json",json_encode($input))
+  check(deep_eq($typed.target,$viewer.window) and $typed.completed_events > 0,"Native text reached the wrong target: " .. json_encode($input))
   $deadline=time()+3
   while app("busviewer.info",{}).body != '{"unfinished":true}' and time() < $deadline
     sleep(0.02)
@@ -164,7 +168,7 @@ try
   write_file($root .. "/product-edited.json",json_encode($product))
   check($product.selection != nil and $product.body == '{"unfinished":true}' and $product.reply.rc == 0 and
     $product.reply.service == $service and $product.reply.verb == "busviewer.ping" and $product.reply.transport_error == nil,
-    "Native edits or the actual successful call were not retained: " .. json_encode($product))
+    "Native edits or the actual successful call were not retained: " .. json_encode({product:$product,input:$input}))
   $reference=hold($identity,"theme-held")
   $waiting=async_wait("barrier.wait",$reference,"theme-reached")
   $changed=apply($snapshot,"viewer-native-dark",{"appearance.mode":"dark","ui.text_scale":1.25})
