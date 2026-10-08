@@ -98,6 +98,12 @@ impl Publisher {
         }));
     }
     pub(super) async fn drive(&mut self) {
+        // Offline bridges have no publication work. Keep their metadata/source
+        // watches intact for a later connect, but do not manufacture Lane
+        // progress from an observation that cannot reach a native subscriber.
+        if self.client.is_none() {
+            std::future::pending::<()>().await;
+        }
         loop {
             self.stage();
             tokio::select! {

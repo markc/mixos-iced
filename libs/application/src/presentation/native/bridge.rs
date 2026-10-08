@@ -194,7 +194,7 @@ impl<T: Send + 'static, C: Send + Sync + 'static> Lane<T, C> {
     /// publication of its completion. A closed UI watch is reported only once.
     pub async fn drive(&mut self) -> Progress {
         tokio::select! {
-            () = self.observation.drive() => Progress::Updated,
+            biased;
             changed = self.jobs.changed(), if self.jobs_open => {
                 if changed.is_err() {
                     self.jobs_open = false;
@@ -210,6 +210,7 @@ impl<T: Send + 'static, C: Send + Sync + 'static> Lane<T, C> {
                     Progress::Updated
                 }
             }
+            () = self.observation.drive() => Progress::Updated,
         }
     }
 

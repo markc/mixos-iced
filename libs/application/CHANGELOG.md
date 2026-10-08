@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.27
+
+- Keep offline observation watches dormant until native connection, preserving
+  resource completion, wake and UI retirement causality on the existing lane.
+
 ## 0.1.26
 
 - Mint immutable bounded frame Handle ownership before its first callback so
