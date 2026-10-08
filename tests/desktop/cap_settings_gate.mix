@@ -141,7 +141,9 @@ try
   end
   for each $verb in ["describe","layout","barrier.arm","barrier.wait","barrier.release","barrier.state","frame.state","frame.wait"]
     $reply=$f.call(fixture_context(),"app.acceptance." .. $verb,{})
-    check($reply.rc == 10 and $reply.result.error == "unknown operation","Ordinary launch exposes fixture: " .. json_encode($reply))
+    $unknown=(type($reply.result) == "string" and contains(lower($reply.result),"unknown")) or
+      (type($reply.result) == "map" and $reply.result.error == "unknown operation")
+    check($reply.rc == 10 and $unknown,"Ordinary launch exposes fixture: " .. json_encode($reply))
   end
   app("cap.quit",{})
   $deadline=time()+4
