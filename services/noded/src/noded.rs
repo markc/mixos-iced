@@ -7764,7 +7764,10 @@ mod tests {
                 if value["path"] != "services.incarnations" {
                     continue;
                 }
-                assert_eq!(event.from, "noded", "live registry events identify the owning broker");
+                assert_eq!(
+                    event.from, "noded",
+                    "live registry events identify the owning broker"
+                );
                 assert_eq!(event.header("broker_service"), Some("noded"));
                 assert_eq!(event.header("broker_origin"), Some("local"));
                 if value["new"].as_array().is_some_and(|rows| {
