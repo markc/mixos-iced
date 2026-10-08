@@ -20,6 +20,15 @@ $service="dopus-settings"
 fn check($condition,$message)
   if not $condition then raise("DOPUS_SETTINGS_GATE",$message) end
 end
+fn stable_geometry($row)
+  -- Real presentation counters and timings keep advancing while native frames
+  -- are consumed. Preserve every owner, placement and visibility field.
+  $stable={}
+  for each $key in keys($row)
+    if $key != "presentation" then $stable[$key]=$row[$key] end
+  end
+  return $stable
+end
 fn fixture_context()
   return {mix:$mix,bus:$R.bus,root:$R.run.path,service:$service}
 end
@@ -284,9 +293,13 @@ fn verify_pixels($label,$owner,$identity,$target,$snapshot,$expanded,$back,$forw
   $after=app("app.describe",{})
   $after_layout=fixture("layout",$query)
   $after_geometry=comp("comp.props.get",{path:"windows.s" .. to_string($owner.window.id)})
+  $after_frame=fixture("frame.state",$identity)
+  write_file($R.run.path .. "/stability-" .. $label .. ".json",json_encode({
+    before:$before,after:$after,layout:$layout,after_layout:$after_layout,
+    geometry:$geometry,after_geometry:$after_geometry,target:$target,after_frame:$after_frame}))
   check($after.pid == $owner.pid and deep_eq($before.settings.applied,$after.settings.applied) and deep_eq($before.resources,$after.resources) and
-    deep_eq(fixture("frame.state",$identity).target,$target) and deep_eq($layout,$after_layout) and
-    deep_eq($geometry,$after_geometry),"Owner/settings/layout changed across native raster proof")
+    deep_eq($after_frame.target,$target) and deep_eq($layout,$after_layout) and
+    deep_eq(stable_geometry($geometry),stable_geometry($after_geometry)),"Owner/settings/layout changed across native raster proof")
   write_file($R.run.path .. "/individual-icons-" .. $label .. ".json",json_encode({frame:$frame,
     owner:$owner,geometry:$geometry,layout:$layout,rows:$rows,settings:$before.settings.applied,
     resources:$before.resources,output:$output,product:$state,expanded:$expanded,
