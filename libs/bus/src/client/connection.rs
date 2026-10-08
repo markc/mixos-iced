@@ -55,15 +55,26 @@ impl ConnectionIncomingReceiver {
                         ));
                     }
                     crate::native_client::Delivery::Gap => {
-                        return Some(crate::native_client::BoundedIncomingEvent::Overflow { dropped: 1 });
+                        return Some(crate::native_client::BoundedIncomingEvent::Overflow {
+                            dropped: 1,
+                        });
                     }
                     crate::native_client::Delivery::Refuse => {
                         // The receive owner settles rejected requests; the
                         // socket reader must remain free to deliver RPC replies.
                         let command = delivery.command();
-                        if connection.client().respond_parts(&command.from, &command.command,
-                            command.id.as_deref(), crate::RC_ERROR,
-                            r#"{"error":"overloaded","error_code":"OVERLOADED"}"#).await.is_err() {
+                        if connection
+                            .client()
+                            .respond_parts(
+                                &command.from,
+                                &command.command,
+                                command.id.as_deref(),
+                                crate::RC_ERROR,
+                                r#"{"error":"overloaded","error_code":"OVERLOADED"}"#,
+                            )
+                            .await
+                            .is_err()
+                        {
                             return None;
                         }
                     }
@@ -104,21 +115,39 @@ impl Connection {
         if let Some(unix) = &options.unix {
             let mut unix = unix.clone();
             unix.incoming_capacity = options.capacity.or(unix.incoming_capacity);
-            let outcome = NodedClient::connect_unix_with_verbs(name, url, &unix,
-                options.provenance.clone(), options.verbs.clone()).await
-                .map_err(|error| match error {
-                    crate::native_client::ConnectError::Protocol(error) => ClientError::from_native(error),
-                    error => ClientError::from_native(error.into()),
-                })?;
+            let outcome = NodedClient::connect_unix_with_verbs(
+                name,
+                url,
+                &unix,
+                options.provenance.clone(),
+                options.verbs.clone(),
+            )
+            .await
+            .map_err(|error| match error {
+                crate::native_client::ConnectError::Protocol(error) => {
+                    ClientError::from_native(error)
+                }
+                error => ClientError::from_native(error.into()),
+            })?;
             return match outcome {
                 crate::native_client::UnixConnectOutcome::VerifiedUnix(connection) => {
                     let connection = std::sync::Arc::new(connection);
-                    Ok(Self { name: name.to_owned(), inner: Transport::Unix(connection.clone()),
-                        incoming: Mutex::new(Some(ConnectionIncomingReceiver::Unix(connection))) })
+                    Ok(Self {
+                        name: name.to_owned(),
+                        inner: Transport::Unix(connection.clone()),
+                        incoming: Mutex::new(Some(ConnectionIncomingReceiver::Unix(connection))),
+                    })
                 }
                 crate::native_client::UnixConnectOutcome::UnverifiedTcp { client, .. } => {
-                    let incoming = client.take_native_incoming().await.map(ConnectionIncomingReceiver::Tcp);
-                    Ok(Self { name: name.to_owned(), inner: Transport::Tcp(client), incoming: Mutex::new(incoming) })
+                    let incoming = client
+                        .take_native_incoming()
+                        .await
+                        .map(ConnectionIncomingReceiver::Tcp);
+                    Ok(Self {
+                        name: name.to_owned(),
+                        inner: Transport::Tcp(client),
+                        incoming: Mutex::new(incoming),
+                    })
                 }
             };
         }
@@ -131,7 +160,10 @@ impl Connection {
         )
         .await
         .map_err(ClientError::from_native)?;
-        let incoming = inner.take_native_incoming().await.map(ConnectionIncomingReceiver::Tcp);
+        let incoming = inner
+            .take_native_incoming()
+            .await
+            .map(ConnectionIncomingReceiver::Tcp);
         Ok(Self {
             name: name.to_owned(),
             inner: Transport::Tcp(inner),
@@ -150,9 +182,16 @@ impl Connection {
             .incoming
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if matches!(&*incoming, Some(ConnectionIncomingReceiver::Tcp(NativeIncomingReceiver::Unbounded(_)))) {
+        if matches!(
+            &*incoming,
+            Some(ConnectionIncomingReceiver::Tcp(
+                NativeIncomingReceiver::Unbounded(_)
+            ))
+        ) {
             match incoming.take() {
-                Some(ConnectionIncomingReceiver::Tcp(NativeIncomingReceiver::Unbounded(receiver))) => Some(receiver),
+                Some(ConnectionIncomingReceiver::Tcp(NativeIncomingReceiver::Unbounded(
+                    receiver,
+                ))) => Some(receiver),
                 _ => unreachable!("unbounded receiver checked under lock"),
             }
         } else {

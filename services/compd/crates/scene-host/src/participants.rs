@@ -337,7 +337,10 @@ impl Participants {
                 notice.registration,
                 notice.value,
                 snapshot,
-                Target { window: Some((window.id, window.incarnation)), visibility },
+                Target {
+                    window: Some((window.id, window.incarnation)),
+                    visibility,
+                },
             );
         }
         let local_keys: BTreeSet<_> = local_frames
@@ -345,26 +348,30 @@ impl Participants {
             .map(|(scene, _, _, _)| format!("{}/{scene}", local_service.unwrap_or("")))
             .collect();
         if let Some(service) = local_service
-            && let Some(registration) = self.registrations.get(service).cloned() {
-                for (scene, frame_owner, snapshot, shown) in local_frames {
-                    let visibility = if inactive {
-                        Visibility::InactiveSession
-                    } else if shown {
-                        Visibility::Visible
-                    } else {
-                        Visibility::Hidden
-                    };
-                    let mut value = local_value.clone();
-                    value["frame_owner_window"] = json!(frame_owner);
-                    self.install(
-                        format!("{service}/{scene}"),
-                        service.into(),
-                        registration.clone(),
-                        value,
-                        snapshot,
-                        Target { window: None, visibility },
-                    );
-                }
+            && let Some(registration) = self.registrations.get(service).cloned()
+        {
+            for (scene, frame_owner, snapshot, shown) in local_frames {
+                let visibility = if inactive {
+                    Visibility::InactiveSession
+                } else if shown {
+                    Visibility::Visible
+                } else {
+                    Visibility::Hidden
+                };
+                let mut value = local_value.clone();
+                value["frame_owner_window"] = json!(frame_owner);
+                self.install(
+                    format!("{service}/{scene}"),
+                    service.into(),
+                    registration.clone(),
+                    value,
+                    snapshot,
+                    Target {
+                        window: None,
+                        visibility,
+                    },
+                );
+            }
         }
         let mut rows = Vec::new();
         for (key, owner) in &self.owners {

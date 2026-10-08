@@ -286,9 +286,15 @@ impl NodedClient {
             Err(unix_error)
                 if !options.require_native_session && options.allow_unverified_tcp_fallback =>
             {
-                let client = Self::connect_with_provenance_and_capacity(service_name, tcp_url, provenance, options.incoming_capacity, verbs)
-                    .await
-                    .map_err(ConnectError::Protocol)?;
+                let client = Self::connect_with_provenance_and_capacity(
+                    service_name,
+                    tcp_url,
+                    provenance,
+                    options.incoming_capacity,
+                    verbs,
+                )
+                .await
+                .map_err(ConnectError::Protocol)?;
                 Ok(UnixConnectOutcome::UnverifiedTcp { client, unix_error })
             }
             Err(error) => Err(error),
@@ -342,13 +348,18 @@ async fn connect_verified(
     let (ws, _) = tokio_tungstenite::client_async("ws://localhost/ws", socket)
         .await
         .map_err(|error| ConnectError::Protocol(error.into()))?;
-    let (client, incoming) =
-        NodedClient::from_verified_unix(ws, service_name, provenance, options.incoming_capacity, verbs)
-            .await
-            .map_err(|error| match error.downcast::<ConnectError>() {
-                Ok(error) => error,
-                Err(error) => ConnectError::Protocol(error),
-            })?;
+    let (client, incoming) = NodedClient::from_verified_unix(
+        ws,
+        service_name,
+        provenance,
+        options.incoming_capacity,
+        verbs,
+    )
+    .await
+    .map_err(|error| match error.downcast::<ConnectError>() {
+        Ok(error) => error,
+        Err(error) => ConnectError::Protocol(error),
+    })?;
     Ok(VerifiedConnection {
         client,
         incoming: tokio::sync::Mutex::new(incoming),
