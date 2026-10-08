@@ -125,7 +125,8 @@ pub fn run(settings: Settings) -> Result<(), String> {
     #[cfg(feature = "acceptance")]
     let (fixture, initial_task) = crate::acceptance::setup()?;
     #[cfg(feature = "acceptance")]
-    let (bus, mut settings_ui, bootstrap, rx) = bus::start_fixture(&settings.service, &settings.url, fixture)?;
+    let (bus, mut settings_ui, bootstrap, rx) =
+        bus::start_fixture(&settings.service, &settings.url, fixture)?;
     #[cfg(not(feature = "acceptance"))]
     let (bus, mut settings_ui, bootstrap, rx) = bus::start(&settings.service, &settings.url)?;
     #[cfg(not(feature = "acceptance"))]
@@ -220,21 +221,33 @@ impl App {
             .expect("prepared typography role")
     }
     fn frame_binding(&self) -> Option<application::frames::FrameBinding> {
-        self.settings_ui.session().frame_stamp().map(|stamp| self.bus.frames.binding(stamp))
+        self.settings_ui
+            .session()
+            .frame_stamp()
+            .map(|stamp| self.bus.frames.binding(stamp))
     }
     fn publish_frame_target(&self) {
         #[cfg(feature = "acceptance")]
         if let (Some(endpoint), Some(window)) = (&self.bus.fixture_frames, self.window)
             && let Err(error) = endpoint.publish(application::acceptance::frames::Target {
-                window, stamp: self.settings_ui.session().frame_stamp(),
-            }) {
+                window,
+                stamp: self.settings_ui.session().frame_stamp(),
+            })
+        {
             eprintln!("busviewer: fixture frame target: {error}");
         }
     }
-    fn fixture_root<'a>(&self, content: Element<'a, Message, Theme>) -> Element<'a, Message, Theme> {
+    fn fixture_root<'a>(
+        &self,
+        content: Element<'a, Message, Theme>,
+    ) -> Element<'a, Message, Theme> {
         #[cfg(feature = "acceptance")]
         if self.bus.fixture_frames.is_some() {
-            return container(content).width(iced::Fill).height(iced::Fill).id(crate::acceptance::ROOT_ID).into();
+            return container(content)
+                .width(iced::Fill)
+                .height(iced::Fill)
+                .id(crate::acceptance::ROOT_ID)
+                .into();
         }
         content
     }
@@ -1142,23 +1155,25 @@ impl App {
             ]
         ]
         .spacing(gap);
-        self.fixture_root(toolkit::dialog::Modal::new(
-            base,
-            widget::opaque(
-                container(
-                    container(contents)
-                        .padding(t.metrics.spacing.lg)
-                        .width(t.metrics.spacing.xl * 22.0)
-                        .style(toolkit::theme::container::card),
-                )
-                .center(iced::Fill),
-            ),
+        self.fixture_root(
+            toolkit::dialog::Modal::new(
+                base,
+                widget::opaque(
+                    container(
+                        container(contents)
+                            .padding(t.metrics.spacing.lg)
+                            .width(t.metrics.spacing.xl * 22.0)
+                            .style(toolkit::theme::container::card),
+                    )
+                    .center(iced::Fill),
+                ),
+            )
+            .on_key(|key, _| {
+                (*key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape))
+                    .then_some(Message::Cancel)
+            })
+            .into(),
         )
-        .on_key(|key, _| {
-            (*key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape))
-                .then_some(Message::Cancel)
-        })
-        .into())
     }
 }
 

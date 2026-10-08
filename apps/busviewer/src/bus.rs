@@ -332,8 +332,23 @@ pub(crate) fn start_fixture(
     service: &str,
     url: &str,
     fixture: Option<application::acceptance::Fixture>,
-) -> Result<(Handle, Ui<()>, appearance::settings::Prepared, mpsc::Receiver<Delivery>), String> {
-    start_inner(service, url, 64, fixture, #[cfg(test)] None)
+) -> Result<
+    (
+        Handle,
+        Ui<()>,
+        appearance::settings::Prepared,
+        mpsc::Receiver<Delivery>,
+    ),
+    String,
+> {
+    start_inner(
+        service,
+        url,
+        64,
+        fixture,
+        #[cfg(test)]
+        None,
+    )
 }
 
 struct NativeSeed {
@@ -386,7 +401,9 @@ fn start_inner(
     let url = url.to_owned();
     let frames = application::frames::Handle::new();
     #[cfg(feature = "acceptance")]
-    let fixture_frames = fixture.as_ref().map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
+    let fixture_frames = fixture
+        .as_ref()
+        .map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
     let seed = NativeSeed {
         frames: frames.clone(),
         #[cfg(feature = "acceptance")]
@@ -404,15 +421,7 @@ fn start_inner(
                 .build();
             match runtime {
                 Ok(runtime) => {
-                    runtime.block_on(worker(
-                        service,
-                        url,
-                        send,
-                        rx,
-                        controls,
-                        ready_send,
-                        seed,
-                    ));
+                    runtime.block_on(worker(service, url, send, rx, controls, ready_send, seed));
                     runtime.shutdown_timeout(Duration::from_millis(100));
                 }
                 Err(error) => {
@@ -625,11 +634,21 @@ async fn worker(
     let build = move |_: &appearance::settings::Prepared, _snapshot: &settings::Snapshot| {
         #[cfg(feature = "acceptance")]
         if let Some(hook) = &prepare_hook {
-            let fault = |message| settings::Diagnostic::new("fixture_prepare_cancelled", "busviewer.prepare", message);
-            let observation = application::acceptance::barrier::Observation::try_new(format!("revision={}", _snapshot.revision.0))
-                .map_err(|error| fault(format!("{error:?}")))?;
-            if let Some(permit) = hook.reach("busviewer.prepare", observation).map_err(|error| fault(format!("{error:?}")))? {
-                permit.wait_blocking().map_err(|error| fault(format!("{error:?}")))?;
+            let fault = |message| {
+                settings::Diagnostic::new("fixture_prepare_cancelled", "busviewer.prepare", message)
+            };
+            let observation = application::acceptance::barrier::Observation::try_new(format!(
+                "revision={}",
+                _snapshot.revision.0
+            ))
+            .map_err(|error| fault(format!("{error:?}")))?;
+            if let Some(permit) = hook
+                .reach("busviewer.prepare", observation)
+                .map_err(|error| fault(format!("{error:?}")))?
+            {
+                permit
+                    .wait_blocking()
+                    .map_err(|error| fault(format!("{error:?}")))?;
             }
         }
         Ok(())
@@ -690,7 +709,9 @@ async fn worker(
             let live = settings::native::live_generation(&client);
             frames.set_live_generation(live);
             #[cfg(feature = "acceptance")]
-            if lifecycle.is_some() && let Some(fixture) = &fixture {
+            if lifecycle.is_some()
+                && let Some(fixture) = &fixture
+            {
                 fixture.close(application::acceptance::barrier::ClosedReason::LostGeneration);
             }
             lifecycle = Some((now, generation));
@@ -1011,15 +1032,38 @@ async fn worker(
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     frames.close();
     #[cfg(feature = "acceptance")]
-    if let Some(fixture) = &fixture { fixture.close(application::acceptance::barrier::ClosedReason::Shutdown); }
+    if let Some(fixture) = &fixture {
+        fixture.close(application::acceptance::barrier::ClosedReason::Shutdown);
+    }
     while !fixture_waits.is_empty() {
-        match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), fixture_waits.join_next()).await {
-            Ok(Some(result)) => reap("fixture wait", result, &mut faults, |value, faults| { if let Err(error) = value { faults.push(error); } }),
+        match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            fixture_waits.join_next(),
+        )
+        .await
+        {
+            Ok(Some(result)) => reap("fixture wait", result, &mut faults, |value, faults| {
+                if let Err(error) = value {
+                    faults.push(error);
+                }
+            }),
             Ok(None) => break,
-            Err(_) => { faults.push("fixture wait drain timed out; delivery unconfirmed".into()); break; }
+            Err(_) => {
+                faults.push("fixture wait drain timed out; delivery unconfirmed".into());
+                break;
+            }
         }
     }
-    cancel("fixture wait", fixture_waits, &mut faults, |value, faults| { if let Err(error) = value { faults.push(error); } });
+    cancel(
+        "fixture wait",
+        fixture_waits,
+        &mut faults,
+        |value, faults| {
+            if let Err(error) = value {
+                faults.push(error);
+            }
+        },
+    );
     effects.close();
     while let Ok(Effect::Call(_, _, _, reply, permit, _, _)) = effects.try_recv() {
         let _ = reply.send(Err(CallError::not_sent(
@@ -1229,15 +1273,28 @@ mod tests {
         use application::acceptance::{Fixture, Launch, frames::Target};
         let broker = term_test_broker::Broker::start();
         let (fixture, _bootstrap_task) = Fixture::new::<crate::app::Message>(
-            Launch { run: "viewer-owned".into(), instance: 51 },
+            Launch {
+                run: "viewer-owned".into(),
+                instance: 51,
+            },
             crate::acceptance::POINTS,
-            vec![application::inspect::Target::new("root", application::iced::widget::Id::from(crate::acceptance::ROOT_ID))],
+            vec![application::inspect::Target::new(
+                "root",
+                application::iced::widget::Id::from(crate::acceptance::ROOT_ID),
+            )],
             application::inspect::Limits::new(),
-        ).unwrap();
+        )
+        .unwrap();
         let (probe, mut observation) = tokio::sync::watch::channel(ActorProbe::default());
-        let (handle, mut ui, _bootstrap, mut events) = start_inner("actor-viewer", &broker.url, 64, Some(fixture), Some(probe)).unwrap();
+        let (handle, mut ui, _bootstrap, mut events) =
+            start_inner("actor-viewer", &broker.url, 64, Some(fixture), Some(probe)).unwrap();
         struct Stop(Handle);
-        impl Drop for Stop { fn drop(&mut self) { self.0.quit(); self.0.wait_done().unwrap(); } }
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                self.0.quit();
+                self.0.wait_done().unwrap();
+            }
+        }
         let _stop = Stop(handle.clone());
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
             use application::iced::futures::StreamExt;
@@ -1699,9 +1756,15 @@ mod tests {
             .unwrap();
         runtime.block_on(async {
             let (probe, mut observation) = tokio::sync::watch::channel(ActorProbe::default());
-            let (handle, _ui, _bootstrap, mut events) =
-                start_inner("actor-viewer", &broker.url, gui_capacity,
-                    #[cfg(feature = "acceptance")] None, Some(probe)).unwrap();
+            let (handle, _ui, _bootstrap, mut events) = start_inner(
+                "actor-viewer",
+                &broker.url,
+                gui_capacity,
+                #[cfg(feature = "acceptance")]
+                None,
+                Some(probe),
+            )
+            .unwrap();
             struct Stop(Handle);
             impl Drop for Stop {
                 fn drop(&mut self) {

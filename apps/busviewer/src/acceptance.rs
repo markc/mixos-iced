@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The shared fixture on BusViewer's existing GUI and Bus workers.
-use application::{acceptance, iced::{Task, widget}, inspect};
+use application::{
+    acceptance,
+    iced::{Task, widget},
+    inspect,
+};
 
 pub const ROOT_ID: &str = "busviewer.fixture.root";
 pub const POINTS: &[&str] = &["busviewer.prepare"];
@@ -10,7 +14,8 @@ pub(crate) fn setup() -> Result<(Option<acceptance::Fixture>, Task<crate::app::M
         return Ok((None, Task::none()));
     };
     let (fixture, task) = acceptance::Fixture::new(
-        launch, POINTS,
+        launch,
+        POINTS,
         vec![inspect::Target::new("root", widget::Id::from(ROOT_ID))],
         inspect::Limits::new(),
     )?;
