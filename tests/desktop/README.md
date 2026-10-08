@@ -198,18 +198,21 @@ is needed:
 mix tests/desktop/settings_app_resource_stale_gate.mix /path/to/mixos /path/to/candidate/bin
 ```
 
-The shared asset helper stages an owned v2 test package from checked-in real
-Inter, Noto Sans, JetBrains Mono and all 35 Dopus Lucide SVGs. Each payload is
-locked with its exact byte count, SHA-256 and BLAKE3. A native XDG asset root
-selects this package; the gate must obtain its exact non-null set/manifest
-identity and real text/icon source digests from the actual GUI before testing
-failure. Each text record must select its expected declared family/face and
-locked font digest without substituting its requested weight. Each named icon
-must match the locked style, symbolic descriptor and exact SVG source digest;
-Dopus must report all 35 required names. The package receipt retains the
-complete manifest and file table for this comparison. This helper supplies reader fixtures, not a production installation
-path; the production installer currently accepts only v1 manifests. Successful
-source/hash preparation alone is not evidence of native reader acceptance.
+The shared asset helper invokes the candidate Mix's native
+`share/assets/install.mix --root OWNED_ROOT --manifest share/assets/core.conf.mix`,
+then `--verify`. Installation may fetch the immutable manifest's approved
+payloads; failures stop the gate. A native XDG asset root selects this complete
+core package. The actual GUI must report its exact non-null set/manifest and
+selected source identities before failure tests. Each text record must select
+its expected declared family/face and locked font digest without substituting
+the requested weight. Each icon must match the real Material Symbols catalogue
+name, glyph, family, default style/weight and locked icon-font source digest;
+its asset descriptor must be absent. Dopus must report all 35 required names.
+The package receipt retains the complete manifest/file table and the actual
+installed catalogue's required glyphs. Installer verification alone is not
+evidence that a GUI selected those sources. The strict owned SVG decoder is
+unchanged; bundled indirect-painting Lucide SVGs are not used as accepted
+resource fixtures.
 
 Both rejected resource references are structurally valid authority mutations.
 The absent set must report the actual unavailable-set diagnostic; a wrong

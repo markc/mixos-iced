@@ -113,7 +113,7 @@ end
 try
   $R.run=$n.new_run("/var/tmp/settings-app-resource-stale")
   $root=$R.run.path
-  $R.package=$assets.prepare($repo,$root .. "/fixture-data")
+  $R.package=$assets.prepare($repo,$root .. "/fixture-data",$mix)
   mkdir($root .. "/empty-data",{parents:true})
   mkdir($root .. "/owned-share",{parents:true})
   $R.desktop=$n.private_bus({dir:$root .. "/desktop",name:"failure-desktop",noded:$bin .. "/noded"})
