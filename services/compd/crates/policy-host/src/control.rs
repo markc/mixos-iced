@@ -419,104 +419,6 @@ fn apply_output_scale(
     Ok(changed)
 }
 
-#[cfg(test)]
-mod output_scale_tests {
-    use super::*;
-    use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
-    use smithay::utils::Transform;
-    #[test]
-    fn actual_same_name_geometry_replacement_gets_fresh_identity() {
-        let make = || {
-            let output = Output::new(
-                "DP-1".into(),
-                PhysicalProperties {
-                    size: (0, 0).into(),
-                    subpixel: Subpixel::Unknown,
-                    make: "fixture".into(),
-                    model: "fixture".into(),
-                    serial_number: String::new(),
-                },
-            );
-            output.change_current_state(
-                Some(Mode {
-                    size: (1600, 1000).into(),
-                    refresh: 75_000,
-                }),
-                Some(Transform::Normal),
-                Some(Scale::Integer(1)),
-                Some((40, 20).into()),
-            );
-            output
-        };
-        let original = make();
-        let instance = output_instance(&original);
-        assert_eq!(output_instance(&original.clone()), instance);
-        let replacement = make();
-        let replacement_instance = output_instance(&replacement);
-        assert_ne!(replacement_instance, instance);
-        assert_eq!(original.name(), replacement.name());
-        assert_eq!(original.current_mode(), replacement.current_mode());
-        assert_eq!(original.current_location(), replacement.current_location());
-        let stale = comp_model::output_scale::ScaleSpec {
-            output: original.name(),
-            instance,
-            generation: 3,
-            scale: 1.25,
-        };
-        assert!(apply_output_scale(&replacement, &stale, replacement_instance, 3, true).is_err());
-        assert_eq!(replacement.current_scale().fractional_scale(), 1.0);
-        assert_eq!(output_instance(&original), instance);
-        assert_eq!(output_instance(&replacement), replacement_instance);
-    }
-    #[test]
-    fn actual_output_mutation_preserves_mode_and_refusals_are_inert() {
-        let output = Output::new(
-            "DP-1".into(),
-            PhysicalProperties {
-                size: (0, 0).into(),
-                subpixel: Subpixel::Unknown,
-                make: "fixture".into(),
-                model: "fixture".into(),
-                serial_number: String::new(),
-            },
-        );
-        let mode = Mode {
-            size: (1600, 1000).into(),
-            refresh: 75_000,
-        };
-        output.change_current_state(
-            Some(mode),
-            Some(Transform::_180),
-            Some(Scale::Integer(1)),
-            Some((40, 20).into()),
-        );
-        let instance = uuid::Uuid::now_v7();
-        let spec = comp_model::output_scale::ScaleSpec {
-            output: output.name(),
-            instance,
-            generation: 3,
-            scale: 1.25,
-        };
-        assert!(apply_output_scale(&output, &spec, instance, 3, true).unwrap());
-        assert_eq!(output.current_scale().fractional_scale(), 1.25);
-        assert_eq!(output.current_mode(), Some(mode));
-        assert_eq!(output.current_transform(), Transform::_180);
-        assert_eq!(output.current_location(), (40, 20).into());
-        let mut change = spec.clone();
-        change.scale = 2.0;
-        for (identity, generation, available) in [
-            (uuid::Uuid::now_v7(), 3, true),
-            (instance, 4, true),
-            (instance, 3, false),
-        ] {
-            assert!(apply_output_scale(&output, &change, identity, generation, available).is_err());
-            assert_eq!(output.current_scale().fractional_scale(), 1.25);
-            assert_eq!(output.current_mode(), Some(mode));
-        }
-        assert!(!apply_output_scale(&output, &spec, instance, 3, true).unwrap());
-    }
-}
-
 /// `body` with `extra`'s keys added.
 fn merged(mut body: Value, extra: Value) -> Value {
     if let (Some(body), Value::Object(extra)) = (body.as_object_mut(), extra) {
@@ -2121,4 +2023,102 @@ pub fn owning_space<'a>(lp: &'a Loop, window: &Window) -> &'a smithay::desktop::
         .world_of_window(window)
         .map(|owner| &lp.inner.space_of(owner).state)
         .unwrap_or(&lp.inner.host_space().state)
+}
+
+#[cfg(test)]
+mod output_scale_tests {
+    use super::*;
+    use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
+    use smithay::utils::Transform;
+    #[test]
+    fn actual_same_name_geometry_replacement_gets_fresh_identity() {
+        let make = || {
+            let output = Output::new(
+                "DP-1".into(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "fixture".into(),
+                    model: "fixture".into(),
+                    serial_number: String::new(),
+                },
+            );
+            output.change_current_state(
+                Some(Mode {
+                    size: (1600, 1000).into(),
+                    refresh: 75_000,
+                }),
+                Some(Transform::Normal),
+                Some(Scale::Integer(1)),
+                Some((40, 20).into()),
+            );
+            output
+        };
+        let original = make();
+        let instance = output_instance(&original);
+        assert_eq!(output_instance(&original.clone()), instance);
+        let replacement = make();
+        let replacement_instance = output_instance(&replacement);
+        assert_ne!(replacement_instance, instance);
+        assert_eq!(original.name(), replacement.name());
+        assert_eq!(original.current_mode(), replacement.current_mode());
+        assert_eq!(original.current_location(), replacement.current_location());
+        let stale = comp_model::output_scale::ScaleSpec {
+            output: original.name(),
+            instance,
+            generation: 3,
+            scale: 1.25,
+        };
+        assert!(apply_output_scale(&replacement, &stale, replacement_instance, 3, true).is_err());
+        assert_eq!(replacement.current_scale().fractional_scale(), 1.0);
+        assert_eq!(output_instance(&original), instance);
+        assert_eq!(output_instance(&replacement), replacement_instance);
+    }
+    #[test]
+    fn actual_output_mutation_preserves_mode_and_refusals_are_inert() {
+        let output = Output::new(
+            "DP-1".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "fixture".into(),
+                model: "fixture".into(),
+                serial_number: String::new(),
+            },
+        );
+        let mode = Mode {
+            size: (1600, 1000).into(),
+            refresh: 75_000,
+        };
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::_180),
+            Some(Scale::Integer(1)),
+            Some((40, 20).into()),
+        );
+        let instance = uuid::Uuid::now_v7();
+        let spec = comp_model::output_scale::ScaleSpec {
+            output: output.name(),
+            instance,
+            generation: 3,
+            scale: 1.25,
+        };
+        assert!(apply_output_scale(&output, &spec, instance, 3, true).unwrap());
+        assert_eq!(output.current_scale().fractional_scale(), 1.25);
+        assert_eq!(output.current_mode(), Some(mode));
+        assert_eq!(output.current_transform(), Transform::_180);
+        assert_eq!(output.current_location(), (40, 20).into());
+        let mut change = spec.clone();
+        change.scale = 2.0;
+        for (identity, generation, available) in [
+            (uuid::Uuid::now_v7(), 3, true),
+            (instance, 4, true),
+            (instance, 3, false),
+        ] {
+            assert!(apply_output_scale(&output, &change, identity, generation, available).is_err());
+            assert_eq!(output.current_scale().fractional_scale(), 1.25);
+            assert_eq!(output.current_mode(), Some(mode));
+        }
+        assert!(!apply_output_scale(&output, &spec, instance, 3, true).unwrap());
+    }
 }
