@@ -256,25 +256,44 @@ fn fixture() -> CompSnapshot {
         },
         input: InputSnapshot {
             seats: Some(BTreeMap::from([
-                ("human", SeatSnapshot {
-                    name: HUMAN_SEAT_NAME,
-                    keyboard_focus: Some(SeatFocusSnapshot { id: 2, generation: 1 }),
-                    pointer_focus: Some(SeatFocusSnapshot { id: 2, generation: 1 }),
-                    pointer: Some(SeatPointerSnapshot { output: "DP-1".into(), x: 10.0, y: 20.0 }),
-                    last_input_us: Some(42),
-                }),
-                ("agent", SeatSnapshot {
-                    name: AGENT_SEAT_NAME,
-                    keyboard_focus: None,
-                    pointer_focus: None,
-                    pointer: None,
-                    last_input_us: None,
-                }),
+                (
+                    "human",
+                    SeatSnapshot {
+                        name: HUMAN_SEAT_NAME,
+                        keyboard_focus: Some(SeatFocusSnapshot {
+                            id: 2,
+                            generation: 1,
+                        }),
+                        pointer_focus: Some(SeatFocusSnapshot {
+                            id: 2,
+                            generation: 1,
+                        }),
+                        pointer: Some(SeatPointerSnapshot {
+                            output: "DP-1".into(),
+                            x: 10.0,
+                            y: 20.0,
+                        }),
+                        last_input_us: Some(42),
+                    },
+                ),
+                (
+                    "agent",
+                    SeatSnapshot {
+                        name: AGENT_SEAT_NAME,
+                        keyboard_focus: None,
+                        pointer_focus: None,
+                        pointer: None,
+                        last_input_us: None,
+                    },
+                ),
             ])),
             last_origin: Some("human"),
             // A read snapshot, with the volatile holder-plane counts.
             corners: CornersSnapshot {
-                enforced: Some(EdgeCounts { left: 1, ..EdgeCounts::default() }),
+                enforced: Some(EdgeCounts {
+                    left: 1,
+                    ..EdgeCounts::default()
+                }),
                 held: Some(EdgeCounts::default()),
                 ..CornersSnapshot::from(CornerConfig::default())
             },
@@ -414,33 +433,44 @@ fn mutable_descriptors_match_the_writable_leaves() {
 #[test]
 fn capability_leaf_reflects_holder_plane() {
     let snapshot = fixture();
-    assert_eq!(snapshot.select(&["input", "corners", "holders"]),
-        Some(json!(HOLDER_PLANE_AVAILABLE)));
+    assert_eq!(
+        snapshot.select(&["input", "corners", "holders"]),
+        Some(json!(HOLDER_PLANE_AVAILABLE))
+    );
     // Quoin goes command-driven on this leaf: it is true only because
     // holder tracking, the conceal timer, enforcement on a stalled shell,
     // disconnect cleanup and resynchronisation all exist (chunk 15).
-    assert_eq!(snapshot.select(&["input", "corners", "holders"]), Some(json!(true)));
+    assert_eq!(
+        snapshot.select(&["input", "corners", "holders"]),
+        Some(json!(true))
+    );
     // The enforcement and hold counts are read-only, volatile leaves.
-    assert_eq!(snapshot.select(&["input", "corners", "enforced", "left"]), Some(json!(1)));
+    assert_eq!(
+        snapshot.select(&["input", "corners", "enforced", "left"]),
+        Some(json!(1))
+    );
     for path in ["input.corners.enforced.left", "input.corners.held.top"] {
-        let descriptor: Value = serde_json::from_str(
-            &describe(&snapshot, &PropPath::new(path).unwrap()).unwrap(),
-        )
-        .unwrap();
+        let descriptor: Value =
+            serde_json::from_str(&describe(&snapshot, &PropPath::new(path).unwrap()).unwrap())
+                .unwrap();
         assert_eq!(descriptor["mutable"], false, "{path}");
         assert_eq!(descriptor["volatile"], true, "{path}");
-        assert!(matches!(
-            validate_set_request(path, &json!(0)),
-            Err(SetError::ReadOnly)
-        ), "{path}");
+        assert!(
+            matches!(
+                validate_set_request(path, &json!(0)),
+                Err(SetError::ReadOnly)
+            ),
+            "{path}"
+        );
     }
     let path = PropPath::new("input.corners.holders").unwrap();
     let descriptor: Value = serde_json::from_str(&describe(&snapshot, &path).unwrap()).unwrap();
     assert_eq!(descriptor["mutable"], false);
     assert_eq!(descriptor["type"], "bool");
-    assert!(matches!(validate_set_request(
-        "input.corners.holders", &json!(false)),
-        Err(SetError::ReadOnly)));
+    assert!(matches!(
+        validate_set_request("input.corners.holders", &json!(false)),
+        Err(SetError::ReadOnly)
+    ));
 }
 
 #[test]
@@ -776,12 +806,8 @@ fn oversized_full_tree_returns_too_large_while_leaf_read_succeeds() {
     }
     let injected_limit = 1_024;
 
-    let (rc, body) = dispatch_read_with_limit(
-        &snapshot,
-        "comp.props.get",
-        &Value::Null,
-        injected_limit,
-    );
+    let (rc, body) =
+        dispatch_read_with_limit(&snapshot, "comp.props.get", &Value::Null, injected_limit);
     assert_eq!(rc, 10);
     assert_eq!(
         serde_json::from_str::<Value>(&body).expect("too_large JSON"),
@@ -818,8 +844,17 @@ fn info_and_windows_list_bodies_are_comps() {
     assert_eq!(rc, 0);
     assert_eq!(
         body.as_ref(),
-        r#"{"backend":"nested","engine":"bevy-0.19/wgpu","event_seq":0,"lost_count":0,"output_count":1,"service":"comp-nested","surface_count":5,"version":"0.37.0"}"#
+        r#"{"backend":"nested","engine":"bevy-0.19/wgpu","event_seq":0,"instance":"fixture","lost_count":0,"output_count":1,"service":"comp-nested","surface_count":5,"version":"0.37.0"}"#
     );
+    let info: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(info["instance"], snapshot.info.instance.as_ref());
+    let mut replacement = fixture();
+    replacement.info.instance = Arc::from("replacement-instance");
+    let (rc, replacement_body) = dispatch_read(&replacement, "comp.info", &Value::Null);
+    assert_eq!(rc, 0);
+    let replacement_info: Value = serde_json::from_str(&replacement_body).unwrap();
+    assert_eq!(replacement_info["instance"], "replacement-instance");
+    assert_ne!(info["instance"], replacement_info["instance"]);
     let list = |args: Value| {
         let (rc, body) = dispatch_read(&snapshot, "comp.windows.list", &args);
         (rc, serde_json::from_str::<Value>(&body).unwrap())
@@ -829,10 +864,19 @@ fn info_and_windows_list_bodies_are_comps() {
     assert_eq!(body["windows"].as_array().unwrap().len(), 1);
     assert_eq!(body["windows"][0]["id"], 2);
     assert_eq!(body["windows"][0]["generation"], 4);
-    assert_eq!(list(json!({"title_contains": "Term", "visible": true})).1["windows"][0]["id"], 2);
+    assert_eq!(
+        list(json!({"title_contains": "Term", "visible": true})).1["windows"][0]["id"],
+        2
+    );
     assert_eq!(list(json!({"visible": false})).1, json!({"windows": []}));
     assert_eq!(list(json!({"workspace": 2})).1, json!({"windows": []}));
-    assert_eq!(list(json!({"workspace": "all"})).1["windows"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        list(json!({"workspace": "all"})).1["windows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     let (rc, body) = list(json!({"workspace": 3}));
     assert_eq!(rc, 10);
     assert_eq!(body["error"], "invalid_value");
