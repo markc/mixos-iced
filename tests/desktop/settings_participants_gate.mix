@@ -514,6 +514,7 @@ try
   end
   $R.owners=$reconnected
   ready("shell","app.describe",$quoin.pid)
+  ready("settingsd","settings.describe",$authority)
   $broker_batch=apply({"appearance.mode":"dark"},"participant-broker-replacement")
   $broker_after=participant_presentations($broker_batch,"broker-replacement")
   for each $row in $broker_after.records
