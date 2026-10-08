@@ -284,7 +284,10 @@ impl SupervisedConnectOptions {
     /// Decoded args and correlation strings have bounded parse/copy overhead;
     /// the byte budget is not an exact heap allocation measurement.
     pub fn max_delivery_bytes(mut self, bytes: usize) -> Self {
-        assert!((1..=1048576).contains(&bytes), "delivery byte budget must be 1..=1 MiB");
+        assert!(
+            (1..=1048576).contains(&bytes),
+            "delivery byte budget must be 1..=1 MiB"
+        );
         self.connection.max_delivery_bytes = Some(bytes);
         self
     }

@@ -247,7 +247,9 @@ async fn verified_native_refusal_exhaustion_closes_and_settles_every_correlation
 
 #[tokio::test]
 async fn supervised_unix_large_retained_settings_delivery_uses_explicit_byte_budget() {
-    use bus::native_client::{BoundedIncomingEvent, NodedClient, SupervisedClient, UnixConnectOutcome};
+    use bus::native_client::{
+        BoundedIncomingEvent, NodedClient, SupervisedClient, UnixConnectOutcome,
+    };
     use std::collections::BTreeMap;
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let broker = Broker::start().await;
