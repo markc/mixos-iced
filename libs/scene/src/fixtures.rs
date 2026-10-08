@@ -14,4 +14,8 @@ pub const CONFORMANCE: &str = include_str!("../tests/fixtures/conformance.scene.
 pub const STATIC: &str = include_str!("../tests/fixtures/static.scene.mix");
 
 /// Every fixture by its file stem.
-pub const ALL: [(&str, &str); 3] = [("clippanel", CLIPPANEL), ("conformance", CONFORMANCE), ("static", STATIC)];
+pub const ALL: [(&str, &str); 3] = [
+    ("clippanel", CLIPPANEL),
+    ("conformance", CONFORMANCE),
+    ("static", STATIC),
+];
