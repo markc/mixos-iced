@@ -127,6 +127,9 @@ fn phase($c,$session,$bin,$ced,$tab,$background,$observer)
     $receipts=concat($receipts,[{output:$now,reply:$reply,stale:$stale,window:$window,fullscreen:{normal:$normal,committed:$full,restored:$restored,capture:$full_path,far_pixel:$far},scale_event:$scale_event,
       ced:$state,input_routing:$input,quoin_click:$click,fractional_protocol:$protocol,capture:$path,inside:$inside,outside:$outside}])
   end
+  -- Leave the bottom control after observing both real clicks: the later
+  -- resting-palette oracle must not inherit a hovered button from this phase.
+  rpc($c,"comp.input.pointer.move",{seat:"human",x:$initial.x+$initial.width/2,y:$initial.y+20})
   write_file($c.root .. "/output-scale.json",json_encode({kind:"actual scale and real existing Ced state/buffer boundary",
     protocol_observer:{pid:$observer.pid,window:$observer.window,log:$observer.log,binary_sha256:hash_file($bin .. "/testkit-ssd-client","sha256")},
     physical_kms:false,physical_hotplug:false,physical_buffer_ratio:false,receipts:$receipts}))
