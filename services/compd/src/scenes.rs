@@ -30,6 +30,7 @@ impl Scenes {
             return None;
         }
         let config = scene_host::HostConfig {
+            owner_version: env!("CARGO_PKG_VERSION").into(),
             service_override: cli_service.map(str::to_owned).or_else(|| preference.scene_service.clone()),
             noded_url: comp_service::default_noded_url(),
         };
