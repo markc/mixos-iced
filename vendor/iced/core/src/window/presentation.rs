@@ -89,6 +89,7 @@ impl FrameObserver {
             capture: Some(capture),
         }
     }
+    /// Capture the terminal sink for one native feedback request.
     pub fn captured(&self) -> Self {
         self.capture
             .as_ref()
