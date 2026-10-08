@@ -34,6 +34,8 @@
 //! Both use the received pointer serial and seat, never invented input.
 //! `--seats` lists and labels every seat's keyboard/pointer events.
 //! `--popup` maps a persistent non-grabbing 20x20 xdg popup for tree visibility tests.
+//! `--restore-overlay-on-leave` sends real xdg unset_fullscreen/unset_maximized
+//! requests once, after an overlay configure and human keyboard focus loss.
 //! `--idle-timeout-ms N` also enables this mode and subscribes to one
 //! ext-idle-notify notification per seat. Seat names are whatever the
 //! compositor advertises (compd: `seat0` for the human seat, `agent` for the
@@ -82,6 +84,10 @@ const NAME: &str = "testkit-input-probe";
 
 #[derive(Default)]
 struct Probe {
+    restore_overlay_on_leave: bool,
+    overlay_fullscreen: bool,
+    overlay_maximized: bool,
+    toplevel: Option<xdg_toplevel::XdgToplevel>,
     all_seats: bool,
     idle_timeout_ms: Option<u32>,
     idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
@@ -244,6 +250,22 @@ impl Probe {
         }
     }
 
+    fn restore_overlay(&mut self) {
+        if !self.restore_overlay_on_leave || !(self.overlay_fullscreen || self.overlay_maximized) {
+            return;
+        }
+        let Some(toplevel) = &self.toplevel else {
+            return;
+        };
+        if self.overlay_fullscreen {
+            toplevel.unset_fullscreen();
+        }
+        if self.overlay_maximized {
+            toplevel.unset_maximized();
+        }
+        say("overlay_restore_requested");
+        self.restore_overlay_on_leave = false;
+    }
     fn prepare_seats(&mut self, qh: &QueueHandle<Self>) {
         for (id, seat) in &mut self.seats {
             if seat.notification.is_none()
@@ -277,6 +299,7 @@ fn say(line: &str) {
 }
 
 struct Options {
+    restore_overlay_on_leave: bool,
     seats: bool,
     popup: bool,
     idle_timeout_ms: Option<u32>,
@@ -303,6 +326,7 @@ fn options() -> Result<Options, String> {
 
 fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut options = Options {
+        restore_overlay_on_leave: false,
         seats: false,
         popup: false,
         idle_timeout_ms: None,
@@ -331,6 +355,7 @@ fn parse_options(mut arguments: impl Iterator<Item = String>) -> Result<Options,
         match argument.as_str() {
             "--seats" => options.seats = true,
             "--popup" => options.popup = true,
+            "--restore-overlay-on-leave" => options.restore_overlay_on_leave = true,
             "--idle-timeout-ms" => {
                 options.idle_timeout_ms = Some(
                     value()?
@@ -594,6 +619,7 @@ fn run() -> Result<(), String> {
     let qh = queue.handle();
     let _registry = connection.display().get_registry(&qh, ());
     let mut probe = Probe {
+        restore_overlay_on_leave: options.restore_overlay_on_leave,
         all_seats: options.seats || options.idle_timeout_ms.is_some(),
         idle_timeout_ms: options.idle_timeout_ms,
         hints: options.hints,
@@ -1045,6 +1071,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, u32> for Probe {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        let leaving = matches!(&event, wl_keyboard::Event::Leave { .. });
         if !state.seats.contains_key(id) {
             return;
         }
@@ -1063,6 +1090,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, u32> for Probe {
             _ => return,
         };
         state.seats.get_mut(id).unwrap().emit(line);
+        if leaving && state.seats.get(id).unwrap().events.name.as_deref() == Some("seat0") {
+            state.restore_overlay();
+        }
     }
 }
 
@@ -1171,7 +1201,10 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Probe {
     ) {
         match event {
             wl_keyboard::Event::Enter { .. } => say("keyboard_enter"),
-            wl_keyboard::Event::Leave { .. } => say("keyboard_leave"),
+            wl_keyboard::Event::Leave { .. } => {
+                say("keyboard_leave");
+                state.restore_overlay();
+            }
             wl_keyboard::Event::Key {
                 key,
                 state: pressed,
@@ -1245,8 +1278,20 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Probe {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            xdg_toplevel::Event::Configure { width, height, .. } => {
+            xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } => {
                 state.toplevel_size = (width, height);
+                let configured = |wanted: xdg_toplevel::State| {
+                    states.chunks_exact(4).any(|bytes| {
+                        u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+                            == wanted as u32
+                    })
+                };
+                state.overlay_fullscreen = configured(xdg_toplevel::State::Fullscreen);
+                state.overlay_maximized = configured(xdg_toplevel::State::Maximized);
             }
             xdg_toplevel::Event::Close => state.closed = true,
             _ => {}
@@ -1379,6 +1424,31 @@ mod tests {
         let defaults = parse(&[]).unwrap();
         assert_eq!(defaults.hints, HintControls::default());
         assert!(!defaults.request_move && !defaults.request_resize);
+    }
+
+    #[test]
+    fn overlay_restore_on_leave_is_explicit_and_has_no_effect_without_a_role() {
+        let plain = parse_options(std::iter::empty()).unwrap();
+        assert!(!plain.restore_overlay_on_leave);
+        let enabled =
+            parse_options(["--restore-overlay-on-leave".into(), "--seats".into()].into_iter())
+                .unwrap();
+        assert!(enabled.restore_overlay_on_leave && enabled.seats);
+        let mut probe = Probe {
+            restore_overlay_on_leave: true,
+            ..Probe::default()
+        };
+        probe.restore_overlay();
+        assert!(
+            probe.restore_overlay_on_leave,
+            "ordinary focus loss cannot consume the overlay test"
+        );
+        probe.overlay_fullscreen = true;
+        probe.restore_overlay();
+        assert!(
+            probe.restore_overlay_on_leave,
+            "no actual xdg role means no request or receipt"
+        );
     }
 
     #[test]

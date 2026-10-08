@@ -36,6 +36,9 @@
   app.participants.wait requests without periodic reads or observer redraws.
 - Keep immutable queued presentation metadata on actual graphics Backings so
   ring-depth changes preserve the provenance of retained published pixels.
+- Restore a dormant client's own xdg unmaximise request in its owning Space;
+  public geometry commands retain the active-world guard. Native acceptance
+  exercises client-requested fullscreen/maximise exit after a world switch.
 
 ## 0.1.16
 
