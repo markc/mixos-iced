@@ -497,6 +497,15 @@ try
   $closed=shell("app.participants.wait",{operation_id:"all-apps-participant-deadline",services:[$late.context.service],keys:[$late_rows[0].key],until:"closed",timeout_ms:3000})
   $closed_rows=filter($closed.observations.participants,fn($row)=$row.key == $late_rows[0].key)
   check(not $closed.deadline_elapsed and len($closed_rows) == 1 and $closed_rows[0].state == "closed" and $closed_rows[0].presentation == nil,"Closed native owner retained a live presentation")
+  $R.owners=filter($R.owners,fn($app)=$app.pid != $late.pid)
+  $replacement=launch("busviewer","late",true)
+  $replacement_description=$all.current($replacement.context,$replacement.pid,$quoin_batch.snapshot,$binding,$replacement.settings_context,15)
+  $all.canonical($replacement_description,$replacement,$quoin_batch.snapshot,$binding,$manifest,$manifest_digest)
+  comp("comp.window.focus",$replacement.window)
+  $replacement_receipt=shell("app.participants.wait",{operation_id:$quoin_batch.operation_id,services:[$replacement.context.service],keys:[$replacement.context.service],until:"presented",timeout_ms:3000})
+  $replacement_rows=filter($replacement_receipt.observations.participants,fn($row)=$row.service == $replacement.context.service and $row.pid == $replacement.pid and $row.state != "closed")
+  check(len($replacement_rows) == 1 and $replacement_rows[0].registration_incarnation != $late_rows[0].registration_incarnation and $replacement_rows[0].frame_owner != $late_rows[0].frame_owner,"Recreated same-service native owner reused retired identity")
+  $participants.exact_presented($replacement_receipt,$quoin_batch.operation_id,$replacement.context.service,$replacement_rows[0].key,$replacement.pid,$h.identity($quoin_batch.snapshot))
   $inventory=rpc("noded","noded.inventory",{})
   $binary_hashes=[]
   for each $name in ["mix","noded","settingsd","compd","editd","term","ced","busviewer","cap","dopus","scene-editor","testkit-screenshot","testkit-input-probe"]
@@ -506,7 +515,7 @@ try
     source_tree:trim(run_argv_must(["git","-C",$repo,"rev-parse","HEAD^{tree}"])),binary_hashes:$binary_hashes,broker:{pid:$R.bus.pid,url:$R.bus.url},
     compositor:{pid:$R.session.comp_pid,service:$R.session.service,backend:"nested"},native_inventory:$inventory,
     all_six_simultaneous:true,quoin:true,core_set:$manifest.set_id,core_manifest_blake3:$manifest_digest,rounds:$R.rounds,participant_states:$participant_states,participant_idle:$participant_idle,participant_samples:$participant_samples,
-    new_app:{pid:$late.pid,description:$late_description,frame:$late_frame,closed:$closed},new_control:$late_control,
+    new_app:{pid:$late.pid,description:$late_description,frame:$late_frame,closed:$closed,recreated:$replacement_receipt},new_control:$late_control,
     quoin_lifecycle:{hidden:$quoin_hidden,revealed:$quoin_revealed,retired:$quoin_closed},
     hardware:false,actual_output_scale:$output.scale,quantile_population:"actual monotonic durations across current operation participants; small measured sample count explicit",exact_frame_participants:["term","busviewer","cap","dopus"],
     palette_boundary_participants:["ced","scene-editor"],quoin_palette_layout:true}))
