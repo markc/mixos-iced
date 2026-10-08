@@ -36,7 +36,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, oneshot, watch};
 
 use super::IncomingCommand;
-use super::connection::{Connection, ConnectionOptions, ConnectionIncomingReceiver};
+use super::connection::{Connection, ConnectionIncomingReceiver, ConnectionOptions};
 use super::error::{
     ClientError, RegistrationRejected, SubscriptionDeclarationError, SupervisedError,
 };
@@ -1050,9 +1050,16 @@ impl SupervisorOutgoing {
                             sender.record_overflow(1);
                             true
                         } else {
-                            connection.respond_parts(&command.from, &command.command,
-                                command.id.as_deref(), crate::RC_ERROR,
-                                r#"{"error":"overloaded","error_code":"OVERLOADED"}"#).await.is_ok()
+                            connection
+                                .respond_parts(
+                                    &command.from,
+                                    &command.command,
+                                    command.id.as_deref(),
+                                    crate::RC_ERROR,
+                                    r#"{"error":"overloaded","error_code":"OVERLOADED"}"#,
+                                )
+                                .await
+                                .is_ok()
                         }
                     }
                 }

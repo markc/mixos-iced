@@ -2,8 +2,8 @@
 //! Two production brokers, separate roots and verified Unix clients. The hop
 //! between brokers is native ABP; the fixture never relays application data.
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-use bus::native_client::{BrokerAccount, NodedClient, UnixConnectOptions, UnixConnectOutcome};
 use bus::native_client::SupervisedClient;
+use bus::native_client::{BrokerAccount, NodedClient, UnixConnectOptions, UnixConnectOutcome};
 use ed25519_dalek::{Signer as _, SigningKey};
 use mesh_trust::inventory::{
     ALG_ED25519, CANONICAL_ENCODING_V1, InvSignature, InventoryPayload, KeyStatus, SignedInventory,
@@ -77,10 +77,15 @@ async fn connect(
 }
 
 fn spawn_broker(root: &Path) -> Child {
-    let log = fs::OpenOptions::new().create(true).append(true).open(root.join("noded.log")).unwrap();
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join("noded.log"))
+        .unwrap();
     Command::new(env!("CARGO_BIN_EXE_noded"))
         .args(["serve", "--no-monitor", "--no-log"])
-        .env_clear().env("PATH", "/usr/bin:/bin")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
         .env("HOME", root.join("home"))
         .env("MIXOS_ETC", root.join("etc"))
         .env("MIXOS_VAR", root.join("var"))
@@ -88,7 +93,9 @@ fn spawn_broker(root: &Path) -> Child {
         .env("MIXOS_NODE_CONFIG", root.join("etc/node.conf.mix"))
         .env("RUST_LOG", "info")
         .stdout(Stdio::from(log.try_clone().unwrap()))
-        .stderr(Stdio::from(log)).spawn().unwrap()
+        .stderr(Stdio::from(log))
+        .spawn()
+        .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
