@@ -1639,6 +1639,7 @@ mod tests {
             sim.tap_key(Named::F10);
             sim.tap_key(Named::Enter);
             assert!(sim.into_messages().any(|message| matches!(message, Message::Menu(menu::Action::Open))));
+            app.document = Some(Document::new(image::RgbaImage::new(100, 100)).unwrap());
             for dialog in [Dialog::About, Dialog::Properties, Dialog::Shortcuts] {
                 app.dialog = Some(dialog);
                 let mut sim = application::test::Simulator::with_size(
