@@ -87,7 +87,6 @@ struct Probe {
     restore_overlay_on_leave: bool,
     overlay_fullscreen: bool,
     overlay_maximized: bool,
-    toplevel: Option<xdg_toplevel::XdgToplevel>,
     all_seats: bool,
     idle_timeout_ms: Option<u32>,
     idle_notifier: Option<ext_idle_notifier_v1::ExtIdleNotifierV1>,
