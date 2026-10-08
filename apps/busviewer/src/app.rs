@@ -1039,7 +1039,7 @@ impl App {
         ]
         .spacing(gap)
         .height(iced::Fill);
-        let right = widget::responsive(move |bounds| {
+        let right = widget::responsive(move |bounds| -> Element<'_, Message, Theme> {
         let details = match self
             .selected
             .as_ref()
