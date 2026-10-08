@@ -320,22 +320,37 @@ async fn work<T: Send + 'static>(
 }
 impl App {
     fn frame_binding(&self) -> Option<application::frames::FrameBinding> {
-        self.settings_ui.session().frame_stamp().map(|stamp| self.bus.frames.binding(stamp))
+        self.settings_ui
+            .session()
+            .frame_stamp()
+            .map(|stamp| self.bus.frames.binding(stamp))
     }
     fn publish_frame_target(&self) {
         #[cfg(feature = "acceptance")]
         if let (Some(endpoint), Some(window)) = (&self.bus.fixture_frames, self.window)
             && let Err(error) = endpoint.publish(application::acceptance::frames::Target {
-                window, stamp: self.settings_ui.session().frame_stamp(),
-            }) {
+                window,
+                stamp: self.settings_ui.session().frame_stamp(),
+            })
+        {
             tracing::warn!(%error, "Cap fixture frame target failed");
         }
     }
     #[cfg(feature = "acceptance")]
-    fn fixture_container<'a>(&self, content: Element<'a, Message, Theme>, id: &'static str) -> Element<'a, Message, Theme> {
+    fn fixture_container<'a>(
+        &self,
+        content: Element<'a, Message, Theme>,
+        id: &'static str,
+    ) -> Element<'a, Message, Theme> {
         if self.bus.fixture_frames.is_some() {
-            container(content).width(iced::Fill).height(iced::Fill).id(id).into()
-        } else { content }
+            container(content)
+                .width(iced::Fill)
+                .height(iced::Fill)
+                .id(id)
+                .into()
+        } else {
+            content
+        }
     }
     fn look(&self) -> &appearance::settings::Prepared {
         self.settings_ui
@@ -766,7 +781,9 @@ impl App {
                 Task::none()
             }
             Message::Window(id, window::Event::Opened { .. }) => {
-                if self.window.is_some_and(|window| window != id) { return Task::none(); }
+                if self.window.is_some_and(|window| window != id) {
+                    return Task::none();
+                }
                 self.window = Some(id);
                 self.publish_frame_target();
                 self.refresh()
@@ -1581,12 +1598,22 @@ mod tests {
         app.bus.fixture_frames = Some(endpoint.clone());
         let main = window::Id::unique();
         let foreign = window::Id::unique();
-        let opened = |id| Message::Window(id, window::Event::Opened {
-            position: None, size: iced::Size::new(1040.0, 720.0), scale_factor: 1.0,
-        });
+        let opened = |id| {
+            Message::Window(
+                id,
+                window::Event::Opened {
+                    position: None,
+                    size: iced::Size::new(1040.0, 720.0),
+                    scale_factor: 1.0,
+                },
+            )
+        };
         let _ = app.update(opened(main));
         assert_eq!(endpoint.target().unwrap().window, main);
-        assert!(endpoint.target().unwrap().stamp.is_none(), "bootstrap is not a checked native stamp");
+        assert!(
+            endpoint.target().unwrap().stamp.is_none(),
+            "bootstrap is not a checked native stamp"
+        );
         let _ = app.update(opened(foreign));
         let _ = app.update(Message::Window(foreign, window::Event::Closed));
         assert_eq!(endpoint.target().unwrap().window, main);

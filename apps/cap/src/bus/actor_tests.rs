@@ -20,7 +20,11 @@ async fn observed(
                     && state.operations <= OPERATION_CAP + CLEANUP_CAP
             );
             #[cfg(feature = "acceptance")]
-            assert!(state.fixture_waits <= 2 && state.fixture_controls <= 4 && state.fixture_active <= 6);
+            assert!(
+                state.fixture_waits <= 2
+                    && state.fixture_controls <= 4
+                    && state.fixture_active <= 6
+            );
             if predicate(&state) {
                 return state;
             }
@@ -48,14 +52,30 @@ fn fixture_waits_leave_release_headroom_and_retire_on_native_loss_and_shutdown()
     use application::acceptance::{Fixture, Launch, frames::Target};
     let mut broker = term_test_broker::Broker::start_stable();
     let (fixture, _inspector_task) = Fixture::new::<crate::app::Message>(
-        Launch { run: "cap-owned".into(), instance: 73 }, crate::acceptance::POINTS,
-        vec![application::inspect::Target::new("root", application::iced::widget::Id::from(crate::acceptance::ROOT_ID))],
+        Launch {
+            run: "cap-owned".into(),
+            instance: 73,
+        },
+        crate::acceptance::POINTS,
+        vec![application::inspect::Target::new(
+            "root",
+            application::iced::widget::Id::from(crate::acceptance::ROOT_ID),
+        )],
         application::inspect::Limits::new(),
-    ).unwrap();
+    )
+    .unwrap();
     let (probe, mut observation) = tokio::sync::watch::channel(ActorProbe::default());
     let (send, receive) = mpsc::channel(OUTBOX_CAP);
     let (handle, mut ui, _bootstrap, mut events) = start_configured_channels(
-        "actor-cap-fixture", &broker.url, None, send, receive, Some(fixture), Some(probe)).unwrap();
+        "actor-cap-fixture",
+        &broker.url,
+        None,
+        send,
+        receive,
+        Some(fixture),
+        Some(probe),
+    )
+    .unwrap();
     let _stop = Stop(handle.clone());
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         let first = observed(&mut observation, |state| state.connected).await;

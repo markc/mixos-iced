@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-pub mod app;
 #[cfg(feature = "acceptance")]
 mod acceptance;
+pub mod app;
 pub mod bus;
 pub mod capture;
 pub mod document;

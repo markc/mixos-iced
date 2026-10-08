@@ -286,7 +286,9 @@ pub(super) async fn worker(
     mut effects: tokio::sync::mpsc::UnboundedReceiver<Effect>,
     ready: Ready,
     frames: application::frames::Handle,
-    #[cfg(feature = "acceptance")] fixture_frames: Option<application::acceptance::frames::Endpoint>,
+    #[cfg(feature = "acceptance")] fixture_frames: Option<
+        application::acceptance::frames::Endpoint,
+    >,
     #[cfg(feature = "acceptance")] mut fixture: Option<application::acceptance::Fixture>,
     #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
 ) {
@@ -322,11 +324,21 @@ pub(super) async fn worker(
     let build = move |_: &appearance::settings::Prepared, _snapshot: &settings::Snapshot| {
         #[cfg(feature = "acceptance")]
         if let Some(hook) = &prepare_hook {
-            let fault = |message| settings::Diagnostic::new("fixture_prepare_cancelled", "cap.prepare", message);
-            let observation = application::acceptance::barrier::Observation::try_new(format!("revision={}", _snapshot.revision.0))
-                .map_err(|error| fault(format!("{error:?}")))?;
-            if let Some(permit) = hook.reach("cap.prepare", observation).map_err(|error| fault(format!("{error:?}")))? {
-                permit.wait_blocking().map_err(|error| fault(format!("{error:?}")))?;
+            let fault = |message| {
+                settings::Diagnostic::new("fixture_prepare_cancelled", "cap.prepare", message)
+            };
+            let observation = application::acceptance::barrier::Observation::try_new(format!(
+                "revision={}",
+                _snapshot.revision.0
+            ))
+            .map_err(|error| fault(format!("{error:?}")))?;
+            if let Some(permit) = hook
+                .reach("cap.prepare", observation)
+                .map_err(|error| fault(format!("{error:?}")))?
+            {
+                permit
+                    .wait_blocking()
+                    .map_err(|error| fault(format!("{error:?}")))?;
             }
         }
         Ok(())
@@ -372,7 +384,9 @@ pub(super) async fn worker(
         if lifecycle != Some((state, generation)) {
             frames.set_live_generation(settings::native::live_generation(&client));
             #[cfg(feature = "acceptance")]
-            if lifecycle.is_some() && let Some(fixture) = &fixture {
+            if lifecycle.is_some()
+                && let Some(fixture) = &fixture
+            {
                 fixture.close(application::acceptance::barrier::ClosedReason::LostGeneration);
             }
             lifecycle = Some((state, generation));
@@ -545,12 +559,23 @@ pub(super) async fn worker(
     if let Some(fixture) = &fixture {
         fixture.close(application::acceptance::barrier::ClosedReason::Shutdown);
     }
-    for (label, tasks) in [("fixture control", &mut fixture_controls), ("fixture wait", &mut fixture_waits)] {
+    for (label, tasks) in [
+        ("fixture control", &mut fixture_controls),
+        ("fixture wait", &mut fixture_waits),
+    ] {
         while !tasks.is_empty() {
-            match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), tasks.join_next()).await {
+            match tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                tasks.join_next(),
+            )
+            .await
+            {
                 Ok(Some(result)) => reap(label, result, &mut faults, record),
                 Ok(None) => break,
-                Err(_) => { faults.push(format!("{label} drain timed out; delivery unconfirmed")); break; }
+                Err(_) => {
+                    faults.push(format!("{label} drain timed out; delivery unconfirmed"));
+                    break;
+                }
             }
         }
     }

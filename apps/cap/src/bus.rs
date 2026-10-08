@@ -390,30 +390,70 @@ fn start_inner(
     String,
 > {
     let (send, receive) = mpsc::channel(gui_capacity);
-    start_configured_channels(service, url, handoff, send, receive,
-        #[cfg(feature = "acceptance")] None,
-        #[cfg(test)] probe)
+    start_configured_channels(
+        service,
+        url,
+        handoff,
+        send,
+        receive,
+        #[cfg(feature = "acceptance")]
+        None,
+        #[cfg(test)]
+        probe,
+    )
 }
 
 #[cfg(feature = "acceptance")]
 pub(crate) fn start_fixture(
-    service: &str, url: &str, handoff: Option<Vec<String>>,
+    service: &str,
+    url: &str,
+    handoff: Option<Vec<String>>,
     fixture: Option<application::acceptance::Fixture>,
-) -> Result<(BusHandle, Ui<()>, appearance::settings::Prepared, mpsc::Receiver<Delivery>), String> {
+) -> Result<
+    (
+        BusHandle,
+        Ui<()>,
+        appearance::settings::Prepared,
+        mpsc::Receiver<Delivery>,
+    ),
+    String,
+> {
     let (send, receive) = mpsc::channel(OUTBOX_CAP);
-    start_configured_channels(service, url, handoff, send, receive, fixture, #[cfg(test)] None)
+    start_configured_channels(
+        service,
+        url,
+        handoff,
+        send,
+        receive,
+        fixture,
+        #[cfg(test)]
+        None,
+    )
 }
 
 fn start_configured_channels(
-    service: &str, url: &str, handoff: Option<Vec<String>>,
-    send: mpsc::Sender<Delivery>, receive: mpsc::Receiver<Delivery>,
+    service: &str,
+    url: &str,
+    handoff: Option<Vec<String>>,
+    send: mpsc::Sender<Delivery>,
+    receive: mpsc::Receiver<Delivery>,
     #[cfg(feature = "acceptance")] fixture: Option<application::acceptance::Fixture>,
     #[cfg(test)] probe: Option<tokio::sync::watch::Sender<ActorProbe>>,
-) -> Result<(BusHandle, Ui<()>, appearance::settings::Prepared, mpsc::Receiver<Delivery>), String> {
+) -> Result<
+    (
+        BusHandle,
+        Ui<()>,
+        appearance::settings::Prepared,
+        mpsc::Receiver<Delivery>,
+    ),
+    String,
+> {
     let frames = application::frames::Handle::new();
     let worker_frames = frames.clone();
     #[cfg(feature = "acceptance")]
-    let fixture_frames = fixture.as_ref().map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
+    let fixture_frames = fixture
+        .as_ref()
+        .map(|_| application::acceptance::frames::Endpoint::new(frames.clone()));
     #[cfg(feature = "acceptance")]
     let worker_fixture_frames = fixture_frames.clone();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
