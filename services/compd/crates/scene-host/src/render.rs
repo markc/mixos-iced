@@ -23,7 +23,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Physical, Point, Rectangle, Size};
-use ui::{HandleId, IcedHandle};
+use ui::{HandleId, IcedHandle, IcedUi};
 use world::scene::layer::base::Layer;
 use world::state::Loop;
 use world::surface::draw::handle::handle::{IcedSpace, load};
@@ -433,6 +433,12 @@ pub(crate) fn reconcile(
     palette: decor::Palette,
     prepared: Option<Arc<::appearance::settings::Prepared>>,
     appearance_generation: u64,
+    frame_owners: &mut BTreeMap<
+        String,
+        (application::iced::window::Id, application::frames::Handle),
+    >,
+    frame_stamp: Option<application::frames::FrameStamp>,
+    live_generation: Option<u64>,
     wiring: &Wiring,
     state: &mut Loop,
     renderer: &mut GlesRenderer,
@@ -473,6 +479,9 @@ pub(crate) fn reconcile(
         .map(|(name, _)| name.clone())
         .collect();
     for name in gone {
+        if let Some((_, frames)) = frame_owners.remove(&name) {
+            frames.close();
+        }
         if let Some(surface) = surfaces.remove(&name) {
             release_edge_keyboard(state, &name);
             destroy(state, surface.handle);
@@ -569,6 +578,21 @@ pub(crate) fn reconcile(
                     .as_ref()
                     .is_some_and(|registry| registry.contains(surface.handle))
         });
+        // A registry/world replacement is a new surface incarnation even when
+        // its scene name survives. Never let its callback adopt the old pixels.
+        if live.is_none()
+            && let Some((_, frames)) = frame_owners.remove(name)
+        {
+            frames.close();
+        }
+        let (frame_window, frames) = frame_owners.entry(name.clone()).or_insert_with(|| {
+            (
+                application::iced::window::Id::unique(),
+                application::frames::Handle::new(),
+            )
+        });
+        frames.set_live_generation(live_generation);
+        let presentation = frame_stamp.map(|stamp| (*frame_window, frames.binding(stamp)));
         let factor = scale as f32;
         let mut autofocus_done = live.is_some_and(|surface| surface.autofocus_done);
         let handle = match live.map(|surface| {
@@ -612,12 +636,30 @@ pub(crate) fn reconcile(
                         // on the GPU, so nothing is uploaded.
                         ui::source::cost(&source_id(name), 0, area(rect));
                     }
-                    if applied_appearance != appearance_generation
-                        && let Some(prepared) = &prepared
-                    {
+                    let current = registry
+                        .instance(IcedHandle::<SceneUi>::from_id(handle))
+                        .and_then(|instance| instance.ui().frame_presentation());
+                    let same = match (&current, &presentation) {
+                        (Some((a, x)), Some((b, y))) => a == b && x.same_presentation(y),
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    if applied_appearance != appearance_generation {
+                        if let Some(prepared) = &prepared {
+                            // Stamp and prepared appearance enter the same UI
+                            // update, before either can be rendered to a slot.
+                            let _ = registry.dispatch_message(
+                                IcedHandle::<SceneUi>::from_id(handle),
+                                SceneMessage::AppearanceFrame(
+                                    Arc::clone(prepared),
+                                    presentation.clone(),
+                                ),
+                            );
+                        }
+                    } else if !same {
                         let _ = registry.dispatch_message(
                             IcedHandle::<SceneUi>::from_id(handle),
-                            SceneMessage::Appearance(Arc::clone(prepared)),
+                            SceneMessage::Presentation(presentation.clone()),
                         );
                     }
                 }
@@ -626,10 +668,11 @@ pub(crate) fn reconcile(
             None => {
                 restack |= !dialog;
                 let content = content(entry, frame.clone(), dialog, marks);
-                let ui = prepared.as_ref().map_or_else(
+                let mut ui = prepared.as_ref().map_or_else(
                     || SceneUi::new(Arc::clone(&content), palette),
                     |prepared| SceneUi::from_prepared(Arc::clone(&content), Arc::clone(prepared)),
                 );
+                ui.update(SceneMessage::Presentation(presentation.clone()));
                 let handle = load(
                     state,
                     renderer,
@@ -788,6 +831,7 @@ pub(crate) fn reconcile(
         );
         // Drawn on this output this frame.
         if mapped {
+            ui::source::set_native_handle(&source_id(name), handle);
             ui::source::shown(&source_id(name), &output_key);
         }
     }

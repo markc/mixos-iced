@@ -256,3 +256,8 @@ legacy/unmigrated. Accepting six old envelopes through read_legacy does not
 establish universal v1 support. The registry row (`app.describe`, owner
 `application`, version 0.1.0) tracks this verb contract; application software
 versions keep their own normal release changes.
+# Optional native observation extensions
+
+Native owners may supply the additive evidence described in
+[Native participant observation](participant-observation.md). These fields are
+optional capabilities; the canonical identity envelope remains v1.

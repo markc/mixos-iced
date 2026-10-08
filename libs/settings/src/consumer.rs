@@ -21,7 +21,7 @@ use std::{
 static NEXT_CONSUMER: AtomicU64 = AtomicU64::new(1);
 
 /// Identity of accepted or installed data, without copying the full projection.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct SnapshotIdentity {
     pub incarnation: String,
     pub revision: Revision,
@@ -53,6 +53,26 @@ pub struct Evidence {
     pub applied: Option<SnapshotIdentity>,
     pub fault: Option<Diagnostic>,
     pub fallback_fault: Option<Diagnostic>,
+}
+
+/// Event-time evidence captured by the existing consumer owner. `received`
+/// means this consumer accepted a delivery, not settingsd's durable commit.
+#[cfg(feature = "observation")]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ObservationPoint {
+    pub identity: SnapshotIdentity,
+    pub generation: Option<u64>,
+    pub kind: PresentationKind,
+    pub at: Option<crate::clock::Stamp>,
+}
+
+#[cfg(feature = "observation")]
+#[derive(Serialize)]
+pub struct ObservationEvidence<'a> {
+    pub authority: Option<&'a crate::clock::Commit>,
+    pub received: Option<&'a ObservationPoint>,
+    pub applied: Option<&'a ObservationPoint>,
+    pub presentation_claimed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +170,12 @@ pub struct Consumer {
     fallback_serial: u64,
     fault: Option<Diagnostic>,
     fallback_fault: Option<Diagnostic>,
+    #[cfg(feature = "observation")]
+    received_observation: Option<ObservationPoint>,
+    #[cfg(feature = "observation")]
+    applied_observation: Option<ObservationPoint>,
+    #[cfg(feature = "observation")]
+    authority_observation: Option<(u64, crate::clock::Commit)>,
 }
 impl Consumer {
     pub fn for_app(binding: Binding, app: &str) -> Result<Self, Diagnostic> {
@@ -205,6 +231,12 @@ impl Consumer {
             fallback_serial: 0,
             fault: None,
             fallback_fault: None,
+            #[cfg(feature = "observation")]
+            received_observation: None,
+            #[cfg(feature = "observation")]
+            applied_observation: None,
+            #[cfg(feature = "observation")]
+            authority_observation: None,
         })
     }
     pub fn binding(&self) -> &Binding {
@@ -235,6 +267,52 @@ impl Consumer {
             applied: self.applied().map(SnapshotIdentity::from),
             fault: self.fault.clone(),
             fallback_fault: self.fallback_fault.clone(),
+        }
+    }
+    #[cfg(feature = "observation")]
+    pub fn observations(&self) -> ObservationEvidence<'_> {
+        ObservationEvidence {
+            authority: self
+                .authority_observation
+                .as_ref()
+                .filter(|(generation, observation)| {
+                    self.generation == Some(*generation)
+                        && self.current().is_some_and(|snapshot| {
+                            SnapshotIdentity::from(snapshot) == observation.identity
+                        })
+                })
+                .map(|(_, observation)| observation),
+            received: self.received_observation.as_ref(),
+            applied: self.applied_observation.as_ref(),
+            presentation_claimed: false,
+        }
+    }
+    #[cfg(feature = "observation")]
+    pub(crate) fn observe_authority(&mut self, observation: Option<crate::clock::Commit>) {
+        self.authority_observation = self.generation.zip(observation).filter(|(_, observation)| {
+            observation.operation_id.len() <= 128
+                && self.current().is_some_and(|snapshot| {
+                    SnapshotIdentity::from(snapshot) == observation.identity
+                })
+        });
+    }
+    #[cfg(feature = "observation")]
+    fn record_applied(&mut self) {
+        let Some(snapshot) = self.applied() else {
+            return;
+        };
+        let identity = SnapshotIdentity::from(snapshot);
+        if self.applied_observation.as_ref().is_none_or(|point| {
+            point.identity != identity
+                || point.generation != self.generation
+                || point.kind != self.applied_kind
+        }) {
+            self.applied_observation = Some(ObservationPoint {
+                identity,
+                generation: self.generation,
+                kind: self.applied_kind,
+                at: crate::clock::now(),
+            });
         }
     }
     /// Current requires fresh authority evidence matching the installed data.
@@ -719,6 +797,20 @@ impl Consumer {
         let Some(snapshot) = self.reducer.current().cloned() else {
             return;
         };
+        #[cfg(feature = "observation")]
+        {
+            let identity = SnapshotIdentity::from(&snapshot);
+            if self.received_observation.as_ref().is_none_or(|point| {
+                point.identity != identity || point.generation != self.generation
+            }) {
+                self.received_observation = Some(ObservationPoint {
+                    identity,
+                    generation: self.generation,
+                    kind: PresentationKind::Current,
+                    at: crate::clock::now(),
+                });
+            }
+        }
         self.fallback_serial = 0;
         if self.pending.as_ref().is_some_and(|p| {
             p.kind == PresentationKind::Current && p.snapshot.as_ref() == &snapshot
@@ -744,6 +836,8 @@ impl Consumer {
             self.pending = None;
             self.fault = None;
             self.fallback_fault = None;
+            #[cfg(feature = "observation")]
+            self.record_applied();
         } else if let Some(generation) = self.generation {
             let serial = self.serial();
             self.pending = Some(Update {
@@ -807,6 +901,8 @@ impl Consumer {
             self.fault = None;
         }
         self.fallback_fault = None;
+        #[cfg(feature = "observation")]
+        self.record_applied();
         true
     }
     pub fn failed(&mut self, update: &Update, fault: Diagnostic) -> bool {

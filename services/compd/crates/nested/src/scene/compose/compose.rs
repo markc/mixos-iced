@@ -2,8 +2,11 @@
 //! callbacks/housekeeping from `frames::draw::present::callbacks`; nothing is
 //! duplicated between backends.
 
-use frames::draw::plan::frame::frame::{plan, FramePass};
-use frames::draw::plan::tap::tap::{TapSubscriptions, POST_SCENE};
+use dispatcher::frame::frame::SceneDispatch;
+use frames::draw::plan::frame::frame::{FramePass, plan};
+use frames::draw::plan::tap::tap::{POST_SCENE, TapSubscriptions};
+use frames::scene::scene::Scene;
+use graphics::capture::registry::{CaptureRegistry, OutputId};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::{Element, RenderElement};
@@ -14,10 +17,7 @@ use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::utils::{Physical, Rectangle, Scale, Size, Transform};
-use dispatcher::frame::frame::SceneDispatch;
-use frames::scene::scene::Scene;
 use world::state::Loop;
-use graphics::capture::registry::{CaptureRegistry, OutputId};
 
 /// Keep the damage tracker at the output's current mode and scale, rendering
 /// through Flipped180: the window surface is a GL default framebuffer (row 0
@@ -25,7 +25,10 @@ use graphics::capture::registry::{CaptureRegistry, OutputId};
 /// (window factory), so the flip lives here, in a STATIC tracker rebuilt only
 /// when the size or scale moves (a resize repaints in full anyway).
 fn sync_tracker(tracker: &mut OutputDamageTracker, output: &Output) {
-    let size = output.current_mode().map(|mode| mode.size).unwrap_or_default();
+    let size = output
+        .current_mode()
+        .map(|mode| mode.size)
+        .unwrap_or_default();
     let scale = output.current_scale().fractional_scale();
     let current = matches!(
         tracker.mode(),
@@ -70,19 +73,35 @@ pub fn capture_offscreen(state: &mut Loop, context: &mut WinitRenderContext) {
         return;
     }
     let scale = context.output.current_scale().fractional_scale();
-    screencopy::offscreen::capture_windows(context.winit_backend.renderer(), &context.output, |renderer, target| {
-        let window = world::window::draw::frame::scene::capture_window(state, target.id, target.generation)
-            .map_err(|error| screencopy::file::ControlReply::WindowTarget { id: target.id, error })?;
-        world::window::draw::frame::scene::capture(renderer, &window, scale)
-            .map_err(screencopy::file::capture_failed)
-    });
+    screencopy::offscreen::capture_windows(
+        context.winit_backend.renderer(),
+        &context.output,
+        |renderer, target| {
+            let window = world::window::draw::frame::scene::capture_window(
+                state,
+                target.id,
+                target.generation,
+            )
+            .map_err(|error| screencopy::file::ControlReply::WindowTarget {
+                id: target.id,
+                error,
+            })?;
+            world::window::draw::frame::scene::capture(renderer, &window, scale)
+                .map_err(screencopy::file::capture_failed)
+        },
+    );
     if !screencopy::file::pending_output(&context.output) {
-        if let Err(err) = crate::frame::submit::submit::ensure_surface_current(&mut context.winit_backend) {
+        if let Err(err) =
+            crate::frame::submit::submit::ensure_surface_current(&mut context.winit_backend)
+        {
             warn!("winit: restore window after capture failed ({err})");
         }
         return;
     }
-    let size = context.output.current_mode().map(|mode| mode.size)
+    let size = context
+        .output
+        .current_mode()
+        .map(|mode| mode.size)
         .unwrap_or_else(|| context.winit_backend.window_size());
     if size.w <= 0 || size.h <= 0 || !scale.is_finite() || scale <= 0.0 {
         screencopy::file::fail_output(&context.output, "output cannot be rendered");
@@ -94,11 +113,19 @@ pub fn capture_offscreen(state: &mut Loop, context: &mut WinitRenderContext) {
     let prepared = frames::scene::scene::prepare(state, renderer, size);
     let scene = frames::scene::scene::scene(state, renderer, size, prepared);
     screencopy::offscreen::capture(
-        renderer, &scene.Element, |element| element.is_cursor(), &context.output, size, scale, false,
+        renderer,
+        &scene.Element,
+        |element| element.is_cursor(),
+        &context.output,
+        size,
+        scale,
+        false,
     );
     state.inner.render_output = previous_output;
     // The next window frame's age query and swap require its EGL surface.
-    if let Err(err) = crate::frame::submit::submit::ensure_surface_current(&mut context.winit_backend) {
+    if let Err(err) =
+        crate::frame::submit::submit::ensure_surface_current(&mut context.winit_backend)
+    {
         warn!("winit: restore window after capture failed ({err})");
     }
 }
@@ -132,12 +159,14 @@ pub fn draw(state: &mut Loop, context: &mut WinitRenderContext) {
     // Round-1 finding B: a request made inside the render (capture polls,
     // effects) must not ping at once — the decision below paces it.
     state.state.redraw.begin_render();
-    let (damage, visible, captures, offscreen) = compose(context, state);
+    let (damage, visible, captures, offscreen, frame_states) = compose(context, state);
     let mut submitted = damage.is_some();
     // A cursorless screencopy render left an offscreen texture current; the swap
     // needs the window surface current again (EGL_BAD_SURFACE otherwise).
     if offscreen {
-        if let Err(err) = crate::frame::submit::submit::make_surface_current(&mut context.winit_backend) {
+        if let Err(err) =
+            crate::frame::submit::submit::make_surface_current(&mut context.winit_backend)
+        {
             warn!("winit: window surface not made current after an offscreen render ({err})");
         }
     }
@@ -146,12 +175,15 @@ pub fn draw(state: &mut Loop, context: &mut WinitRenderContext) {
             match crate::frame::submit::submit::submit(&mut context.winit_backend, &damage) {
                 Ok(()) => {
                     if context.swap_failures > 0 {
-                        info!("winit: swap recovered after {} failed frames", context.swap_failures);
+                        info!(
+                            "winit: swap recovered after {} failed frames",
+                            context.swap_failures
+                        );
                         context.swap_failures = 0;
                     }
                     // A submitted frame: the ledger attributes it to what was pending.
                     state.state.redraw.frame(&output_key, false);
-                    present(context, state, visible);
+                    present(context, state, visible, frame_states.as_ref());
 
                     // One presented frame on this output (winit vsyncs to the host compositor).
                     model::stats::registry::base::present(&output_key);
@@ -170,9 +202,10 @@ pub fn draw(state: &mut Loop, context: &mut WinitRenderContext) {
                         warn!("winit: swap failed ({err}); repainting in full");
                     }
                     context.swap_failures += 1;
-                    state.state.redraw.request_for(
-                        protocols::redraw::schedule::schedule::RedrawReason::Rescue,
-                    );
+                    state
+                        .state
+                        .redraw
+                        .request_for(protocols::redraw::schedule::schedule::RedrawReason::Rescue);
                     state.state.redraw.frame(&output_key, true);
                     owe_frames(context, state, visible);
                 }
@@ -206,7 +239,11 @@ pub fn draw(state: &mut Loop, context: &mut WinitRenderContext) {
             crate::frame::submit::submit::request_redraw(&mut context.winit_backend);
         } else {
             let handle = state.loop_handle.clone();
-            state.state.redraw.wake_at(&handle, std::time::Instant::now() + refresh_of(context), schedule_of);
+            state.state.redraw.wake_at(
+                &handle,
+                std::time::Instant::now() + refresh_of(context),
+                schedule_of,
+            );
         }
     }
     // A producer that needs a frame at a later instant (an iced
@@ -289,7 +326,9 @@ fn owe_frames(context: &mut WinitRenderContext, state: &mut Loop, visible: Vec<W
         warn!("winit: frame-callback timer not armed ({err}); sending now");
         let visible = context.owed_frames.take().unwrap_or_default();
         frames::draw::present::callbacks::callbacks::send_window_frames(
-            state, &context.output, &visible,
+            state,
+            &context.output,
+            &visible,
         );
         frames::draw::present::callbacks::callbacks::send_layer_frames(state, &context.output);
         frames::draw::present::cursor::cursor::send_frames(state, &context.output);
@@ -304,6 +343,7 @@ fn compose(
     Vec<Window>,
     Option<screencopy::Captures<GlesRenderer>>,
     bool,
+    Option<smithay::backend::renderer::element::RenderElementStates>,
 ) {
     // Single source of truth for the output size: the static, scale-1 mode `route.rs` set
     // from the *logical* window size — NOT the raw physical `window_size()`, so the render
@@ -319,6 +359,7 @@ fn compose(
     // What this frame changed, from the damage tracker; `None` when nothing did
     // (or the frame plan drew no scene), which `draw` turns into "submit nothing".
     let mut damage: Option<Vec<Rectangle<i32, Physical>>> = None;
+    let mut frame_states = None;
     // wlr-screencopy readbacks this frame started, finished by `draw` after the swap.
     let mut captures = None;
     // Whether this frame rendered offscreen (a cursorless screencopy frame).
@@ -335,7 +376,9 @@ fn compose(
     // between frames may have made the context current without it: a commit
     // handler's import or a new surface's setup, screencopy's mapping, startup
     // prewarm. Restore it here, once, for all of them (no GL work when current).
-    if let Err(err) = crate::frame::submit::submit::ensure_surface_current(&mut context.winit_backend) {
+    if let Err(err) =
+        crate::frame::submit::submit::ensure_surface_current(&mut context.winit_backend)
+    {
         warn!("winit: window surface not made current before the frame ({err})");
     }
     let age = if context.swap_failures > 0
@@ -357,9 +400,7 @@ fn compose(
     // the rim's capture requests use (they key off `active_output()` on every
     // backend), so entries match on winit too. A hardcoded `OutputId(0)` here never
     // matched the request's keyed id → capture silently produced nothing.
-    let capture_output = OutputId::from_key(
-        &world::state::state::output_key(&context.output),
-    );
+    let capture_output = OutputId::from_key(&world::state::state::output_key(&context.output));
 
     let (gles_renderer, mut gles_framebuffer) = context.winit_backend.bind().unwrap();
 
@@ -367,7 +408,11 @@ fn compose(
     // mid-render here. Its tap subscription lives on
     // this backend's render context (created during render), so subscribe exactly
     // once here: registry presence IS the tap.
-    if state.inner.kernel.get(&world::driver::capture::base::CAPTURE_REGISTRY).is_some()
+    if state
+        .inner
+        .kernel
+        .get(&world::driver::capture::base::CAPTURE_REGISTRY)
+        .is_some()
         && !context.tap_subscriptions.is_active(POST_SCENE)
     {
         context.tap_subscriptions.subscribe(POST_SCENE);
@@ -386,8 +431,7 @@ fn compose(
     if render_scene {
         // GLES prepare phase (builds iced/bevy/parallax resources) — always on
         // the winit GlesRenderer, regardless of which renderer composes.
-        let prepared =
-            frames::scene::scene::prepare(state, gles_renderer, monitor_size);
+        let prepared = frames::scene::scene::prepare(state, gles_renderer, monitor_size);
 
         // GLES only: there is no Vulkan present path.
         {
@@ -410,10 +454,15 @@ fn compose(
             ) {
                 Ok(result) => {
                     if context.render_failures > 0 {
-                        info!("winit: render recovered after {} failed frames", context.render_failures);
+                        info!(
+                            "winit: render recovered after {} failed frames",
+                            context.render_failures
+                        );
                         context.render_failures = 0;
                     }
-                    result.damage.filter(|damage| !damage.is_empty()).cloned()
+                    let damage = result.damage.filter(|damage| !damage.is_empty()).cloned();
+                    frame_states = Some(result.states);
+                    damage
                 }
                 Err(err) => {
                     // A render error must not kill compd: nothing of this frame is
@@ -423,9 +472,10 @@ fn compose(
                         warn!("winit: render failed ({err:?}); repainting in full");
                     }
                     context.render_failures += 1;
-                    state.state.redraw.request_for(
-                        protocols::redraw::schedule::schedule::RedrawReason::Rescue,
-                    );
+                    state
+                        .state
+                        .redraw
+                        .request_for(protocols::redraw::schedule::schedule::RedrawReason::Rescue);
                     None
                 }
             };
@@ -510,13 +560,21 @@ fn compose(
                 gles_renderer,
                 Some(screencopy::Source {
                     framebuffer: &gles_framebuffer,
-                    readback: screencopy::Readback { size: present_size, origin_bottom_left: true },
+                    readback: screencopy::Readback {
+                        size: present_size,
+                        origin_bottom_left: true,
+                    },
                 }),
                 // An FBO rendered untransformed is top-down, as a KMS buffer is.
-                cursorless_framebuffer.as_ref().map(|framebuffer| screencopy::Source {
-                    framebuffer,
-                    readback: screencopy::Readback { size: present_size, origin_bottom_left: false },
-                }),
+                cursorless_framebuffer
+                    .as_ref()
+                    .map(|framebuffer| screencopy::Source {
+                        framebuffer,
+                        readback: screencopy::Readback {
+                            size: present_size,
+                            origin_bottom_left: false,
+                        },
+                    }),
                 &context.output,
                 damage.as_deref(),
             ));
@@ -525,11 +583,11 @@ fn compose(
             // their windows into the entry (off-screen capable, chrome-free);
             // screen/full-screen targets blit the framebuffer.
             if tap_post_scene {
-                if let Some(job) =
-                    recorder::interface::render::window_render_job(state)
-                {
+                if let Some(job) = recorder::interface::render::window_render_job(state) {
                     if let Some(mut dmabuf) = state
-                        .inner.kernel.get(&world::driver::capture::base::CAPTURE_REGISTRY)
+                        .inner
+                        .kernel
+                        .get(&world::driver::capture::base::CAPTURE_REGISTRY)
                         .as_ref()
                         .and_then(|r| r.entry_dmabuf(job.entry_id))
                     {
@@ -541,7 +599,11 @@ fn compose(
                             job.scale,
                         );
                     }
-                } else if let Some(registry) = &mut state.inner.kernel.get(&world::driver::capture::base::CAPTURE_REGISTRY) {
+                } else if let Some(registry) = &mut state
+                    .inner
+                    .kernel
+                    .get(&world::driver::capture::base::CAPTURE_REGISTRY)
+                {
                     registry.tick(
                         &state.inner.environment.GPU.as_str(),
                         gles_renderer,
@@ -554,13 +616,18 @@ fn compose(
         }
     }
 
-    (damage, visible_window, captures, offscreen)
+    (damage, visible_window, captures, offscreen, frame_states)
 }
 
 /// Presentation feedback + frame callbacks + housekeeping via the shared compositor
 /// crates, then ask winit for the next redraw (winit has no hardware page-flip;
 /// presentation is immediate).
-fn present(context: &mut WinitRenderContext, state: &mut Loop, visible: Vec<Window>) {
+fn present(
+    context: &mut WinitRenderContext,
+    state: &mut Loop,
+    visible: Vec<Window>,
+    states: Option<&smithay::backend::renderer::element::RenderElementStates>,
+) {
     // Presentation feedback, which this path used to skip entirely. Frame callbacks
     // and `wp_presentation` are different protocols: sending only the former left every
     // feedback request to be destroyed unanswered, and an unanswered feedback reaches
@@ -576,16 +643,14 @@ fn present(context: &mut WinitRenderContext, state: &mut Loop, visible: Vec<Wind
             &visible,
             None,
         );
-        frames::draw::present::software::software::presented_now(
-            &mut feedback,
-            &context.output,
-        );
+        frames::draw::present::software::software::presented_now(&mut feedback, &context.output);
     }
     // Nested presents at submit (no flip event).
-    world::comp::presentation::frame_queued(state, &context.output, &visible);
+    world::comp::presentation::frame_queued(state, &context.output, &visible, states);
     {
-        let now: std::time::Duration =
-            smithay::utils::Clock::<smithay::utils::Monotonic>::new().now().into();
+        let now: std::time::Duration = smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+            .now()
+            .into();
         // Refresh::Unknown: the host gives no vblank, so the stats' refresh is
         // unknown and `missed` / `refresh_us` read null on nested, not a count
         // against a mode rate.
@@ -595,6 +660,7 @@ fn present(context: &mut WinitRenderContext, state: &mut Loop, visible: Vec<Wind
             now,
             None,
             frames::draw::present::software::software::software_present_kind().bits(),
+            0, // Nested has no hardware output sequence.
         );
     }
     frames::draw::present::callbacks::callbacks::send_window_frames(

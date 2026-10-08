@@ -162,3 +162,23 @@ async fn explicit_reconcile_fences_readback_before_queued_loss_notice() {
     assert!(!ui.session().host().consumer().is_confirmed());
     assert_eq!(ui.session().host().consumer().generation(), None);
 }
+
+#[tokio::test]
+async fn offline_frame_observation_does_not_report_work_or_delay_retirement() {
+    let (mut ui, mut lane) = pair();
+    // Real frame-owner registration queues source and metadata watch edges,
+    // but an offline bridge has no subscriber to publish those observations to.
+    ui.bind_frames(crate::frames::Handle::new());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), lane.drive())
+            .await
+            .is_err()
+    );
+    drop(ui);
+    assert_eq!(lane.drive().await, Progress::UiClosed);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), lane.drive())
+            .await
+            .is_err()
+    );
+}

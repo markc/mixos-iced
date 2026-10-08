@@ -1,0 +1,516 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+-- version: 0.1.0
+-- One real owned broker/session, six simultaneous native apps plus Quoin.
+-- Four exact acceptance frame/layout stamps; Ced/Scene Editor/Quoin capture
+-- palette/boundary evidence remains explicitly different. No KMS claim.
+if len(args()) < 2 or len(args()) > 3 then raise("ARGS","REPO BUILD_BIN_DIR [ACTUAL_OUTPUT_SCALE]") end
+$repo=args()[0]; $bin=args()[1]; $mix=$bin .. "/mix"
+$requested_scale=if len(args()) == 3 then to_number(args()[2]) else 1.25 end
+if $requested_scale != 1 and $requested_scale != 1.25 and $requested_scale != 1.5 then raise("ARGS","Supported measured output scale: 1, 1.25 or 1.5") end
+export MIXOS_TEST_MIX=$mix
+export COMPD_KEEP_RUN="1"
+$n=require("nested_host_lib.mix")
+$h=require("settings_host_lib.mix")
+$f=require("settings_fixture_lib.mix")
+$recovery=require("settings_recovery_lib.mix")
+$product=require("settings_apps_lib.mix")
+$pty=require("pty_host_lib.mix")
+$pixels=require("capture_lib.mix")
+$all=require("settings_all_apps_lib.mix")
+$participants=require("settings_participants_lib.mix")
+$failure=require("settings_failure_lib.mix")
+$binding={instance:"fixture",profile:"default"}
+$R={run:nil,bus:nil,session:nil,children:[],owners:[],ok:false,serial:0,ced_tab:nil,ced_state:nil,scene_state:nil,rounds:[]}
+fn check($condition,$message) return $all.check($condition,$message) end
+for each $name in ["mix","noded","settingsd","compd","editd","term","ced","busviewer","cap","dopus","scene-editor","testkit-screenshot","testkit-input-probe"]
+  check(is_file($bin .. "/" .. $name),"Missing candidate " .. $name)
+end
+$pty.check_support()
+fn rpc($service,$verb,$body)
+  return $h.rpc($mix,$R.bus,$R.run.path,$service,$verb,$body)
+end
+fn comp($verb,$body) return rpc($R.session.service,$verb,$body) end
+fn shell($verb,$body) return rpc("shell",$verb,$body) end
+fn own($pid,$privileged)
+  $R.children=concat($R.children,[{pid:$pid,privileged_launcher:$privileged}])
+  return $pid
+end
+fn ready($service,$verb,$pid)
+  $deadline=time()+15
+  while time() < $deadline
+    check(process_alive($pid),"Owned " .. $service .. " exited")
+    $r=$h.call($mix,$R.bus,$R.run.path,$service,$verb,{})
+    if $r.rc == 0 then return $r.result end
+    sleep(0.05)
+  end
+  raise("READY",$service .. " did not register")
+end
+fn env_for($home)
+  for each $dir in ["config","state","cache","data"]
+    mkdir($home .. "/" .. $dir,{parents:true})
+  end
+  return merge($h.bus_env($R.bus,$R.run.path),{HOME:$home,MIXOS_APP_HOME:$home,
+    XDG_CONFIG_HOME:$home .. "/config",XDG_STATE_HOME:$home .. "/state",
+    XDG_CACHE_HOME:$home .. "/cache",XDG_DATA_HOME:$home .. "/data",
+    XDG_DATA_DIRS:$R.run.path .. "/core",MIXOS_SHARE:$R.run.path .. "/core",
+    MIXOS_SETTINGS_INSTANCE:"fixture",MIXOS_SETTINGS_PROFILE:"default",
+    LIBGL_ALWAYS_SOFTWARE:"1",TERM_NOTIFY:"0",WGPU_BACKEND:"gl",
+    SCENES_SERVICE:"scenes",SCENE_HOST:"shell"})
+end
+fn apply($changes,$label)
+  $old=rpc("settingsd","settings.get",{binding:$binding}).snapshot
+  $issued=time()
+  $accepted=rpc("settingsd","settings.apply",{binding:$binding,expected_incarnation:$old.incarnation,
+    expected_revision:$old.revision,operation_id:"all-apps-" .. $label,changes:$changes,reset:[]})
+  $snapshot=rpc("settingsd","settings.get",{binding:$binding}).snapshot
+  check($snapshot.incarnation == $old.incarnation and $snapshot.revision != $old.revision,"Batch did not advance authority")
+  return {snapshot:$snapshot,issued:$issued,accept_reply_observed:time(),reply:$accepted,operation_id:"all-apps-" .. $label}
+end
+fn launch($name,$label,$fixture)
+  $R.serial=$R.serial+1
+  $home=$R.run.path .. "/home-" .. $name .. "-" .. $label
+  $ctx={mix:$mix,bus:$R.bus,bus_root:$R.run.path,root:$R.run.path .. "/owner-" .. $name .. "-" .. $label,
+    service:if $name == "term" then "term" else $name .. "-" .. $label end}
+  mkdir($ctx.root,{parents:true})
+  $identity={run:"all-apps-" .. to_string(pid()),instance:$R.serial}
+  $extra=env_for($home)
+  if $fixture then $extra=merge($extra,{MIXOS_ACCEPTANCE_RUN:$identity.run,MIXOS_ACCEPTANCE_INSTANCE:to_string($identity.instance)}) end
+  $env=$n.client_env($R.session,$extra)
+  $argv=if $name == "term" then $pty.launch_argv($bin,$env)
+    elif $name == "ced" then [$bin .. "/ced","--service",$ctx.service,$R.run.path .. "/document.txt"]
+    elif $name == "dopus" then [$bin .. "/dopus","--service",$ctx.service,"--noded-url",$R.bus.url,"--",$R.run.path .. "/left",$R.run.path .. "/right"]
+    elif $name == "cap" then [$bin .. "/cap","--service",$ctx.service,"--comp",$R.session.service,$R.run.path .. "/source.png"]
+    elif $name == "scene-editor" then [$bin .. "/scene-editor","--service",$ctx.service,"--comp",$R.session.service,"mixos-scene-editor:installed/calendar"]
+    else [$bin .. "/busviewer","--service",$ctx.service,"--comp",$R.session.service] end
+  $launcher=own(spawn($argv,{env:$env,stdout:{file:$ctx.root .. "/app.log"},stderr:"stdout",detach:true}),$name == "term")
+  comp("comp.window.wait",{match:{app_id:"dev.mixos." .. $name},until:"mapped",timeout_ms:15000})
+  $deadline=time()+10; $row=nil
+  while time() < $deadline
+    $rows=filter(comp("comp.windows.list",{}).windows,fn($w)=$w.app_id == "dev.mixos." .. $name and ($name == "term" or $w.pid == $launcher))
+    if len($rows) == 1 then
+      $row=comp("comp.window.wait",{match:{id:$rows[0].id,generation:$rows[0].generation},until:"presented",timeout_ms:5000}).window
+      if $row != nil then break end
+    end
+    sleep(0.05)
+  end
+  check($row != nil and $row.pid != nil and ($name == "term" or $row.pid == $launcher),"Wrong actual launched owner")
+  if $name == "term" then own($row.pid,false) end
+  $app={name:$name,pid:$row.pid,launcher:$launcher,window:{id:$row.id,generation:$row.generation},
+    context:$ctx,identity:$identity,settings_context:"app:" .. $name,fixture:$fixture,work_root:$R.run.path,
+    version:toml_parse(read_file($repo .. "/apps/" .. $name .. "/Cargo.toml")).package.version,
+    desktop:{mix:$mix,bus:$R.bus,root:$R.run.path,service:$R.session.service}}
+  $R.owners=concat($R.owners,[$app])
+  return $app
+end
+fn owner($name)
+  return filter($R.owners,fn($o)=$o.name == $name)[0]
+end
+fn descriptions($batch,$label)
+  $receipts=[]
+  for each $app in $R.owners
+    $description=$all.current($app.context,$app.pid,$batch.snapshot,$binding,$app.settings_context,15)
+    write_file($app.context.root .. "/description-" .. $label .. ".json",json_encode($description))
+    $all.canonical($description,$app,$batch.snapshot,$binding,$manifest,$manifest_digest)
+    $observed=time()
+    $receipts=concat($receipts,[{name:$app.name,pid:$app.pid,service:$app.context.service,
+      current:$description.settings.current,applied:$description.settings.applied,
+      resources:$description.resources,observation_upper_bound_ms:($observed-$batch.issued)*1000,
+      latency_kind:"authority call issued to sequential current/applied observation upper bound"}])
+  end
+  check(time()-$batch.issued < 180,"Shared authority observation exceeded bounded 180-second phase")
+  return $receipts
+end
+fn simultaneously_alive()
+  $windows=comp("comp.windows.list",{}).windows
+  for each $app in $R.owners
+    check(process_alive($app.pid),"Concurrent owner exited: " .. $app.name)
+    if $app.name != "quoin" then
+      check(len(filter($windows,fn($w)=$w.id == $app.window.id and $w.generation == $app.window.generation and $w.pid == $app.pid)) == 1,"Concurrent window replaced: " .. $app.name)
+    end
+  end
+  return $windows
+end
+fn participant_presentations($batch,$label)
+  $records=[]
+  for each $app in $R.owners
+    if $app.name != "quoin" then comp("comp.window.focus",$app.window) end
+    $live=shell("app.describe",{}).participants
+    $matches=filter($live.participants,fn($row)=$row.service == $app.context.service and $row.pid == $app.pid
+      and ($app.name != "quoin" or $row.key == $app.context.service .. "/all-apps-control")
+      and $row.state != "hidden" and $row.state != "closed")
+    check(len($matches) == 1,"Actual single visible participant not available: " .. $app.name)
+    $key=$matches[0].key
+    $receipt=shell("app.participants.wait",{operation_id:$batch.operation_id,services:[$app.context.service],keys:[$key],until:"presented",timeout_ms:3000})
+    $record=$participants.exact_presented($receipt,$batch.operation_id,$app.context.service,$key,$app.pid,$h.identity($batch.snapshot))
+    $records=concat($records,[$record])
+    write_file($R.run.path .. "/participant-" .. $label .. "-" .. $app.name .. ".json",json_encode($receipt))
+  end
+  return {records:$records,population:"seven distinct live participants for one changed operation",
+    environment:"owned nested compositor; all owners concurrent; sequential native reveal after authority change",
+    applied:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_applied_ns != nil),fn($row)=$row.accepted_to_applied_ns)),
+    presented:$participants.quantiles(map(filter($records,fn($row)=$row.accepted_to_presented_ns != nil),fn($row)=$row.accepted_to_presented_ns))}
+end
+fn native_states()
+  $receipts=[]
+  $serial=0
+  for each $app in $R.owners
+    if $app.name != "quoin" then
+      for each $state in ["hidden","minimised"]
+        $serial=$serial+1
+        if $state == "hidden" then comp("comp.window.send_to_workspace",merge($app.window,{index:2,follow:false}))
+        else comp("comp.window.minimize",$app.window) end
+        $batch=apply({"ui.text_scale":1.0+$serial*0.01},"participant-" .. $app.name .. "-" .. $state)
+        $receipt=shell("app.participants.wait",{operation_id:$batch.operation_id,services:[$app.context.service],timeout_ms:3000})
+        check(not $receipt.deadline_elapsed,"Native nonvisible owner failed to accept changed operation")
+        $rows=filter($receipt.observations.participants,fn($row)=$row.service == $app.context.service and $row.pid == $app.pid)
+        check(len($rows) == 1 and $rows[0].state == $state and $rows[0].phase != "presented" and $rows[0].presentation == nil,"Hidden/minimised buffer supplied false presentation")
+        $key=$rows[0].key
+        if $state == "hidden" then comp("comp.window.send_to_workspace",merge($app.window,{index:1,follow:false}))
+        else comp("comp.window.restore",$app.window) end
+        comp("comp.window.focus",$app.window)
+        $fresh=shell("app.participants.wait",{operation_id:$batch.operation_id,services:[$app.context.service],keys:[$key],until:"presented",timeout_ms:3000})
+        $participants.exact_presented($fresh,$batch.operation_id,$app.context.service,$key,$app.pid,$h.identity($batch.snapshot))
+        $receipts=concat($receipts,[{app:$app.name,state:$state,pending:$receipt,resumed:$fresh}])
+      end
+    end
+  end
+  $term=owner("term")
+  comp("comp.window.focus",$term.window)
+  $description=$f.rpc($term.context,"app.describe",{})
+  $identity=$term.identity
+  $reference=$failure.hold($term.context,$identity,"term","participant-deadline")
+  $batch=apply({"ui.text_scale":1.37},"participant-deadline")
+  $reached=$f.fixture($term.context,"barrier.wait",$reference)
+  check($reached.state == "reached","Actual preparation barrier did not hold")
+  $deadline=shell("app.participants.wait",{operation_id:$batch.operation_id,services:[$term.context.service],until:"presented",timeout_ms:1000})
+  $rows=filter($deadline.observations.participants,fn($row)=$row.service == $term.context.service)
+  check($deadline.deadline_elapsed and len($rows) == 1 and $rows[0].state == "nonresponsive","Real held owner did not receive bounded nonresponsive receipt")
+  check($f.fixture($term.context,"barrier.release",$reference).state == "released","Actual held owner failed release")
+  $fresh=shell("app.participants.wait",{operation_id:$batch.operation_id,services:[$term.context.service],keys:[$rows[0].key],until:"presented",timeout_ms:3000})
+  $participants.exact_presented($fresh,$batch.operation_id,$term.context.service,$rows[0].key,$term.pid,$h.identity($batch.snapshot))
+  return {visibility:$receipts,held_deadline:$deadline,released:$fresh,
+    inactive_session:{status:"hardware witness required",reason:"nested gate cannot manufacture a physical VT inactive/active transition"}}
+end
+fn native_idle()
+  $trace=$R.run.path .. "/frame-trace.log"
+  check(is_file($trace),"Actual compositor frame trace is missing")
+  $offset=bytes_len(string_to_bytes(read_file($trace)))
+  $batch=apply({"ui.text_scale":1.39},"participant-idle-calibration")
+  $calibration=participant_presentations($batch,"idle-calibration")
+  sleep(0.5)
+  $calibrated=$participants.trace_counts(slice(read_file($trace),$offset))
+  check($calibrated.submitted > 0,"Native trace could not see calibrated changed-operation frames")
+  $offset=bytes_len(string_to_bytes(read_file($trace)))
+  sleep(1.5)
+  $baseline=$participants.trace_counts(slice(read_file($trace),$offset))
+  $offset=bytes_len(string_to_bytes(read_file($trace)))
+  for each $app in $R.owners
+    $f.rpc($app.context,"app.describe",{})
+  end
+  $keys=map($calibration.records,fn($row)=$row.key)
+  $services=map($R.owners,fn($app)=$app.context.service)
+  $same=shell("app.participants.wait",{operation_id:$batch.operation_id,services:$services,keys:$keys,until:"presented",timeout_ms:3000})
+  check(not $same.deadline_elapsed,"Pure observation lost current operation presentation")
+  sleep(1.5)
+  $observed=$participants.trace_counts(slice(read_file($trace),$offset))
+  check($observed.observer_only_submitted == 0,"Pure participant observations requested compositor-only redraws")
+  return {actual_output_scale:$output.scale,calibration:$calibration,calibration_trace:$calibrated,
+    baseline:{seconds:1.5,trace:$baseline},observation:{seconds:1.5,trace:$observed,receipt:$same},
+    guard:"no submitted frames with only Bus/Publish reasons; actual product/native timer frames reported separately",
+    output_change:{status:"source owner gap",reason:"nested factory accepts scale only before wire; no native Bus live scale/mode route in this base"}}
+end
+fn native_samples()
+  $runs=[]; $series={}
+  for $index=1 to 20
+    $mode=if floor($index/2)*2 == $index then "light" else "dark" end
+    $batch=apply({"appearance.mode":$mode},"participant-sample-" .. to_string($index))
+    $sample=participant_presentations($batch,"sample-" .. to_string($index))
+    for each $record in $sample.records
+      check(type($record.accepted_to_applied_ns) == "number" and type($record.accepted_to_presented_ns) == "number","Original comparable native timing unavailable for " .. $record.service)
+      $prior=$series[$record.service] ?? {applied:[],presented:[]}
+      $series[$record.service]={applied:concat($prior.applied,[$record.accepted_to_applied_ns]),presented:concat($prior.presented,[$record.accepted_to_presented_ns])}
+    end
+    $runs=concat($runs,[$sample])
+  end
+  $quantiles={}
+  for each $service in keys($series)
+    $quantiles[$service]={accepted_to_applied:$participants.quantiles($series[$service].applied),accepted_to_presented:$participants.quantiles($series[$service].presented)}
+  end
+  retained("measured-samples")
+  return {runs:$runs,per_service:$quantiles,resident_resources:true,exclusions:[],
+    environment:"recorded owned nested software renderer, actual fractional output, all seven owners concurrent, sequential native reveal",
+    reference_hardware:false,broadcast_only_p95_claimed:false,target_p95_ns:100000000,
+    target_disposition:"measured values only; reference hardware and simultaneous visible broadcast release target remain separate acceptance"}
+end
+fn observe_frames($label)
+  $receipts=[]
+  for each $app in $R.owners
+    if $app.fixture then
+      comp("comp.window.focus",$app.window)
+      $description=$f.rpc($app.context,"app.describe",{})
+      $frame=$recovery.observe($app.context,$app.identity,$description,$label)
+      $receipts=concat($receipts,[{name:$app.name,pid:$app.pid,kind:"exact native target/stamp presentation and actual root layout",frame:$frame}])
+    end
+  end
+  return $receipts
+end
+fn capture_palette($app,$snapshot,$label,$width,$sample_x)
+  -- A known real magenta client is raised first, then the owned client. Its
+  -- pixels just outside the new width fence this stage's configure/buffer.
+  comp("comp.window.focus",$background_window)
+  comp("comp.window.focus",$app.window)
+  comp("comp.window.place",merge($app.window,{x:0,y:0,width:$width,height:600}))
+  check(comp("comp.window.wait",{match:$app.window,until:"size",width:$width,height:600,timeout_ms:5000}).window != nil,"Client width did not commit")
+  $path=$app.context.root .. "/palette-" .. $label .. ".ppm"
+  $wanted=$snapshot.effective[$app.settings_context].design.pairs.base.rendered_surface
+  $deadline=time()+8
+  $receipt=nil
+  while time() < $deadline
+    run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:10,env:$n.client_env($R.session,{})})
+    $image=$pixels.ppm($path)
+    $inside=$pixels.pixel($image,round(($width-2)*$output.scale),round(400*$output.scale))
+    $outside=$pixels.pixel($image,round(($width+2)*$output.scale),round(400*$output.scale))
+    $sample=$pixels.pixel($image,round($sample_x*$output.scale),round(400*$output.scale))
+    $matches=abs($outside[0]-255) <= 3 and $outside[1] <= 3 and abs($outside[2]-255) <= 3
+    for $channel=0 to 2
+      if abs($inside[$channel]-$pixels.srgb($wanted[$channel])) > 8 or abs($sample[$channel]-$pixels.srgb($wanted[$channel])) > 8 then $matches=false end
+    end
+    if $matches then $receipt={kind:"native palette plus distinct configure/buffer boundary",path:$path,width:$width,palette:$sample,inside:$inside,outside:$outside}; break end
+    sleep(0.05)
+  end
+  check($receipt != nil,"Native palette/boundary did not settle: " .. $app.name)
+  check(deep_eq($f.rpc($app.context,"app.describe",{}).settings.applied,$h.identity($snapshot)),"Authority changed during native capture")
+  write_file($app.context.root .. "/palette-" .. $label .. ".json",json_encode($receipt))
+  return $receipt
+end
+fn quoin_capture($snapshot,$label,$scene)
+  $layout=shell("shell.scene.layout",{scene:$scene})
+  check($layout.visible and $layout.nodes.go != nil,"Actual Quoin button missing")
+  $token=nil
+  for each $candidate in $snapshot.effective.desktop.design.buttons
+    if $candidate.variant == "primary" and $candidate.size == "md" and $candidate.interaction == "resting" and not $candidate.focus_visible then $token=$candidate end
+  end
+  check($token != nil and $token.pair.surface[3] == 1,"No opaque primary token")
+  $path=$R.run.path .. "/quoin-" .. $label .. ".ppm"
+  $deadline=time()+8; $receipt=nil
+  while time() < $deadline
+    $layout=shell("shell.scene.layout",{scene:$scene})
+    run_argv_must([$bin .. "/testkit-screenshot",$path],{timeout:10,env:$n.client_env($R.session,{})})
+    $image=$pixels.ppm($path)
+    $go=$layout.nodes.go
+    $sample=$pixels.pixel($image,round(($layout.surface.x+$go.x+8)*$output.scale),round(($layout.surface.y+$go.y+8)*$output.scale))
+    $matches=true
+    for $channel=0 to 2
+      if abs($sample[$channel]-$pixels.srgb($token.pair.surface[$channel])) > 8 then $matches=false end
+    end
+    if $matches then $receipt={kind:"actual Quoin layout and native primary palette",layout:$layout,path:$path,palette:$sample}; break end
+    sleep(0.05)
+  end
+  check($receipt != nil,"Quoin palette did not match common authority")
+  check(deep_eq(shell("app.describe",{}).settings.applied,$h.identity($snapshot)),"Quoin changed during capture")
+  return $receipt
+end
+fn scene_document($name,$citizen)
+  return "---\nscene: 1\nname: " .. $name .. "\ncitizen: " .. $citizen .. "\nwindow: {\"kind\":\"edge\",\"edge\":\"bottom\",\"h\":72}\n---\n```mix\nroot: {widget: \"row\", padding: 4, fill: true, children: [\"go\"]}\ngo: {widget: \"button\", label: \"Go\", tone: \"primary\", width: 160, on_click: \"go\"}\n```\n"
+end
+fn retained($label)
+  for each $app in $R.owners
+    if $app.fixture and $app.product != nil then $product.product_retained($app,$app.product,$label) end
+  end
+  $ced=owner("ced")
+  $after=$f.rpc($ced.context,"ced.state",{tab:$R.ced_tab,text:true})
+  check($R.ced_state.buffer == $after.buffer and $R.ced_state.rev == $after.rev and
+    $R.ced_state.text == $after.text and deep_eq($R.ced_state.selection,$after.selection),"Ced text/caret changed")
+  $editor=owner("scene-editor")
+  $after=$f.rpc($editor.context,"scene-editor.info",{})
+  check(deep_eq($R.scene_state.selection,$after.selection) and $after.ui.dialog == "confirm" and
+    deep_eq($R.scene_state.ui.confirmation,$after.ui.confirmation),"True Scene Editor selection/confirmation changed")
+  write_file($R.run.path .. "/product-special-" .. $label .. ".json",json_encode({ced:$f.rpc($ced.context,"ced.state",{tab:$R.ced_tab,text:true}),scene_editor:$after}))
+end
+try
+  $R.run=$n.new_run("/var/tmp/settings-all-apps")
+  $root=$R.run.path
+  mkdir($root .. "/core",{parents:true})
+  run_argv_must([$mix,$repo .. "/share/assets/install.mix","--root",$root .. "/core/assets","--manifest",$repo .. "/share/assets/core.conf.mix"],{timeout:300,max_output:2000000})
+  run_argv_must([$mix,$repo .. "/share/assets/install.mix","--root",$root .. "/core/assets","--manifest",$repo .. "/share/assets/core.conf.mix","--verify"],{timeout:30})
+  $manifest=load_data($repo .. "/share/assets/core.conf.mix")
+  $manifest_digest=hash_file($root .. "/core/assets/current/manifest.conf.mix","blake3")
+  check($manifest_digest == hash_file($repo .. "/share/assets/core.conf.mix","blake3"),"Installed core manifest differs")
+  $R.bus=$n.private_bus({dir:$root,name:"settings-all-apps",noded:$bin .. "/noded"})
+  run_argv_must([$bin .. "/settingsd","seed","--allow-create","--instance","fixture","--root",$root .. "/profile"],{timeout:30})
+  $authority=own(spawn([$bin .. "/settingsd","serve","--instance","fixture","--root",$root .. "/profile"],{env:env_for($root .. "/authority-home"),stdout:{file:$root .. "/settingsd.log"},stderr:"stdout",detach:true}),false)
+  ready("settingsd","settings.describe",$authority)
+  $light=apply({"appearance.mode":"light","ui.text_scale":1.0,"ui.density":1.0,"shell.panels.bottom":{edge:"bottom",mode:"overlay",thickness:72}},"initial-light")
+  mkdir($root .. "/cfg",{parents:true})
+  write_file($root .. "/cfg/settings.json",read_file($repo .. "/tests/desktop/smoke-settings.json"))
+  write_file($root .. "/cfg/preferences.json",json_encode({scene_host:true,scene_service:"all-apps-fallback",decorations_ssd:false}))
+  $R.session=$n.start({bin:$bin .. "/compd",tag:"all-apps",run:$R.run,config:$root .. "/cfg/settings.json",
+    host_renderer:"pixman",software:true,scale:$requested_scale,max_secs:900,
+    width:1280*$requested_scale,height:800*$requested_scale,
+    env:merge(env_for($root .. "/compositor-home"),{COMPD_FRAME_TRACE:"1",COMPD_FRAME_TRACE_FILE:$root .. "/frame-trace.log",COMPD_FRAME_TRACE_LIMIT:"1000000"})})
+  check($n.wait_ready($R.session,30),"Owned compositor did not register")
+  ready("shell","shell.info",$R.session.comp_pid)
+  check(shell("shell.info",{}).service == "shell","Real Quoin host failed canonical registration")
+  comp("comp.props.set",{path:"input.host.passthrough",value:false})
+  $outputs=comp("comp.props.get",{path:"outputs"})
+  check(len(keys($outputs)) == 1,"Expected one owned output")
+  $output=$outputs[keys($outputs)[0]]
+  check($output.scale == $requested_scale,"Actual compositor output scale differs from requested fractional scale")
+  check($output.width >= 1100 and $output.height >= 700,"Palette boundary proof needs 1100x700 output")
+  $R.owners=concat($R.owners,[{name:"quoin",pid:$R.session.comp_pid,settings_context:"desktop",fixture:false,
+    version:toml_parse(read_file($repo .. "/services/compd/Cargo.toml")).package.version,
+    context:{mix:$mix,bus:$R.bus,bus_root:$root,root:$root,service:"shell"}}])
+  $edit=own(spawn([$bin .. "/editd","serve"],{env:env_for($root .. "/edit-home"),stdout:{file:$root .. "/editd.log"},stderr:"stdout",detach:true}),false)
+  ready("edit","edit.ping",$edit)
+  mkdir($root .. "/scenes",{parents:true})
+  $scenes=own(spawn([$mix,"--serve",$repo .. "/services/compd/scripts/scenes.mix","--name","scenes"],
+    {env:merge(env_for($root .. "/scenes-home"),{SCENES_DIR:$root .. "/scenes",SCENES_TEMPLATES:$repo .. "/share/scenes",SCENES_LIB:$repo .. "/share/scenes/lib",SCENE_HOST:"shell",SCENES_FIRST_RUN:"0",SCENES_EDITOR_APP:"1",SCENE_EDITOR_SERVICE:"scene-editor-main"}),stdout:{file:$root .. "/scenes.log"},stderr:"stdout",detach:true}),false)
+  ready("scenes","scenes.list",$scenes)
+  check(rpc("scenes","scenes.install",{template:"calendar",enable:false}).installed,"Real calendar did not install")
+  write_file($root .. "/controls.mix","on go\n append_file(" .. json_encode($root .. "/controls-events.jsonl") .. ",json_encode($event.args) .. \"\\n\")\n reply(\"ok\")\nend\n")
+  write_file($root .. "/controls-events.jsonl","")
+  $citizen=own(spawn([$mix,"--serve",$root .. "/controls.mix","--name","all-apps-controls"],{env:env_for($root .. "/controls-home"),stdout:{file:$root .. "/controls.log"},stderr:"stdout",detach:true}),false)
+  ready("all-apps-controls","HELP",$citizen)
+  shell("shell.scene.load",{source:scene_document("all-apps-control","all-apps-controls")})
+  $deadline=time()+10
+  $panel=nil
+  while time() < $deadline
+    $panel=shell("shell.panel.state",{edge:"bottom"})
+    if $panel.mode == "pinned" and $panel.settings != nil and $panel.settings.presented_px == 72 then break end
+    $panel=nil
+    sleep(0.05)
+  end
+  check($panel != nil,"Settings-owned bottom panel did not become pinned")
+  shell("shell.panel.page.set",{edge:"bottom",id:"scene-all-apps-control"})
+  for each $dir in ["left","right"] mkdir($root .. "/" .. $dir,{parents:true}) end
+  write_file($root .. "/left/owned-file.txt","simultaneous native file\n")
+  write_file($root .. "/document.txt","simultaneous native Ced text\n")
+  copy($repo .. "/share/brand/favicons/white-on-black/icon-512.png",$root .. "/source.png")
+  for each $name in ["term","busviewer","cap","dopus","ced","scene-editor"]
+    $app=launch($name,"main",contains(["term","busviewer","cap","dopus"],$name))
+    $all.current($app.context,$app.pid,$light.snapshot,$binding,$app.settings_context,15)
+    if $app.fixture then
+      $state=$product.prepare_product($app)
+      $updated=merge($app,{product:$state})
+      $R.owners=map($R.owners,fn($o)=if $o.pid == $app.pid then $updated else $o end)
+    end
+  end
+  $ced=owner("ced")
+  $tabs=$f.rpc($ced.context,"ced.tabs",{}).tabs
+  check(len($tabs) == 1,"Ced document not opened exactly once")
+  $R.ced_tab=$tabs[0].tab
+  $f.rpc($ced.context,"ced.wait",{tab:$R.ced_tab,phase:"live",timeout_ms:10000})
+  $f.rpc($ced.context,"ced.select",{tab:$R.ced_tab,anchor:5,head:5})
+  $R.ced_state=$f.rpc($ced.context,"ced.state",{tab:$R.ced_tab,text:true})
+  $editor=owner("scene-editor")
+  $f.rpc($editor.context,"scene-editor.show",{view:"installed",scene:"calendar"})
+  $deadline=time()+15; $selected=nil
+  while time() < $deadline
+    $selected=$f.rpc($editor.context,"scene-editor.info",{})
+    if not $selected.busy and $selected.snapshot != nil and $selected.snapshot.host_problem == nil and $selected.selection.scene == "calendar" and $selected.selection.view == "installed" then break end
+    $selected=nil; sleep(0.05)
+  end
+  check($selected != nil,"True Scene Editor calendar selection unavailable")
+  comp("comp.window.focus",$editor.window)
+  for each $key in ["F10","Right","Right","End","Return"] comp("comp.input.key",{seat:"human",window:$editor.window,key:$key}) end
+  $deadline=time()+5; $confirm=nil
+  while time() < $deadline
+    $confirm=$f.rpc($editor.context,"scene-editor.info",{})
+    if $confirm.ui.dialog == "confirm" and $confirm.ui.confirmation != nil then break end
+    $confirm=nil; sleep(0.05)
+  end
+  check($confirm != nil and $confirm.ui.confirmation.action.action == "remove" and $confirm.ui.confirmation.selection.scene == "calendar","Actual frozen remove confirmation missing")
+  $R.scene_state=$confirm
+  $probe=own(spawn([$bin .. "/testkit-input-probe","--app-id","dev.mixos.AllAppsBoundary","--size",to_string($output.width) .. "x" .. to_string($output.height-72),"--seconds","900","--colour","ff00ff"],{env:$n.client_env($R.session,{}),stdout:{file:$root .. "/boundary.log"},stderr:"stdout",detach:true}),false)
+  $row=comp("comp.window.wait",{match:{app_id:"dev.mixos.AllAppsBoundary"},until:"presented",timeout_ms:5000}).window
+  $background_window={id:$row.id,generation:$row.generation}
+  comp("comp.window.place",merge($background_window,{x:0,y:0,width:$output.width,height:$output.height-72}))
+  $batches=[$light]
+  for each $round in [{label:"light",changes:nil},{label:"dark-scaled",changes:{"appearance.mode":"dark","ui.text_scale":1.25,"ui.density":1.2}},{label:"light-dense",changes:{"appearance.mode":"light","ui.text_scale":1.1,"ui.density":0.9}}]
+    $batch=if $round.changes == nil then $light else apply($round.changes,$round.label) end
+    $descriptions=descriptions($batch,$round.label)
+    simultaneously_alive()
+    retained($round.label)
+    $frames=observe_frames($round.label)
+    $width=1000+len($R.rounds)*2
+    $ced_palette=capture_palette($ced,$batch.snapshot,$round.label,$width,200)
+    $editor_palette=capture_palette($editor,$batch.snapshot,$round.label,$width+1,5)
+    $quoin_palette=quoin_capture($batch.snapshot,$round.label,"all-apps-control")
+    $participant_receipts=if $round.changes == nil then {unavailable:"initial authority operation preceded owner bootstrap"} else participant_presentations($batch,$round.label) end
+    $R.rounds=concat($R.rounds,[{label:$round.label,identity:$h.identity($batch.snapshot),owners:$descriptions,frames:$frames,
+      ced:$ced_palette,scene_editor:$editor_palette,quoin:$quoin_palette,participants:$participant_receipts,
+      observation_upper_bound_ms:(time()-$batch.issued)*1000,latency_kind:"sequential observation and capture upper bound; no percentiles"}])
+  end
+  $participant_states=native_states()
+  $participant_idle=native_idle()
+  $participant_samples=native_samples()
+  -- A newly created app/control resolves the changed authority while all
+  -- original citizens remain alive and retain their genuine product state.
+  $late=launch("busviewer","late",true)
+  $changed=rpc("settingsd","settings.get",{binding:$binding}).snapshot
+  $late_description=$all.current($late.context,$late.pid,$changed,$binding,$late.settings_context,15)
+  write_file($late.context.root .. "/description-late.json",json_encode($late_description))
+  $all.canonical($late_description,$late,$changed,$binding,$manifest,$manifest_digest)
+  comp("comp.window.focus",$late.window)
+  $late_frame=$recovery.observe($late.context,$late.identity,$late_description,"late")
+  $late_citizen=own(spawn([$mix,"--serve",$root .. "/controls.mix","--name","all-apps-late-controls"],{env:env_for($root .. "/late-controls-home"),stdout:{file:$root .. "/late-controls.log"},stderr:"stdout",detach:true}),false)
+  ready("all-apps-late-controls","HELP",$late_citizen)
+  shell("shell.scene.load",{source:scene_document("all-apps-late-control","all-apps-late-controls")})
+  shell("shell.panel.page.set",{edge:"bottom",id:"scene-all-apps-late-control"})
+  $late_control=quoin_capture($changed,"late","all-apps-late-control")
+  $offset=bytes_len(string_to_bytes(read_file($root .. "/controls-events.jsonl")))
+  $go=$late_control.layout.nodes.go
+  comp("comp.input.pointer.move",{seat:"human",x:$late_control.layout.surface.x+$go.x+$go.w/2,y:$late_control.layout.surface.y+$go.y+$go.h/2})
+  comp("comp.input.pointer.button",{seat:"human",button:"left",action:"click"})
+  $deadline=time()+5; $click=nil
+  while time() < $deadline
+    $fresh=slice(read_file($root .. "/controls-events.jsonl"),$offset)
+    if trim($fresh) != "" then
+      $click=json_parse(lines(trim($fresh))[0]); break
+    end
+    sleep(0.05)
+  end
+  check($click != nil and $click.scene == "all-apps-late-control" and $click.node == "go" and $click.kind == "click","New actual Quoin control did not dispatch native input")
+  $late_control=merge($late_control,{click:$click})
+  simultaneously_alive()
+  retained("late")
+  $late_rows=filter(shell("app.describe",{}).participants.participants,fn($row)=$row.service == $late.context.service and $row.pid == $late.pid)
+  check(len($late_rows) == 1,"Late native owner did not join participant registry")
+  comp("comp.window.close",merge($late.window,{force:false}))
+  $closed=shell("app.participants.wait",{operation_id:"all-apps-participant-deadline",services:[$late.context.service],keys:[$late_rows[0].key],until:"closed",timeout_ms:3000})
+  $closed_rows=filter($closed.observations.participants,fn($row)=$row.key == $late_rows[0].key)
+  check(not $closed.deadline_elapsed and len($closed_rows) == 1 and $closed_rows[0].state == "closed" and $closed_rows[0].presentation == nil,"Closed native owner retained a live presentation")
+  $inventory=rpc("noded","noded.inventory",{})
+  $binary_hashes=[]
+  for each $name in ["mix","noded","settingsd","compd","editd","term","ced","busviewer","cap","dopus","scene-editor","testkit-screenshot","testkit-input-probe"]
+    $binary_hashes=concat($binary_hashes,[{binary:$name,sha256:hash_file($bin .. "/" .. $name,"sha256")}])
+  end
+  write_file($root .. "/acceptance.json",json_encode({source:trim(run_argv_must(["git","-C",$repo,"rev-parse","HEAD"])),
+    source_tree:trim(run_argv_must(["git","-C",$repo,"rev-parse","HEAD^{tree}"])),binary_hashes:$binary_hashes,broker:{pid:$R.bus.pid,url:$R.bus.url},
+    compositor:{pid:$R.session.comp_pid,service:$R.session.service,backend:"nested"},native_inventory:$inventory,
+    all_six_simultaneous:true,quoin:true,core_set:$manifest.set_id,core_manifest_blake3:$manifest_digest,rounds:$R.rounds,participant_states:$participant_states,participant_idle:$participant_idle,participant_samples:$participant_samples,
+    new_app:{pid:$late.pid,description:$late_description,frame:$late_frame,closed:$closed},new_control:$late_control,
+    hardware:false,actual_output_scale:$output.scale,quantile_population:"actual monotonic durations across current operation participants; small measured sample count explicit",exact_frame_participants:["term","busviewer","cap","dopus"],
+    palette_boundary_participants:["ced","scene-editor"],quoin_palette_layout:true}))
+  $R.ok=true
+catch $message
+  print("FAIL simultaneous settings: " .. $message)
+finally
+  for each $child in $R.children
+    try check($pty.stop_child($child),"Owned child survived teardown") catch $error
+      $R.ok=false; print("FAIL owned teardown: " .. $error)
+    end
+  end
+  if $R.session != nil then
+    try
+      $n.stop($R.session)
+      for each $child in $R.session.pids $h.stop($child) end
+    catch $error $R.ok=false; print("FAIL session teardown: " .. $error) end
+  end
+  if $R.bus != nil then
+    try $h.stop($R.bus.pid) catch $error $R.ok=false; print("FAIL broker teardown: " .. $error) end
+  end
+  $n.finish_run($R.run,$R.ok)
+end
+if not $R.ok then exit(1) end
+print("PASS simultaneous six-app+Quoin shared authority, complete core resources, retained products, distinct native frame/palette evidence and late app/control; nested evidence only")

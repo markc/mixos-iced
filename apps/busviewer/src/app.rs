@@ -661,10 +661,11 @@ impl App {
                     pid: std::process::id(),
                     service: self.bus.service_name(&self.settings.service),
                 };
-                match application::describe::complete_native(
+                match application::describe::complete_native_frames(
                     &mut describe,
                     identity,
                     self.settings_ui.session(),
+                    &self.bus.frames,
                 ) {
                     Ok(()) => self.bus.reply(id, 0, describe),
                     Err(violation) => self.bus.reply(id, 10, model::describe_refusal(&violation)),

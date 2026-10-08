@@ -1,5 +1,12 @@
 # vendor/iced: local patches
 
+## Captured callback documentation
+
+The stable FrameObserver provider captures actual per-request generation
+provenance without invalidating the unchanged view's future callback provider.
+Document `captured()` for strict iced_core public API linting. Historical
+receipt ownership remains explicit; description reads never relabel pixels.
+
 ## Failed pre-commit presentation and capacity recovery
 
 The shared native presentation helper tracks whether the actual pre-present hook
@@ -407,3 +414,12 @@ Ledger guards cover late/superseded feedback, same-stamp replacement observers,
 aborted submissions and duplicate feedback. Actual renderer/native and complete
 application adaptation gates remain required; these unit guards are not native
 presentation acceptance.
+### Per-request lifecycle provenance for retained native views
+
+`core/src/window/presentation.rs` adds observation-only capture factories to
+`FrameObserver` and `FrameBinding`. `winit/src/presentation.rs` captures the
+terminal observer when admitting a native feedback request. A retained view
+keeps its immutable rendered stamp while each new request acquires the current
+owner generation. Pending requests retain their old terminal sink. This retires
+late old-generation callbacks without disabling future frames of the same
+window, and does not request a redraw or create presentation evidence.

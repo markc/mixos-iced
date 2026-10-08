@@ -19,14 +19,21 @@ use ledger::presentation::FrameSource;
 /// A registration change for the ledger.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceEvent {
-    Registered { id: String, output: Option<String> },
+    Registered {
+        id: String,
+        output: Option<String>,
+    },
     /// Unregistered at `revision` (its unpresented revisions count as
     /// discarded).
-    Unregistered { id: String, revision: u64 },
+    Unregistered {
+        id: String,
+        revision: u64,
+    },
 }
 
 #[derive(Default)]
 struct Source {
+    native_handle: Option<crate::HandleId>,
     output: Option<String>,
     revision: u64,
     /// When the newest revision was taken, and the oldest since the last
@@ -52,14 +59,19 @@ thread_local! {
 }
 
 fn now_us() -> u64 {
-    smithay::utils::Clock::<smithay::utils::Monotonic>::new().now().as_micros()
+    smithay::utils::Clock::<smithay::utils::Monotonic>::new()
+        .now()
+        .as_micros()
 }
 
 /// `[a-z0-9_]{1,64}`: the id is a prop path segment (`sources.<id>`) and
 /// SPEC 07 paths allow no `-`: an id with one could be registered but never
 /// read by path.
 pub fn valid_id(id: &str) -> bool {
-    (1..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// Register `id`, measured on `output` (`None`: any). A live id is left as
@@ -70,8 +82,17 @@ pub fn register(id: &str, output: Option<String>) -> bool {
     }
     SOURCES.with_borrow_mut(|sources| {
         if !sources.live.contains_key(id) {
-            sources.live.insert(id.to_owned(), Source { output: output.clone(), ..Source::default() });
-            sources.events.push(SourceEvent::Registered { id: id.to_owned(), output });
+            sources.live.insert(
+                id.to_owned(),
+                Source {
+                    output: output.clone(),
+                    ..Source::default()
+                },
+            );
+            sources.events.push(SourceEvent::Registered {
+                id: id.to_owned(),
+                output,
+            });
         }
     });
     true
@@ -80,7 +101,10 @@ pub fn register(id: &str, output: Option<String>) -> bool {
 pub fn unregister(id: &str) {
     SOURCES.with_borrow_mut(|sources| {
         if let Some(source) = sources.live.remove(id) {
-            sources.events.push(SourceEvent::Unregistered { id: id.to_owned(), revision: source.revision });
+            sources.events.push(SourceEvent::Unregistered {
+                id: id.to_owned(),
+                revision: source.revision,
+            });
         }
     });
 }
@@ -119,6 +143,16 @@ pub fn shown(id: &str, output: &str) {
         }
     });
 }
+pub fn set_native_handle(id: &str, handle: crate::HandleId) {
+    SOURCES.with_borrow_mut(|sources| {
+        if let Some(source) = sources.live.get_mut(id) {
+            source.native_handle = Some(handle);
+        }
+    });
+}
+pub fn native_handle(id: &str) -> Option<crate::HandleId> {
+    SOURCES.with_borrow(|sources| sources.live.get(id).and_then(|source| source.native_handle))
+}
 
 /// Registration changes since the last call, in order.
 pub fn take_events() -> Vec<SourceEvent> {
@@ -155,28 +189,53 @@ mod tests {
     #[test]
     fn a_source_reports_its_revision_and_where_it_was_shown() {
         assert!(!register("Bad Id", None));
-        assert!(!register("scene-gate", None), "a '-' is no prop path segment");
+        assert!(
+            !register("scene-gate", None),
+            "a '-' is no prop path segment"
+        );
         assert!(register("scene_gate", Some("DP-1".into())));
-        assert!(register("scene_gate", Some("DP-1".into())), "re-registering a live id is a no-op");
-        assert_eq!(take_events(), [SourceEvent::Registered { id: "scene_gate".into(), output: Some("DP-1".into()) }]);
+        assert!(
+            register("scene_gate", Some("DP-1".into())),
+            "re-registering a live id is a no-op"
+        );
+        assert_eq!(
+            take_events(),
+            [SourceEvent::Registered {
+                id: "scene_gate".into(),
+                output: Some("DP-1".into())
+            }]
+        );
         revise("scene_gate", 2);
         revise("scene_gate", 1);
         cost("scene_gate", 0, 100);
         cost("scene_gate", 8, 50);
         cost("nobody", 1, 1);
         shown("scene_gate", "DP-1");
-        assert!(frame("HDMI-A-1").is_empty(), "measured on its own output only");
+        assert!(
+            frame("HDMI-A-1").is_empty(),
+            "measured on its own output only"
+        );
         let report = frame("DP-1");
         assert_eq!(report.len(), 1);
         assert_eq!((report[0].revision, report[0].shown), (2, true));
         assert!(report[0].revised_us.is_some() && report[0].first_revised_us.is_some());
-        assert_eq!((report[0].upload_bytes, report[0].damage_px), (8, 150), "costs summed until reported");
+        assert_eq!(
+            (report[0].upload_bytes, report[0].damage_px),
+            (8, 150),
+            "costs summed until reported"
+        );
         // The next frame: not drawn again, no new revision, no new cost.
         let report = frame("DP-1");
         assert_eq!((report[0].shown, report[0].revised_us), (false, None));
         assert_eq!((report[0].upload_bytes, report[0].damage_px), (0, 0));
         unregister("scene_gate");
-        assert_eq!(take_events(), [SourceEvent::Unregistered { id: "scene_gate".into(), revision: 2 }]);
+        assert_eq!(
+            take_events(),
+            [SourceEvent::Unregistered {
+                id: "scene_gate".into(),
+                revision: 2
+            }]
+        );
         assert!(frame("DP-1").is_empty());
     }
 }

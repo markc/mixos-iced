@@ -66,20 +66,42 @@ pub struct FrameObservation {
 /// An observation sink. Callbacks must only store bounded metadata and notify
 /// existing waiters; they must not mutate application State or call rendering.
 #[derive(Clone)]
-pub struct FrameObserver(Arc<dyn Fn(FrameObservation) + Send + Sync>);
+pub struct FrameObserver {
+    sink: Arc<dyn Fn(FrameObservation) + Send + Sync>,
+    capture: Option<Arc<dyn Fn() -> FrameObserver + Send + Sync>>,
+}
 
 impl FrameObserver {
     /// Construct an owned, thread-safe metadata sink.
     pub fn new(observe: impl Fn(FrameObservation) + Send + Sync + 'static) -> Self {
-        Self(Arc::new(observe))
+        Self {
+            sink: Arc::new(observe),
+            capture: None,
+        }
+    }
+    /// Stable view bindings can acquire fresh lifecycle provenance for each
+    /// native request. The factory must return a terminal observation sink.
+    pub fn with_capture(capture: impl Fn() -> FrameObserver + Send + Sync + 'static) -> Self {
+        let capture: Arc<dyn Fn() -> FrameObserver + Send + Sync> = Arc::new(capture);
+        let deliver = Arc::clone(&capture);
+        Self {
+            sink: Arc::new(move |receipt| deliver().observe(receipt)),
+            capture: Some(capture),
+        }
+    }
+    /// Capture the terminal observation sink for one admitted native request.
+    pub fn captured(&self) -> Self {
+        self.capture
+            .as_ref()
+            .map_or_else(|| self.clone(), |capture| capture())
     }
     /// Whether two sinks name the same observation owner.
     pub fn same_owner(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        Arc::ptr_eq(&self.captured().sink, &other.captured().sink)
     }
     /// Store one copied observation without sending an application message.
     pub fn observe(&self, observation: FrameObservation) {
-        (self.0)(observation);
+        (self.sink)(observation);
     }
 }
 impl fmt::Debug for FrameObserver {
@@ -97,6 +119,14 @@ pub struct FrameBinding {
     pub observer: FrameObserver,
 }
 impl FrameBinding {
+    /// Capture immediately when admitting native feedback, not at receipt or
+    /// view construction. Held old requests then retain their original scope.
+    pub fn captured(&self) -> Self {
+        Self {
+            stamp: self.stamp,
+            observer: self.observer.captured(),
+        }
+    }
     /// Compare both view identity and observation ownership.
     pub fn same_presentation(&self, other: &Self) -> bool {
         self.stamp == other.stamp && self.observer.same_owner(&other.observer)

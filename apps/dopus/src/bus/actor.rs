@@ -443,10 +443,11 @@ async fn worker(
         Some(dirs) => worker.with_cache_directory(dirs.settings_cache_dir()),
         None => worker,
     };
-    let (ui, lane) = bridge(
+    let (mut ui, lane) = bridge(
         Session::with_context(consumer, crate::app::PreparationContext::default()),
         worker,
     );
+    ui.bind_frames(presentation.frames.clone());
     if ready
         .send(Ok((client.clone(), Some(ui), Some(bootstrap))))
         .is_err()

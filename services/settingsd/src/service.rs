@@ -26,7 +26,7 @@ pub fn manifest() -> Vec<bus::VerbDescriptor> {
         bus::VerbDescriptor::new(
             verb,
             &["body"],
-            "Desktop settings contract 0.1.1",
+            "Desktop settings contract 0.1.3",
             !matches!(*verb, "settings.apply" | "settings.reset"),
         )
     }))
@@ -74,6 +74,10 @@ async fn publish(authority: &mut Authority, client: &SupervisedClient) -> anyhow
     let topic = settings::topic(&authority.accepted.binding.profile);
     let mut inner = bus::wire::BusMessage::new();
     inner.set("command", &topic);
+    if let Some(observation) = &authority.observation {
+        // Header metadata is outside the strict snapshot body and digest.
+        inner.set("settings_observation", &serde_json::to_string(observation)?);
+    }
     inner.body = serde_json::to_string(&authority.snapshot)?;
     let headers = BTreeMap::from([("name".into(), topic), ("retain".into(), "true".into())]);
     tokio::time::timeout(

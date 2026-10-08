@@ -90,6 +90,7 @@ pub struct App {
     bus: Handle,
     bootstrap: appearance::settings::Prepared,
     settings_ui: Ui<()>,
+    frames: application::frames::Handle,
     selection: Selection,
     snapshot: Snapshot,
     edge: &'static str,
@@ -153,6 +154,12 @@ pub fn run(settings: Settings, selection: Selection) -> Result<(), String> {
                 .defer_close(),
         )
         .title(|_: &App| label("title"))
+        .frame_presentation(|app: &App| {
+            app.settings_ui
+                .session()
+                .frame_stamp()
+                .map(|stamp| app.frames.binding(stamp))
+        })
         .theme(|app: &App| app.look().theme())
         .subscription(App::subscription)
         .run()
@@ -167,14 +174,18 @@ impl App {
         settings: Settings,
         bus: Handle,
         bootstrap: appearance::settings::Prepared,
-        settings_ui: Ui<()>,
+        mut settings_ui: Ui<()>,
         selection: Selection,
     ) -> Self {
+        let frames = application::frames::Handle::new();
+        frames.set_live_generation(bus.settings_generation());
+        settings_ui.bind_frames(frames.clone());
         Self {
             settings,
             bus,
             bootstrap,
             settings_ui,
+            frames,
             launch_selection: selection.clone(),
             selection,
             snapshot: Snapshot::default(),
@@ -278,7 +289,7 @@ impl App {
     }
     fn describe(&self) -> Result<Value, application::describe::Violation> {
         let mut value = model::describe();
-        application::describe::complete_native(
+        application::describe::complete_native_frames(
             &mut value,
             application::describe::Identity {
                 app_id: Some(APP_ID),
@@ -287,6 +298,7 @@ impl App {
                 service: self.bus.service_name(),
             },
             self.settings_ui.session(),
+            &self.frames,
         )?;
         Ok(value)
     }
@@ -409,6 +421,7 @@ impl App {
         }
     }
     fn quit(&mut self) -> Task<Message> {
+        self.frames.close();
         self.quitting = true;
         if self.operation.is_some() {
             self.quitting = true;
@@ -602,6 +615,8 @@ impl App {
         }
     }
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        self.frames
+            .set_live_generation(self.bus.settings_generation());
         if matches!(
             &message,
             Message::Action(_)

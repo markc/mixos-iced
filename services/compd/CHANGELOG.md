@@ -26,6 +26,16 @@
 - Keep dormant client geometry, tile facts and pending observations in their
   owning Space. Dormant untile preserves world membership and normal restore;
   active-world geometry verbs refuse dormant clients rather than migrating them.
+- Retain immutable admitted frame-owner/native-window association and bounded
+  retired request history; old callbacks cannot certify same-PID replacement.
+- Serialise presentation subscriptions, retaining uncertain sent subscriptions
+  until acknowledged removal, fenced by actual broker connection generation.
+- Reduce native participant observations on the existing scene-host event pass,
+  fenced by broker registration, Unix peer PID and actual window incarnation.
+  Expose copied records through describe, retained owner events and bounded
+  app.participants.wait requests without periodic reads or observer redraws.
+- Keep immutable queued presentation metadata on actual graphics Backings so
+  ring-depth changes preserve the provenance of retained published pixels.
 
 ## 0.1.16
 

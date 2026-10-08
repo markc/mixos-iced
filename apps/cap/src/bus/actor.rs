@@ -350,7 +350,8 @@ pub(super) async fn worker(
         Some(dirs) => Worker::offline_with_cache(dirs.cache().join("settings"), build),
         None => Worker::offline(build),
     };
-    let (ui, mut lane) = bridge(Session::new(consumer), settings_worker);
+    let (mut ui, mut lane) = bridge(Session::new(consumer), settings_worker);
+    ui.bind_frames(frames.clone());
     let mut gui = Gui::new(ACCEPTED_CAP + 1);
     wake(&mut gui, lane.connect(client.clone()));
     if ready.send(Ok((client.clone(), ui, bootstrap))).is_err() {

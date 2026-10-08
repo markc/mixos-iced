@@ -42,6 +42,7 @@ pub struct NodedPropsSnapshot {
     pub started_at: String,
     pub uptime_s: u64,
     pub services_registered: Vec<String>,
+    pub services_incarnations: Vec<(String, Option<String>)>,
     pub topics_active: u64,
     pub topics_snapshot_bytes: u64,
 }
@@ -91,6 +92,26 @@ impl NodedPropsSnapshot {
                 PropValue::from(self.services_registered.len() as u64),
             ),
             (
+                PropPath::new("services.incarnations").unwrap(),
+                PropValue::List(
+                    self.services_incarnations
+                        .iter()
+                        .map(|(service, incarnation)| {
+                            PropValue::Object(std::collections::BTreeMap::from([
+                                ("service".into(), PropValue::from(service.clone())),
+                                (
+                                    "incarnation".into(),
+                                    incarnation
+                                        .clone()
+                                        .map(PropValue::from)
+                                        .unwrap_or(PropValue::Null),
+                                ),
+                            ]))
+                        })
+                        .collect(),
+                ),
+            ),
+            (
                 PropPath::new("topics.active").unwrap(),
                 PropValue::from(self.topics_active),
             ),
@@ -127,6 +148,7 @@ fn all_paths() -> Vec<PropPath> {
         "lifecycle.health",
         "lifecycle.props_level",
         "services.registered",
+        "services.incarnations",
         "services.count",
         "topics.active",
         "topics.snapshot_bytes",
@@ -185,6 +207,11 @@ fn describe_path(path: &PropPath) -> Option<PropDescribe> {
             Number,
             "Length of services.registered.",
         )),
+        "services.incarnations" => Some(PropDescribe::leaf(
+            path.clone(),
+            List,
+            "Broker-owned current sender-channel registration identities; same-name replacement changes this atomic list.",
+        )),
         "topics.active" => Some(PropDescribe::leaf(
             path.clone(),
             Number,
@@ -209,11 +236,22 @@ pub async fn collect(
     registry: &crate::noded::Registry,
     broker: &Arc<SubscriptionBroker>,
 ) -> NodedPropsSnapshot {
-    let services_registered: Vec<String> = {
+    let (services_registered, services_incarnations) = {
         let r = registry.read().await;
         let mut keys: Vec<String> = r.keys().cloned().collect();
         keys.sort();
-        keys
+        let incarnations = keys
+            .iter()
+            .map(|key| {
+                (
+                    key.clone(),
+                    r.get(key)
+                        .and_then(|entry| entry.registration_incarnation())
+                        .map(str::to_owned),
+                )
+            })
+            .collect();
+        (keys, incarnations)
     };
 
     let (topics_active, topics_snapshot_bytes) = broker.props_summary().await;
@@ -225,6 +263,7 @@ pub async fn collect(
         started_at: started_iso.to_string(),
         uptime_s: started.elapsed().as_secs(),
         services_registered,
+        services_incarnations,
         topics_active,
         topics_snapshot_bytes,
     }
@@ -516,6 +555,7 @@ mod tests {
             started_at: "2026-01-01T00:00:00Z".to_string(),
             uptime_s: 0,
             services_registered: Vec::new(),
+            services_incarnations: Vec::new(),
             topics_active: 0,
             topics_snapshot_bytes: 0,
         }

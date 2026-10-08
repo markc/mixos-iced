@@ -1,5 +1,13 @@
 # noded changes
 
+## 0.18.4
+
+Mint registration incarnations from actual sender-channel ownership. Preserve
+same-channel refresh and expose atomic services.incarnations changes even when
+the registered names are unchanged. Stamp reserved owner observation topics
+with the actual registration identity and native Unix principal; strip forged
+inner provenance. ABP framing and existing property leaves remain unchanged.
+
 ## 0.18.3
 
 Add a structured rejection body to the different-channel `noded.register`

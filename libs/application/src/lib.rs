@@ -48,6 +48,11 @@ pub mod presentation;
 #[cfg(any(feature = "settings-native", feature = "acceptance"))]
 pub mod frames;
 
+/// Read-only, generation-fenced settings convergence observations. This owns
+/// no authority, connection, timer, renderer or redraw work.
+#[cfg(feature = "settings-native")]
+pub mod participants;
+
 #[cfg(feature = "native-inspect")]
 pub mod inspect;
 

@@ -93,6 +93,18 @@ pub enum Inbound {
     Request(Request),
     /// The broker's full set of registered services, from a registry diff.
     Live(BTreeSet<String>),
+    Registrations(BTreeMap<String, String>),
+    Presentation(PresentationNotice),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresentationNotice {
+    pub service: String,
+    pub registration: String,
+    pub sequence: u64,
+    pub generation: u64,
+    pub provenance: Value,
+    pub value: Value,
 }
 
 enum Outbound {
@@ -112,6 +124,18 @@ enum Outbound {
         panel: bool,
         wire: String,
     },
+    Participants {
+        topic: String,
+        wire: String,
+        generation: u64,
+    },
+    ParticipantsReady(Arc<Mutex<Option<ParticipantPublication>>>),
+}
+
+struct ParticipantPublication {
+    topic: String,
+    wire: String,
+    generation: u64,
 }
 
 struct Event {
@@ -144,7 +168,57 @@ pub struct Port {
     registry: RegistryMailbox,
 }
 
-type RegistryMailbox = Arc<Mutex<Option<(u64, BTreeSet<String>)>>>;
+#[derive(Default)]
+struct RegistryPending {
+    names: Option<(u64, BTreeSet<String>)>,
+    registrations: Option<(u64, BTreeMap<String, String>)>,
+    presentations: BTreeMap<String, PresentationNotice>,
+    observations: Option<watch::Sender<crate::participant_wait::History>>,
+    participant_publication: Arc<Mutex<Option<ParticipantPublication>>>,
+}
+impl RegistryPending {
+    fn take(&mut self) -> Option<(u64, BTreeSet<String>)> {
+        self.names.take()
+    }
+}
+type RegistryMailbox = Arc<Mutex<RegistryPending>>;
+
+#[derive(Default)]
+struct PresentationSubscriptions {
+    generation: u64,
+    // Include a subscribe before sending it: a timed-out reply may still
+    // have installed broker state. Only an acknowledged unsubscribe removes it.
+    possible: BTreeSet<String>,
+    desired: BTreeSet<String>,
+    dirty: bool,
+}
+impl PresentationSubscriptions {
+    fn reset(&mut self, generation: u64) {
+        *self = Self {
+            generation,
+            ..Self::default()
+        };
+    }
+    fn desire(&mut self, next: BTreeSet<String>) {
+        self.desired = next;
+        self.dirty = true;
+    }
+    fn subscribing(&mut self, generation: u64, service: &str) -> Result<(), String> {
+        if self.generation != generation {
+            return Err("subscription generation retired".into());
+        }
+        if self.possible.len() >= 128 && !self.possible.contains(service) {
+            return Err("presentation subscription capacity".into());
+        }
+        self.possible.insert(service.to_owned());
+        Ok(())
+    }
+    fn unsubscribed(&mut self, generation: u64, service: &str) {
+        if self.generation == generation {
+            self.possible.remove(service);
+        }
+    }
+}
 
 /// The names to try, in order: `shell`, then the override when it differs.
 pub fn candidate_names(service_override: Option<&str>) -> Vec<String> {
@@ -182,6 +256,8 @@ impl Port {
             SettingsWorker::offline_with_cache(cache_directory, crate::appearance::build);
         let (ui, lane) = bridge(Session::new(consumer), settings_worker);
         let registry = RegistryMailbox::default();
+        registry.lock().unwrap().observations =
+            Some(watch::channel(crate::participant_wait::History::default()).0);
         let worker_registry = Arc::clone(&registry);
         let (inbound_tx, inbound) = mpsc::sync_channel(INBOUND_CAPACITY);
         let (description_tx, descriptions) = tokio_mpsc::channel(DESCRIPTION_CAPACITY);
@@ -288,14 +364,32 @@ impl Port {
 
     /// The next message from the worker, without blocking.
     pub fn try_recv(&self) -> Option<Inbound> {
-        self.inbound.try_recv().ok().or_else(|| {
-            let (generation, services) = self
-                .registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()?;
-            (self.settings_generation() == Some(generation)).then_some(Inbound::Live(services))
-        })
+        self.inbound
+            .try_recv()
+            .ok()
+            .or_else(|| {
+                let (generation, services) = self
+                    .registry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()?;
+                (self.settings_generation() == Some(generation)).then_some(Inbound::Live(services))
+            })
+            .or_else(|| self.try_observation())
+    }
+
+    pub(crate) fn try_observation(&self) -> Option<Inbound> {
+        let mut pending = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((generation, registrations)) = pending.registrations.take() {
+            return (self.settings_generation() == Some(generation))
+                .then_some(Inbound::Registrations(registrations));
+        }
+        let (_, notice) = pending.presentations.pop_first()?;
+        (self.settings_generation() == Some(notice.generation))
+            .then_some(Inbound::Presentation(notice))
     }
 
     pub fn reply(&self, request: &Request, rc: u8, body: String) {
@@ -317,6 +411,46 @@ impl Port {
     /// Publish one `<service>.panel.changed` wire, retained.
     pub fn publish_panel(&self, wire: String) {
         let _ = self.outbound.send(Outbound::Publish { panel: true, wire });
+    }
+
+    pub(crate) fn publish_participants(&self, value: Value) {
+        if let Some(observations) = &self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .observations
+        {
+            observations.send_if_modified(|history| {
+                history.observe(value.clone(), std::time::Instant::now())
+            });
+        }
+        let (Some(service), Some(generation)) =
+            (self.registered_service_name(), self.settings_generation())
+        else {
+            return;
+        };
+        let topic = format!("{service}.participants.changed");
+        let mut message = bus::wire::BusMessage::new();
+        message.set("command", &topic);
+        message.body = value.to_string();
+        let pending = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .participant_publication
+            .clone();
+        let first = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(ParticipantPublication {
+                topic,
+                wire: message.to_wire(),
+                generation,
+            })
+            .is_none();
+        if first {
+            let _ = self.outbound.send(Outbound::ParticipantsReady(pending));
+        }
     }
 
     /// A scene event: a directed request to `citizen`, verb = the handler
@@ -430,8 +564,10 @@ impl Delivery {
 #[derive(Debug, PartialEq)]
 pub enum Route {
     AppDescribe,
+    ParticipantWait,
     Scene(SceneVerb),
     Live(BTreeSet<String>),
+    Registrations(BTreeMap<String, String>),
     /// A registry claim not from the local broker; dropped, logged.
     Forged,
     /// A request for a verb this host does not serve.
@@ -445,6 +581,13 @@ pub fn route(service: &str, command: &IncomingCommand) -> Route {
     if command.from == "noded" && command.topic() == Some(REGISTRY_TOPIC) {
         if !from_local_broker(command) {
             return Route::Forged;
+        }
+        if let Some(registrations) = serde_json::from_str::<Value>(&command.body)
+            .ok()
+            .filter(|body| body["path"] == "services.incarnations")
+            .and_then(|body| decode_registrations(&body["new"]))
+        {
+            return Route::Registrations(registrations);
         }
         return serde_json::from_str::<Value>(&command.body)
             .ok()
@@ -463,6 +606,9 @@ pub fn route(service: &str, command: &IncomingCommand) -> Route {
     }
     if command.command == "app.describe" {
         return Route::AppDescribe;
+    }
+    if command.command == "app.participants.wait" {
+        return Route::ParticipantWait;
     }
     match SceneVerb::parse(service, &command.command) {
         Some(verb) => Route::Scene(verb),
@@ -689,10 +835,32 @@ async fn serve(
     let mut description_replies = TaskSet::new(DESCRIPTION_CAPACITY);
     let mut description_faults = Faults::default();
     let mut registry = None;
+    let mut registrations = BTreeMap::new();
+    let mut subscriptions = None;
+    let subscription_state = Arc::new(Mutex::new(PresentationSubscriptions::default()));
+    subscription_state
+        .lock()
+        .unwrap()
+        .reset(client.connection_generation());
     let mut registry_retries = 0;
     let mut registry_subscription = (initial_state == ConnState::Connected)
         .then(|| Box::pin(registry_subscribe(Arc::clone(client))));
     loop {
+        // Reconcile one acknowledged snapshot at a time. Registry updates
+        // only coalesce desired state and cannot cancel an unfinished removal.
+        if subscriptions.is_none() {
+            let mut state = subscription_state.lock().unwrap();
+            if state.dirty && settings::native::live_generation(client) == Some(state.generation) {
+                state.dirty = false;
+                subscriptions = Some(Box::pin(presentation_subscriptions(
+                    Arc::clone(client),
+                    Arc::clone(&subscription_state),
+                    state.generation,
+                    state.possible.clone(),
+                    state.desired.clone(),
+                )));
+            }
+        }
         tokio::select! {
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
@@ -711,6 +879,15 @@ async fn serve(
                 let state = *lifecycle.borrow_and_update();
                 notify(lane.publish(SettingsEvent::Wake));
                 registry = None;
+                subscriptions = None;
+                subscription_state.lock().unwrap().reset(client.connection_generation());
+                registrations.clear();
+                {
+                    let mut pending=registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    pending.presentations.clear();
+                    pending.registrations=Some((client.connection_generation(),BTreeMap::new()));
+                    if let Some(observations)=&pending.observations {observations.send_replace(crate::participant_wait::History::default());}
+                }
                 registry_subscription = (lifecycle_open && state == ConnState::Connected)
                     .then(|| Box::pin(registry_subscribe(Arc::clone(client))));
                 if !lifecycle_open || matches!(state, ConnState::Fatal | ConnState::ShuttingDown) {
@@ -729,9 +906,13 @@ async fn serve(
             }
             result = async { registry.as_mut().expect("guarded registry read").await }, if registry.is_some() => {
                 registry = None;
-                if let Some((generation, services)) = result {
+                if let Some((generation, services, identities)) = result {
                     if settings::native::live_generation(client) == Some(generation) {
-                        *registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((generation, services));
+                        let mut pending = registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        pending.names = Some((generation, services));
+                        pending.registrations = Some((generation, identities.clone()));
+                        subscription_state.lock().unwrap().desire(identities.keys().cloned().collect());
+                        registrations = identities;
                         (delivery.waker)();
                     }
                 } else if settings::native::live_generation(client).is_some() && registry_retries < 3 {
@@ -745,18 +926,38 @@ async fn serve(
             command = incoming.recv(), if incoming_open && replies.len() < INBOUND_CAPACITY => {
                 match command {
                     Some(BoundedIncomingEvent::Command(command)) => {
-                        if let Some(wake) = lane.delivery(&command) {
+                        if let Some(notice) = presentation_notice(&command, &registrations) {
+                            if settings::native::live_generation(client) == Some(command.generation) {
+                                let mut pending = registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                if pending.presentations.len() < 128 || pending.presentations.contains_key(&notice.service) {
+                                    let newer = pending.presentations.get(&notice.service).is_none_or(|old| old.registration != notice.registration || old.sequence < notice.sequence);
+                                    if newer {pending.presentations.insert(notice.service.clone(), notice); (delivery.waker)();}
+                                }
+                            }
+                        } else if let Route::Registrations(identities) = route(service, &command) {
+                            if settings::native::live_generation(client) == Some(command.generation) {
+                                registry = None;
+                                let mut pending = registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                pending.names = Some((command.generation, identities.keys().cloned().collect()));
+                                pending.registrations = Some((command.generation, identities.clone()));
+                                subscription_state.lock().unwrap().desire(identities.keys().cloned().collect());
+                                registrations = identities;
+                                (delivery.waker)();
+                            }
+                        } else if let Some(wake) = lane.delivery(&command) {
                             notify(wake);
                         } else if let Route::Live(services) = route(service, &command) {
                             if settings::native::live_generation(client) == Some(command.generation) {
                                 // Each registry notice is a full set. It supersedes
                                 // an older read and cannot be dropped by scene RPCs.
                                 registry = None;
-                                *registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((command.generation, services));
+                                registry_mailbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner).names = Some((command.generation, services));
                                 (delivery.waker)();
                             }
                         } else {
-                            let refused = if route(service, &command) == Route::AppDescribe {
+                            let refused = if route(service,&command) == Route::ParticipantWait {
+                                admit_participant_wait(client,registry_mailbox,command,&description_admission,&mut description_replies)
+                            } else if route(service, &command) == Route::AppDescribe {
                                 admit_description(client, delivery, command, &description_admission)
                             } else { admit(service, delivery, command) };
                             if let Some((command, rc, body)) = refused {
@@ -788,6 +989,12 @@ async fn serve(
                 let (client, topics) = (Arc::clone(client), topics.clone());
                 // Preserve publish/reply order without blocking settings work.
                 sends.spawn(async move { send(&client, &topics, message).await; });
+            }
+            result = async {subscriptions.as_mut().expect("guarded presentation subscription").await}, if subscriptions.is_some() => {
+                subscriptions = None;
+                // Updates during the flight already set dirty. Do not start
+                // an unbounded retry loop for an unchanged failed snapshot.
+                if let Err(error) = result {tracing::warn!(%error, "presentation observation subscription incomplete; awaits next native lifecycle event");}
             }
             Some(event) = events.recv() => {
                 let client = Arc::clone(client);
@@ -910,6 +1117,51 @@ fn submit_description_reply(
     }
 }
 
+fn admit_participant_wait(
+    client: &Arc<SupervisedClient>,
+    mailbox: &RegistryMailbox,
+    command: IncomingCommand,
+    admission: &Admission,
+    tasks: &mut TaskSet<Result<(), String>>,
+) -> Option<(IncomingCommand, u8, Value)> {
+    if command.id.is_none() || settings::native::live_generation(client) != Some(command.generation)
+    {
+        return None;
+    }
+    let Some(spec) = crate::participant_wait::parse(&command.body) else {
+        return Some((
+            command,
+            10,
+            json!({"error_code":"INVALID_PARTICIPANT_WAIT"}),
+        ));
+    };
+    let Some(receipts) = mailbox
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .observations
+        .as_ref()
+        .map(watch::Sender::subscribe)
+    else {
+        return Some((
+            command,
+            10,
+            json!({"error_code":"PARTICIPANT_OWNER_UNAVAILABLE"}),
+        ));
+    };
+    let Some(permit) = admission.try_acquire() else {
+        return Some((command, 11, json!({"error_code":"QUEUE_FULL"})));
+    };
+    let request = Accepted::new(client.clone(), command, permit, std::time::Instant::now());
+    if let Err(request) = tasks.try_spawn_with(request, move |request| {
+        crate::participant_wait::run(request, spec, receipts)
+    }) {
+        let (permit, command) = request.into_task(|_, command, _| command);
+        permit.finish();
+        return Some((command, 11, json!({"error_code":"QUEUE_FULL"})));
+    }
+    None
+}
+
 fn admit_description(
     client: &Arc<SupervisedClient>,
     delivery: &Delivery,
@@ -963,7 +1215,7 @@ fn terminal_reason(client: &SupervisedClient) -> String {
 async fn registry_read(
     client: Arc<SupervisedClient>,
     delay: Duration,
-) -> Option<(u64, BTreeSet<String>)> {
+) -> Option<(u64, BTreeSet<String>, BTreeMap<String, String>)> {
     if !delay.is_zero() {
         tokio::time::sleep(delay).await;
     }
@@ -973,18 +1225,136 @@ async fn registry_read(
         client.call(
             "noded",
             "noded.props.get",
-            json!({"path":"services.registered"}),
+            json!({"path":"services.incarnations"}),
         ),
     )
     .await
     .ok()?
     .ok()?;
-    let services = services
-        .as_array()?
-        .iter()
-        .map(|name| name.as_str().map(str::to_owned))
-        .collect::<Option<BTreeSet<_>>>()?;
-    Some((generation, services))
+    let registrations = decode_registrations(&services)?;
+    let services = registrations.keys().cloned().collect();
+    Some((generation, services, registrations))
+}
+
+fn decode_registrations(value: &Value) -> Option<BTreeMap<String, String>> {
+    let rows = value.as_array()?;
+    if rows.len() > 128 {
+        return None;
+    }
+    let mut result = BTreeMap::new();
+    for row in rows {
+        let service = row["service"].as_str()?;
+        let incarnation = row["incarnation"].as_str()?;
+        if service.is_empty()
+            || service.len() > 256
+            || incarnation.len() != 32
+            || !incarnation.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return None;
+        }
+        if result
+            .insert(service.to_owned(), incarnation.to_owned())
+            .is_some()
+        {
+            return None;
+        }
+    }
+    Some(result)
+}
+
+fn presentation_notice(
+    command: &IncomingCommand,
+    registrations: &BTreeMap<String, String>,
+) -> Option<PresentationNotice> {
+    let service = command.topic()?.strip_suffix(".presentation.changed")?;
+    if command.header("broker_origin") != Some("local")
+        || command.header("broker_service") != Some(service)
+        || command.header("broker_registration") != registrations.get(service).map(String::as_str)
+        || command.body.len() > 64 * 1024
+    {
+        return None;
+    }
+    let value: Value = serde_json::from_str(&command.body).ok()?;
+    if value["contract"] != "application.presentation.v1" || value["service"] != service {
+        return None;
+    }
+    let mut envelope = bus::wire::BusMessage::new();
+    envelope.headers = command.headers.clone();
+    let principal = bus::native_session::read_principal(&envelope).ok()??;
+    if principal.assurance != bus::native_session::Assurance::LocalUnix
+        && principal.assurance != bus::native_session::Assurance::SessionBound
+    {
+        return None;
+    }
+    if value["pid"].as_u64() != Some(u64::from(principal.peer_pid)) {
+        return None;
+    }
+    Some(PresentationNotice {
+        service: service.to_owned(),
+        registration: registrations.get(service)?.clone(),
+        sequence: command.header("topic_seq")?.parse().ok()?,
+        generation: command.generation,
+        provenance: json!({"origin":"local","assurance":principal.assurance,"owner_node":principal.owner_node,
+            "peer_pid":principal.peer_pid,"broker_epoch":principal.broker_epoch,"connection_id":principal.connection_id}),
+        value,
+    })
+}
+
+async fn presentation_subscriptions(
+    client: Arc<SupervisedClient>,
+    state: Arc<Mutex<PresentationSubscriptions>>,
+    generation: u64,
+    previous: BTreeSet<String>,
+    next: BTreeSet<String>,
+) -> Result<(), String> {
+    if settings::native::live_generation(&client) != Some(generation) {
+        return Err("native connection unavailable".into());
+    }
+    let deadline = tokio::time::Instant::now() + SEND_TIMEOUT;
+    for service in previous.difference(&next) {
+        let headers = BTreeMap::from([("name".into(), format!("{service}.presentation.changed"))]);
+        let reply = tokio::time::timeout_at(
+            deadline,
+            client.call_with_headers_raw_at_generation(
+                generation,
+                "noded",
+                "topic.unsubscribe",
+                &headers,
+                "",
+            ),
+        )
+        .await
+        .map_err(|_| "unsubscribe deadline")?
+        .map_err(|_| "unsubscribe failed")?;
+        if reply.0 != 0 {
+            return Err("native presentation unsubscribe refused".into());
+        }
+        state.lock().unwrap().unsubscribed(generation, service);
+    }
+    // Idempotent re-subscribe recovers sent calls with uncertain replies.
+    // Registry updates coalesce without cancelling this snapshot; no poller
+    // or unbounded timer retry owns the list.
+    for service in &next {
+        state.lock().unwrap().subscribing(generation, service)?;
+        let headers = BTreeMap::from([("name".into(), format!("{service}.presentation.changed"))]);
+        let reply = tokio::time::timeout_at(
+            deadline,
+            client.call_with_headers_raw_at_generation(
+                generation,
+                "noded",
+                "topic.subscribe",
+                &headers,
+                "",
+            ),
+        )
+        .await
+        .map_err(|_| "subscribe deadline")?
+        .map_err(|_| "subscribe failed")?;
+        if reply.0 != 0 {
+            return Err("native presentation subscription refused".into());
+        }
+    }
+    Ok(())
 }
 
 async fn registry_subscribe(client: Arc<SupervisedClient>) -> bool {
@@ -1025,7 +1395,9 @@ fn admit(
     command: IncomingCommand,
 ) -> Option<(IncomingCommand, u8, Value)> {
     match route(service, &command) {
-        Route::AppDescribe => unreachable!("description ingress has its own bounded owner"),
+        Route::AppDescribe | Route::ParticipantWait => {
+            unreachable!("observation ingress has its own bounded owner")
+        }
         Route::Scene(verb) => {
             let request = Request {
                 verb,
@@ -1046,6 +1418,7 @@ fn admit(
                 tracing::warn!("scene host: registry update dropped, engine queue full");
             }
         }
+        Route::Registrations(_) => {}
         Route::Forged => {
             tracing::warn!(from = %command.from, "scene host: ignoring a registry claim not from the local broker")
         }
@@ -1067,13 +1440,38 @@ async fn send(
     (scene_topic, panel_topic): &(String, String),
     message: Outbound,
 ) {
+    let message = match message {
+        Outbound::ParticipantsReady(pending) => {
+            let Some(ParticipantPublication {
+                topic,
+                wire,
+                generation,
+            }) = pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            else {
+                return;
+            };
+            Outbound::Participants {
+                topic,
+                wire,
+                generation,
+            }
+        }
+        message => message,
+    };
     let topic = match &message {
+        Outbound::Participants { topic, .. } => topic.as_str(),
         Outbound::Publish { panel: true, .. } => panel_topic.as_str(),
         _ => scene_topic.as_str(),
     };
     let result = match &message {
         Outbound::Description(_) => {
             unreachable!("description replies require the bounded task set")
+        }
+        Outbound::ParticipantsReady(_) => {
+            unreachable!("coalesced publication resolved before send")
         }
         Outbound::Reply {
             generation,
@@ -1118,14 +1516,46 @@ async fn send(
                 }
             }
         }
+        Outbound::Participants {
+            wire, generation, ..
+        } => {
+            let headers = BTreeMap::from([
+                ("name".into(), topic.into()),
+                ("retain".into(), "true".into()),
+            ]);
+            tokio::time::timeout(
+                SEND_TIMEOUT,
+                client.call_with_headers_raw_at_generation(
+                    *generation,
+                    "noded",
+                    "topic.publish",
+                    &headers,
+                    wire,
+                ),
+            )
+            .await
+            .map_err(|_| "timed out".to_owned())
+            .and_then(|reply| reply.map_err(|error| error.to_string()))
+            .and_then(|(rc, body, _)| {
+                if rc == 0 {
+                    Ok(())
+                } else {
+                    Err(format!("topic.publish rejected with rc {rc}: {body}"))
+                }
+            })
+        }
     };
     if let Err(error) = result {
         match message {
             Outbound::Description(_) => unreachable!("description handled above"),
+            Outbound::ParticipantsReady(_) => unreachable!("publication resolved before send"),
             Outbound::Reply { to, command, .. } => {
                 tracing::warn!(%error, to = %to, command = %command, "scene host reply not delivered")
             }
             Outbound::Publish { .. } => tracing::warn!(%error, topic, "scene host publish failed"),
+            Outbound::Participants { .. } => {
+                tracing::warn!(%error, topic, "participant observation publish failed")
+            }
         }
     }
 }
@@ -2154,6 +2584,104 @@ mod tests {
             candidate_names(Some("shell-nested")),
             ["shell", "shell-nested"]
         );
+    }
+
+    #[test]
+    fn native_presentation_admission_requires_actual_peer_pid_and_local_origin() {
+        use bus::native_session::{Assurance, BrokerPrincipal, HexBytes, PrincipalVersion};
+        let registration = "0123456789abcdef0123456789abcdef";
+        let registrations = BTreeMap::from([("term".into(), registration.into())]);
+        let principal = BrokerPrincipal {
+            version: PrincipalVersion::V1,
+            assurance: Assurance::LocalUnix,
+            owner_node: "fixture".into(),
+            unix_uid: 1000,
+            unix_gid: 1000,
+            peer_pid: 7,
+            broker_epoch: HexBytes([1; 16]),
+            connection_id: HexBytes([2; 16]),
+            session: None,
+        };
+        let mut command = incoming(
+            "term",
+            "term.presentation.changed",
+            None,
+            &[
+                ("topic", "term.presentation.changed"),
+                ("topic_seq", "1"),
+                ("broker_origin", "local"),
+                ("broker_service", "term"),
+                ("broker_registration", registration),
+            ],
+            r#"{"contract":"application.presentation.v1","service":"term","pid":7}"#,
+        );
+        let mut envelope = bus::wire::BusMessage::new();
+        bus::native_session::stamp_principal(&mut envelope, Some(&principal)).unwrap();
+        command.headers.extend(envelope.headers);
+        assert!(presentation_notice(&command, &registrations).is_some());
+        command.body=r#"{"contract":"application.presentation.v1","service":"term","pid":8,"meta":{"peer_pid":7}}"#.into();
+        assert!(
+            presentation_notice(&command, &registrations).is_none(),
+            "publisher metadata cannot assert a native PID"
+        );
+        command.body =
+            r#"{"contract":"application.presentation.v1","service":"term","pid":7}"#.into();
+        command
+            .headers
+            .insert("broker_origin".into(), "mesh".into());
+        assert!(
+            presentation_notice(&command, &registrations).is_none(),
+            "even matching boot/clock payloads cannot make mesh receipts local"
+        );
+        command
+            .headers
+            .insert("broker_origin".into(), "local".into());
+        command
+            .headers
+            .insert("broker_registration".into(), "retired".into());
+        assert!(presentation_notice(&command, &registrations).is_none());
+    }
+
+    #[test]
+    fn interrupted_subscription_removal_survives_coalesced_registry_updates() {
+        let mut state = PresentationSubscriptions::default();
+        state.reset(1);
+        state.subscribing(1, "old").unwrap();
+        state.desire(BTreeSet::new());
+        // Reconciliation has begun but no unsubscribe ACK has arrived.
+        state.desire(BTreeSet::from(["new".into()]));
+        assert!(
+            state.possible.contains("old"),
+            "desired state cannot erase pending removal"
+        );
+        assert_eq!(
+            state
+                .possible
+                .difference(&state.desired)
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["old"]
+        );
+        state.unsubscribed(1, "old");
+        state.subscribing(1, "new").unwrap();
+        assert_eq!(state.possible, state.desired);
+        // A sent subscribe with a lost reply is also retained for later removal.
+        state.subscribing(1, "uncertain").unwrap();
+        state.desire(BTreeSet::new());
+        assert!(state.possible.contains("uncertain"));
+        state.reset(2);
+        state.subscribing(2, "old").unwrap();
+        state.unsubscribed(1, "old");
+        assert!(
+            state.possible.contains("old"),
+            "retired ACK cannot strip a new-generation subscription"
+        );
+        assert!(state.subscribing(1, "retired").is_err());
+        for index in 0..127 {
+            state.subscribing(2, &format!("owner-{index}")).unwrap();
+        }
+        assert!(state.subscribing(2, "over-capacity").is_err());
+        assert_eq!(state.possible.len(), 128);
     }
 
     #[test]

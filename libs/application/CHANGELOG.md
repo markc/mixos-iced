@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.27
+
+- Keep offline observation watches dormant until native connection, preserving
+  resource completion, wake and UI retirement causality on the existing lane.
+
+## 0.1.26
+
+- Mint immutable bounded frame Handle ownership before its first callback so
+  copied receipt history cannot rebind to a replacement native window.
+
+## 0.1.25
+
+- Publish actual frame-owner observation changes through the existing native
+  lane; retain receipt lifecycle provenance across reconnects. Pure reads and
+  unchanged views never manufacture a presentation or periodic redraw.
+- Admit copied external receipts to the shared bounded participant registry.
+
+## 0.1.24
+
+- Share bounded participant phase/state observations and expose exact native
+  frame history separately from installed settings. Capture callback lifecycle
+  provenance per admitted request, including unchanged retained views.
+- Add optional native delivery/application monotonic evidence without claiming
+  durable acceptance or presentation from description reads.
 ## 0.1.23
 
 - Add the optional `native-glyph-reference` acceptance tool. Render the exact

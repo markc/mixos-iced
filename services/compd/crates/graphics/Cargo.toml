@@ -23,6 +23,7 @@ slots = { workspace = true }
 gbm = { workspace = true }
 glow = { workspace = true }
 image = { workspace = true }
+iced_core = { workspace = true }
 pollster = { workspace = true }
 smithay = { workspace = true }
 thiserror = { workspace = true }

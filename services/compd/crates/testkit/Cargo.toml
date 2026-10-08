@@ -37,6 +37,10 @@ wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
 [dev-dependencies]
 comp-model = { workspace = true }
 decor = { workspace = true }
+graphics = { workspace = true }
+render-gles = { workspace = true }
+wgpu = { workspace = true }
+iced_core = { workspace = true }
 policy-host = { workspace = true }
 # The workspace model the window tests drive.
 policy = { workspace = true }

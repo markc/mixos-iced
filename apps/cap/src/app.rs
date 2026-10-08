@@ -471,7 +471,7 @@ impl App {
             "transport":"native",
             "verbs":verbs::VERBS
         });
-        application::describe::complete_native(
+        application::describe::complete_native_frames(
             &mut describe,
             application::describe::Identity {
                 app_id: Some(APP_ID),
@@ -480,6 +480,7 @@ impl App {
                 service: self.bus.service_name(),
             },
             self.settings_ui.session(),
+            &self.bus.frames,
         )
         .map_err(|error| error.to_string())?;
         Ok(describe)

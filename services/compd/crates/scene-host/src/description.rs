@@ -10,6 +10,7 @@ pub(crate) fn complete(
 ) -> Result<Value, describe::Violation> {
     let mut verbs = crate::verb::SceneVerb::names(identity.service);
     verbs.push(describe::VERB.into());
+    verbs.push("app.participants.wait".into());
     let mut value = json!({"schema":"quoin.v1","app":"quoin","embedded":true,"transport":"native","verbs":verbs});
     describe::complete_native(&mut value, identity, session)?;
     Ok(value)
@@ -48,6 +49,7 @@ mod tests {
         assert!(value["settings_cache"].is_object());
         let mut expected = crate::verb::SceneVerb::names("shell-overridden");
         expected.push("app.describe".into());
+        expected.push("app.participants.wait".into());
         assert_eq!(value["verbs"], json!(expected));
         assert_eq!(value, complete(identity, &session).unwrap());
         assert_eq!(

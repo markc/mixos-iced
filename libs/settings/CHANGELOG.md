@@ -1,5 +1,23 @@
 # settings contract changes
 
+## 0.3.8
+
+- Preserve remote changed-operation identity while removing comparable timing
+  unless the original settings delivery has authenticated local provenance.
+
+## 0.3.7
+
+Carry optional typed authority observation in the protected native snapshot
+delivery header. Exact snapshot bytes, schema and digest remain unchanged.
+Consumer timing remains generation and snapshot-identity fenced.
+
+## 0.3.6
+
+Add optional monotonic delivery/application observations and shared clock
+identity. Keep observation metadata outside snapshots and cache envelopes.
+Authority contract 0.1.2 adds runtime-only durable commit timing with honest
+unavailability on old replay and restart. Snapshot schema remains 1.
+
 ## 0.3.5
 
 Add optional versioned `appearance.resources` (set ID, exact manifest digest,

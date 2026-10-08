@@ -135,6 +135,7 @@ pub struct App {
     config: Config,
     theme: Theme,
     settings: SettingsUi<Theme>,
+    frames: application::frames::Handle,
     registered: bool,
     bootstrap_paths: Vec<String>,
     bootstrap_opens: Vec<BootstrapOpen>,
@@ -217,6 +218,9 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
     );
     let mut settings = bus.take_settings_ui().expect("GUI settings endpoint");
     settings.reconcile(bus.settings_generation());
+    let frames = application::frames::Handle::new();
+    frames.set_live_generation(bus.settings_generation());
+    settings.bind_frames(frames.clone());
     let ui_font = theme.ui_font;
     let run_id: u32 = rand::random();
     let controller = Controller::new(config.clone(), run_id, false);
@@ -233,6 +237,7 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
         config,
         theme,
         settings,
+        frames,
         registered: false,
         bootstrap_paths: paths,
         bootstrap_opens: Vec::new(),
@@ -295,6 +300,12 @@ pub fn run(service: &str, config: Config, paths: Vec<String>) -> anyhow::Result<
             .defer_close(),
     )
     .title(App::title)
+    .frame_presentation(|app: &App| {
+        app.settings
+            .session()
+            .frame_stamp()
+            .map(|stamp| app.frames.binding(stamp))
+    })
     .subscription(App::subscription)
     .theme(|app: &App| app.theme.iced_theme())
     .style(|app: &App, _| application::iced::theme::Style {
@@ -654,6 +665,8 @@ impl App {
     }
 
     fn on_delivery(&mut self, delivery: Delivery) -> Task<Msg> {
+        self.frames
+            .set_live_generation(self.bus.settings_generation());
         match delivery {
             Delivery::Stopped { faults } => {
                 eprintln!("CED_SHUTDOWN {}", serde_json::json!({"faults": faults}));
@@ -708,7 +721,7 @@ impl App {
                 let mut effects = self.controller.on_bus_command(cmd);
                 if describe {
                     crate::verbs::complete_describe_reply(&mut effects, id, |value| {
-                        application::describe::complete_native(
+                        application::describe::complete_native_frames(
                             value,
                             application::describe::Identity {
                                 app_id: Some(APP_ID),
@@ -717,6 +730,7 @@ impl App {
                                 service: self.bus.service_name(),
                             },
                             self.settings.session(),
+                            &self.frames,
                         )
                     });
                 }
@@ -1443,6 +1457,7 @@ impl App {
         if self.quitting {
             return Task::none();
         }
+        self.frames.close();
         self.quitting = true;
         self.save_session();
         self.bus.shutdown(self.session_writer.take());

@@ -14,14 +14,14 @@
 use std::any::{Any, TypeId};
 use std::time::Instant;
 
+use crate::engine::{IcedRuntime, IcedUi};
+use graphics::bridge::publish::attempt::attempt::Attempt;
+use graphics::surface::{IcedSurface, SurfaceError, WgpuGlContext};
 use iced_core::{Event as IcedEvent, mouse};
 use smithay::backend::renderer::element::Id;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::utils::CommitCounter;
 use smithay::utils::{Physical, Point, Rectangle, Size};
-use crate::engine::{IcedRuntime, IcedUi};
-use graphics::bridge::publish::attempt::attempt::Attempt;
-use graphics::surface::{IcedSurface, SurfaceError, WgpuGlContext};
 
 use crate::element::IcedRenderElement;
 use crate::handle::HandleId;
@@ -99,6 +99,12 @@ pub(crate) trait IcedInstanceAny: Any {
     /// `RedrawRequest::At`), which `wants_frame` deliberately does not cover.
     fn deadline(&self) -> Option<Instant>;
     fn render(&mut self);
+    fn frame_presentation(
+        &self,
+    ) -> Option<(
+        iced_core::window::Id,
+        iced_core::window::presentation::FrameBinding,
+    )>;
     /// Retire a pipelined frame if the GPU finished it, WITHOUT rasterizing, and
     /// bump the commit when one becomes visible. Must run every frame for every
     /// item: iced rasterizes only when dirty, so a deferred publish has no render
@@ -144,6 +150,14 @@ pub(crate) trait IcedInstanceAny: Any {
 }
 
 impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
+    fn frame_presentation(
+        &self,
+    ) -> Option<(
+        iced_core::window::Id,
+        iced_core::window::presentation::FrameBinding,
+    )> {
+        self.surface.published_presentation()
+    }
     fn handle_id(&self) -> HandleId {
         self.id
     }
@@ -202,9 +216,12 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         // on-screen surface before calling this, so the view is present then.
         self.poll_publish();
         if let Some(view) = self.surface.begin_render_view() {
+            self.surface
+                .set_target_presentation(self.runtime.ui.frame_presentation());
             self.runtime.render_into(&view);
             crate::frame_trace::rendered(self.id.0);
-            self.surface.submitted(model::environment::interface::base::get().pipeline);
+            self.surface
+                .submitted(model::environment::interface::base::get().pipeline);
         }
         // `submitted` publishes inline when the ring cannot defer, so this is
         // what carries the commit bump on the non-pipelined path.
@@ -238,7 +255,8 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         gles: &mut GlesRenderer,
         want: usize,
     ) -> Result<(), SurfaceError> {
-        self.surface.sync_depth(render_node, wgpu_ctx, gles, want)
+        self.surface.sync_depth(render_node, wgpu_ctx, gles, want)?;
+        Ok(())
     }
     fn texture_handle(&self) -> Option<&smithay::backend::renderer::gles::GlesTexture> {
         self.surface.gles_texture()
@@ -255,7 +273,10 @@ impl<U: IcedUi> IcedInstanceAny for IcedInstance<U> {
         if new_size == self.surface.size && scale_factor == self.scale_factor {
             return Ok(false);
         }
-        trace!("resize handle={:?} old={:?} new={new_size:?}", self.id, self.surface.size);
+        trace!(
+            "resize handle={:?} old={:?} new={new_size:?}",
+            self.id, self.surface.size
+        );
 
         self.surface.resize(render_node, wgpu_ctx, gles, new_size)?;
 
@@ -547,7 +568,10 @@ impl IcedItem {
         transform: &Transform,
         output_size: Size<f64, Physical>,
     ) -> Rectangle<i32, Physical> {
-        Rectangle::new(self.screen_location(transform, output_size), self.screen_size(transform))
+        Rectangle::new(
+            self.screen_location(transform, output_size),
+            self.screen_size(transform),
+        )
     }
 
     /// True if the given screen point falls inside this item's current
@@ -733,9 +757,11 @@ impl IcedItem {
             }
             Err(e) => {
                 if self.backing_failed.failed(request) {
-                    warn!("iced backing alloc failed handle={:?} at {request:?}: {e:?}; \
+                    warn!(
+                        "iced backing alloc failed handle={:?} at {request:?}: {e:?}; \
                            not retried until the surface is resized",
-                          self.inner.handle_id());
+                        self.inner.handle_id()
+                    );
                 }
                 false
             }
@@ -758,9 +784,11 @@ impl IcedItem {
             Ok(()) => self.depth_failed.succeeded(),
             Err(e) => {
                 if self.depth_failed.failed(request) {
-                    warn!("iced ring resize failed handle={:?} to {request:?}: {e:?}; \
+                    warn!(
+                        "iced ring resize failed handle={:?} to {request:?}: {e:?}; \
                            not retried until the depth or size changes",
-                          self.inner.handle_id());
+                        self.inner.handle_id()
+                    );
                 }
             }
         }
@@ -779,7 +807,8 @@ impl IcedItem {
             return false;
         }
         let rect = self.screen_rect(transform, output_size);
-        let viewport = Rectangle::from_size(Size::from((output_size.w as i32, output_size.h as i32)));
+        let viewport =
+            Rectangle::from_size(Size::from((output_size.w as i32, output_size.h as i32)));
         rect.overlaps(viewport)
     }
 
@@ -826,7 +855,9 @@ impl IcedItem {
         wgpu_ctx: &WgpuGlContext,
         gles: &mut GlesRenderer,
     ) -> Result<bool, SurfaceError> {
-        let resized = self.inner.apply_pending_resize(render_node, wgpu_ctx, gles)?;
+        let resized = self
+            .inner
+            .apply_pending_resize(render_node, wgpu_ctx, gles)?;
         if resized {
             self.render_stale = true;
         }

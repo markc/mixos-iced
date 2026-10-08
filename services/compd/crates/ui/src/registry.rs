@@ -36,18 +36,18 @@ use std::time::{Duration, Instant};
 
 use iced_core::Event as IcedEvent;
 
+use crate::engine::{IcedUi, SharedEngine};
+use graphics::surface::{IcedSurface, WgpuGlContext};
 use iced_core::mouse;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::utils::{Physical, Point, Rectangle, Size};
-use crate::engine::{IcedUi, SharedEngine};
-use graphics::surface::{IcedSurface, WgpuGlContext};
 
 use crate::element::IcedRenderElement;
+use crate::engine::IcedSnapshot;
 use crate::error::{CreateError, DispatchError, ResizeError};
 use crate::handle::{HandleId, IcedHandle};
 use crate::instance::{IcedInstance, IcedItem, build_instance};
 use crate::space::{IcedSpace, Transform};
-use crate::engine::IcedSnapshot;
 use iced_core::keyboard::Modifiers as IcedMods;
 
 /// How long a surface must stay continuously hidden (off-screen or occluded)
@@ -121,16 +121,28 @@ fn subtract_rect(
     let (ix0, iy0) = (inter.loc.x, inter.loc.y);
     let (ix1, iy1) = (inter.loc.x + inter.size.w, inter.loc.y + inter.size.h);
     if iy0 > fy0 {
-        out.push(Rectangle::new((fx0, fy0).into(), (fx1 - fx0, iy0 - fy0).into()));
+        out.push(Rectangle::new(
+            (fx0, fy0).into(),
+            (fx1 - fx0, iy0 - fy0).into(),
+        ));
     }
     if iy1 < fy1 {
-        out.push(Rectangle::new((fx0, iy1).into(), (fx1 - fx0, fy1 - iy1).into()));
+        out.push(Rectangle::new(
+            (fx0, iy1).into(),
+            (fx1 - fx0, fy1 - iy1).into(),
+        ));
     }
     if ix0 > fx0 {
-        out.push(Rectangle::new((fx0, iy0).into(), (ix0 - fx0, iy1 - iy0).into()));
+        out.push(Rectangle::new(
+            (fx0, iy0).into(),
+            (ix0 - fx0, iy1 - iy0).into(),
+        ));
     }
     if ix1 < fx1 {
-        out.push(Rectangle::new((ix1, iy0).into(), (fx1 - ix1, iy1 - iy0).into()));
+        out.push(Rectangle::new(
+            (ix1, iy0).into(),
+            (fx1 - ix1, iy1 - iy0).into(),
+        ));
     }
 }
 
@@ -179,7 +191,6 @@ pub struct IcedRegistry {
     /// (`RELEASE_MAX` since `batch_first`) — see `manage_backings`.
     batch_first: Option<Instant>,
     batch_touch: Option<Instant>,
-
     // No off-thread host. With wgpu on the GL backend over the
     // compositor's own context every instance renders inline, on the compositor
     // thread; see `runtime.surface/wgpu_context` for where a shared-context
@@ -286,6 +297,25 @@ impl IcedRegistry {
     pub fn get(&self, id: HandleId) -> Option<&IcedItem> {
         self.index.get(&id).and_then(|&idx| self.items.get(idx))
     }
+    /// Copied metadata of the texture actually published in this ring slot.
+    pub fn frame_presentation(
+        &self,
+        id: HandleId,
+        states: &smithay::backend::renderer::element::RenderElementStates,
+    ) -> Option<(
+        iced_core::window::Id,
+        iced_core::window::presentation::FrameBinding,
+    )> {
+        let item = self.get(id)?;
+        if !item.is_visible()
+            || states
+                .element_render_state(item.inner.smithay_id().clone())
+                .is_none_or(|state| state.visible_area == 0)
+        {
+            return None;
+        }
+        item.inner.frame_presentation()
+    }
     pub fn get_mut(&mut self, id: HandleId) -> Option<&mut IcedItem> {
         let idx = *self.index.get(&id)?;
         self.items.get_mut(idx)
@@ -389,7 +419,9 @@ impl IcedRegistry {
             self.instance_scale,
         );
 
-        trace!("created iced instance handle={id:?} location={location:?} size={size:?} space={space:?}");
+        trace!(
+            "created iced instance handle={id:?} location={location:?} size={size:?} space={space:?}"
+        );
 
         let item = IcedItem::new(instance, space, layer);
         let idx = self.items.len();
@@ -912,7 +944,9 @@ impl IcedRegistry {
                 item.poll_publish();
                 let due = item.tick();
                 if !item.is_visible() {
-                    if due { item.skip_render(); }
+                    if due {
+                        item.skip_render();
+                    }
                     continue;
                 }
                 if !item.ensure_backing(render_node, &wgpu, gles) {
@@ -1268,9 +1302,14 @@ impl IcedRegistry {
     /// Keep a carousel page's allocation warm without rasterising while hidden.
     /// Dirty hidden content is marked stale and drawn once on reveal.
     pub fn retain_backing_by_id(&mut self, id: HandleId, retain: bool) -> bool {
-        if !self.contains(id) { return false; }
-        if retain { self.retained_backings.insert(id); }
-        else { self.retained_backings.remove(&id); }
+        if !self.contains(id) {
+            return false;
+        }
+        if retain {
+            self.retained_backings.insert(id);
+        } else {
+            self.retained_backings.remove(&id);
+        }
         true
     }
 
@@ -1325,7 +1364,9 @@ impl IcedRegistry {
 
     /// Whether a press on this surface should leave keyboard focus untouched.
     pub fn is_keyboard_transparent(&self, id: HandleId) -> bool {
-        self.get(id).map(|i| i.is_keyboard_transparent()).unwrap_or(false)
+        self.get(id)
+            .map(|i| i.is_keyboard_transparent())
+            .unwrap_or(false)
     }
 
     /// Mark a surface keyboard-transparent: it still receives pointer buttons, but a

@@ -1,0 +1,14 @@
+-- SPDX-License-Identifier: MIT OR Apache-2.0
+$p=require("settings_participants_lib.mix")
+$p.check(deep_eq($p.quantiles([]),{count:0,estimator:"nearest-rank",p50_ns:nil,p95_ns:nil,max_ns:nil}),"Empty sample timing must be unavailable")
+$q=$p.quantiles([90,10,50,20,30])
+$p.check($q.count == 5 and $q.p50_ns == 30 and $q.p95_ns == 90 and $q.max_ns == 90,"Wrong measured nearest rank")
+$refused=false
+try $p.quantiles([1,-1]) catch $message $refused=true end
+$p.check($refused,"Negative duration admitted")
+$trace=$p.trace_counts("FRAME_TRACE stage=comp_frame_reasons subject=1 detail=0 dropped=0\nFRAME_TRACE stage=comp_frame_reasons subject=262144 detail=0 dropped=0\nFRAME_TRACE stage=comp_frame_reasons subject=0 detail=1 dropped=0\n")
+$p.check($trace.frames == 3 and $trace.submitted == 2 and $trace.empty == 1 and $trace.observer_only_submitted == 1,"Wrong actual reason reduction")
+$refused=false
+try $p.trace_counts("FRAME_TRACE stage=comp_frame_reasons subject=1 detail=0 dropped=1\n") catch $message $refused=true end
+$p.check($refused,"Dropped native trace admitted")
+print("PASS pure native timing reducer; no runtime acceptance")

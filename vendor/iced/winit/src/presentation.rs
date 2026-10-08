@@ -73,7 +73,7 @@ impl Ledger {
             return None;
         }
         self.capacity_blocked = !self.needs(&binding);
-        (!self.capacity_blocked).then_some(binding)
+        (!self.capacity_blocked).then(|| binding.captured())
     }
     pub(crate) fn native_capacity_blocked(&mut self) {
         self.capacity_blocked = true;
@@ -157,6 +157,43 @@ impl Drop for Ledger {
 mod tests {
     use super::*;
     use crate::core::window::presentation::{FrameObserver, FrameStamp};
+
+    #[test]
+    fn retained_view_admits_fresh_scope_after_late_old_request() {
+        use std::sync::{Arc, Mutex};
+        let receipts = Arc::new(Mutex::new(Vec::new()));
+        let make = |generation| {
+            let receipts = Arc::clone(&receipts);
+            FrameObserver::new(move |receipt| receipts.lock().unwrap().push((generation, receipt)))
+        };
+        let current = Arc::new(Mutex::new(make(1)));
+        let provider = Arc::clone(&current);
+        let retained = binding(
+            1,
+            FrameObserver::with_capture(move || provider.lock().unwrap().clone()),
+        );
+        let window = Id::unique();
+        let mut ledger = Ledger::new(window);
+        ledger.drawn(Some(retained.clone()));
+        let old = ledger.feedback_candidate().unwrap();
+        ledger.submitted(1, old, true);
+        *current.lock().unwrap() = make(2);
+        // No replacement view or stamp is supplied. The pending old callback
+        // remains generation 1, while the unchanged view can admit generation 2.
+        let old = ledger.resolve(1, presented()).unwrap();
+        old.observe(window, Some(1), presented());
+        let fresh = ledger.feedback_candidate().unwrap();
+        assert_eq!(fresh.stamp, retained.stamp);
+        assert!(!fresh.same_presentation(&old));
+        ledger.submitted(2, fresh, true);
+        let fresh = ledger.resolve(2, presented()).unwrap();
+        fresh.observe(window, Some(2), presented());
+        assert!(ledger.feedback_candidate().is_none());
+        let receipts = receipts.lock().unwrap();
+        assert_eq!(receipts[0].0, 1);
+        assert_eq!(receipts[1].0, 2);
+        assert_eq!(receipts[1].1.request_id, Some(2));
+    }
 
     #[test]
     fn capacity_epoch_scans_initial_wait_and_changes_without_repeated_generation_work() {

@@ -61,6 +61,16 @@ pub trait IcedUi: Send + 'static {
     fn theme(&self) -> Theme {
         Theme::Dark
     }
+    /// Exact installed-view binding captured beside rasterisation. Default
+    /// UIs carry no settings presentation claim.
+    fn frame_presentation(
+        &self,
+    ) -> Option<(
+        iced_core::window::Id,
+        iced_core::window::presentation::FrameBinding,
+    )> {
+        None
+    }
 }
 
 use bitflags::bitflags;

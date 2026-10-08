@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 [package]
 name = "settings"
-version = "0.3.5"
+version = "0.3.8"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,7 +21,8 @@ mod_module_files = "deny"
 [features]
 default = []
 # Reuses an app-owned native connection; never owns a runtime or receiver.
-native = ["dep:bus", "dep:tokio"]
+native = ["dep:bus", "dep:tokio", "observation"]
+observation = ["dep:libc"]
 cache = ["dep:config", "dep:libc"]
 
 [dependencies]

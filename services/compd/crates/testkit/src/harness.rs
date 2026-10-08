@@ -7,15 +7,15 @@ use std::time::Duration;
 use dispatcher::state::state::Dispatch;
 use dispatcher::wire::trait_::surface_event::SurfaceHandle;
 use dispatcher::wire::wire::Wire;
-use surfaces::SurfaceRecord;
 use protocols::wayland::connection::record::record::WaylandClientSession;
-use world::comp::CompState;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface as ServerSurface;
 use smithay::reexports::wayland_server::{Client, Display};
 use smithay::wayland::compositor::CompositorClientState;
+use surfaces::SurfaceRecord;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_protocols::xdg::shell::client::{xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel};
+use world::comp::CompState;
 
 use crate::client::{TestClient, protocol_id};
 use crate::host::TestHost;
@@ -94,16 +94,23 @@ impl Harness {
     /// answered (a `wl_display.sync` round trip). Panics if it never is.
     /// Pump until compd posts a protocol error on the client, and return it.
     /// Panics if the round trip completes without one.
-    pub fn roundtrip_expecting_error(&mut self) -> wayland_client::backend::protocol::ProtocolError {
+    pub fn roundtrip_expecting_error(
+        &mut self,
+    ) -> wayland_client::backend::protocol::ProtocolError {
         let target = self.client.sync();
         for _ in 0..ROUNDTRIP_PUMPS {
             self.client.flush();
-            let _ = self.event_loop.dispatch(Some(Duration::ZERO), &mut self.wire);
+            let _ = self
+                .event_loop
+                .dispatch(Some(Duration::ZERO), &mut self.wire);
             let _ = self.display.dispatch_clients(&mut self.wire.state);
             self.wire.drain_protocol();
             let _ = self.display.flush_clients();
             if self.client.try_read().is_err() {
-                return self.client.protocol_error().expect("the connection failed with a protocol error");
+                return self
+                    .client
+                    .protocol_error()
+                    .expect("the connection failed with a protocol error");
             }
             if self.client.state.syncs >= target {
                 panic!("the round trip completed without a protocol error");
@@ -173,8 +180,8 @@ impl Harness {
         let output = self.wire.inner.output.clone();
         let (w, h) = crate::host::OUTPUT_SIZE;
         let paint = |pixel: &dyn Fn(i32, i32) -> u32| {
-            let mut image =
-                Image::new(FormatCode::X8R8G8B8, w as usize, h as usize, true).expect("pixman image");
+            let image = Image::new(FormatCode::X8R8G8B8, w as usize, h as usize, true)
+                .expect("pixman image");
             let stride = image.stride() / 4;
             // SAFETY: the image owns `stride * h` u32s, alive while `image` is.
             let data = unsafe { std::slice::from_raw_parts_mut(image.data(), stride * h as usize) };
@@ -204,12 +211,16 @@ impl Harness {
                 .map(|image| renderer.bind(image).expect("bind the cursorless image"));
             screencopy::service(
                 &mut renderer,
-                framebuffer
-                    .as_ref()
-                    .map(|framebuffer| screencopy::Source { framebuffer, readback }),
+                framebuffer.as_ref().map(|framebuffer| screencopy::Source {
+                    framebuffer,
+                    readback,
+                }),
                 cursorless_framebuffer
                     .as_ref()
-                    .map(|framebuffer| screencopy::Source { framebuffer, readback }),
+                    .map(|framebuffer| screencopy::Source {
+                        framebuffer,
+                        readback,
+                    }),
                 &output,
                 damage,
             )
@@ -262,12 +273,20 @@ impl Harness {
     /// top-left), so the press has a focus. Panics if the client never sees the
     /// button event.
     pub fn press(&mut self, surface: &WlSurface, button: u32) -> u32 {
-        self.pointer_button(surface, button, smithay::backend::input::ButtonState::Pressed)
+        self.pointer_button(
+            surface,
+            button,
+            smithay::backend::input::ButtonState::Pressed,
+        )
     }
 
     /// Release `button` over `surface` (see [`Self::press`]); returns its serial.
     pub fn release(&mut self, surface: &WlSurface, button: u32) -> u32 {
-        self.pointer_button(surface, button, smithay::backend::input::ButtonState::Released)
+        self.pointer_button(
+            surface,
+            button,
+            smithay::backend::input::ButtonState::Released,
+        )
     }
 
     fn pointer_button(
@@ -293,16 +312,32 @@ impl Harness {
         pointer.motion(
             dispatch,
             Some((server, Point::from((0.0, 0.0)))),
-            &MotionEvent { location: Point::from((1.0, 1.0)), serial: SERIAL_COUNTER.next_serial(), time: 0 },
+            &MotionEvent {
+                location: Point::from((1.0, 1.0)),
+                serial: SERIAL_COUNTER.next_serial(),
+                time: 0,
+            },
         );
         pointer.frame(dispatch);
         let serial = SERIAL_COUNTER.next_serial();
-        pointer.button(dispatch, &ButtonEvent { serial, time: 0, button, state });
+        pointer.button(
+            dispatch,
+            &ButtonEvent {
+                serial,
+                time: 0,
+                button,
+                state,
+            },
+        );
         pointer.frame(dispatch);
         self.roundtrip();
         let serial = u32::from(serial);
         assert!(
-            self.client.state.buttons.iter().any(|(s, b, _, _)| *s == serial && *b == button),
+            self.client
+                .state
+                .buttons
+                .iter()
+                .any(|(s, b, _, _)| *s == serial && *b == button),
             "the client did not receive button {button:#x} with serial {serial}"
         );
         serial

@@ -1155,7 +1155,7 @@ impl Dopus {
                     let (rc, body) = if command.verb == "app.describe" && rc == 0 {
                         let mut value: serde_json::Value =
                             serde_json::from_str(&body).expect("typed description");
-                        match application::describe::complete_native(
+                        match application::describe::complete_native_frames(
                             &mut value,
                             application::describe::Identity {
                                 app_id: Some(APP_ID),
@@ -1164,6 +1164,7 @@ impl Dopus {
                                 service: handle.service_name(),
                             },
                             self.settings.session(),
+                            &handle.frames,
                         ) {
                             Ok(()) => (0, value.to_string()),
                             Err(error) => (10, verbs::describe_refusal(&error)),
