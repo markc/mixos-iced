@@ -474,13 +474,21 @@ fn remote_authority_clock_stays_unavailable_after_local_consumer_delivery() {
         "missing fresh snapshot cannot confirm buffered metadata"
     );
 
-    let mut newer_command = command.clone();
-    newer_command.body = serde_json::to_string(&snapshot(3, "a")).unwrap();
+    let copy_command = || IncomingCommand {
+        generation: command.generation,
+        from: command.from.clone(),
+        command: command.command.clone(),
+        id: command.id.clone(),
+        args: command.args.clone(),
+        body: command.body.clone(),
+        headers: command.headers.clone(),
+    };
     for keep_wrong_observation in [false, true] {
         let mut replacement = consumer();
         let read = read_work(&mut replacement, 1);
         replacement.native_delivery(&command);
-        let mut newer = newer_command.clone();
+        let mut newer = copy_command();
+        newer.body = serde_json::to_string(&snapshot(3, "a")).unwrap();
         if !keep_wrong_observation {
             newer.headers.remove("settings_observation");
         }
@@ -496,7 +504,7 @@ fn remote_authority_clock_stays_unavailable_after_local_consumer_delivery() {
     let read = read_work(&mut forged, 1);
     let mut wrong = observation.clone();
     wrong.identity = (&snapshot(3, "a")).into();
-    let mut forged_command = command.clone();
+    let mut forged_command = copy_command();
     forged_command.headers.insert(
         "settings_observation".into(),
         serde_json::to_string(&wrong).unwrap(),
