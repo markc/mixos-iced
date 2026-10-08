@@ -1336,15 +1336,20 @@ where
                         Background::Color(Color::TRANSPARENT),
                     );
                 }
-                row.as_widget().draw(
-                    child,
-                    renderer,
-                    theme,
-                    if selected { &selected_text } else { &row_text },
-                    layout.child(offset),
-                    cursor,
-                    &body_clip,
-                );
+                let Some(row_clip) = row_bounds.intersection(&body_clip) else {
+                    continue;
+                };
+                renderer.with_layer(row_clip, |renderer| {
+                    row.as_widget().draw(
+                        child,
+                        renderer,
+                        theme,
+                        if selected { &selected_text } else { &row_text },
+                        layout.child(offset),
+                        cursor,
+                        &row_clip,
+                    );
+                });
             }
         });
         if let Some((rail, scroller)) = self.scrollbar(state, body) {
@@ -2219,6 +2224,30 @@ mod tests {
         let in_view = 10;
         assert!(quads.0.get() >= in_view, "{}", quads.0.get());
         assert!(quads.0.get() <= in_view + 3, "{}", quads.0.get());
+    }
+
+    #[test]
+    fn compact_wrapped_labels_draw_inside_their_own_fixed_rows() {
+        let mut list: List<'_> = VirtualList::new(2, |_| {
+            Element::new(iced_widget::text("all-apps-controls long service label").width(Length::Fill))
+        }).row_height(ROW);
+        let mut tree = Tree::new(&list as &dyn Widget<_, _, _>);
+        let mut renderer = LayoutRenderer::new();
+        let size = Size::new(100.0, ROW * 2.0);
+        let node = Widget::layout(&mut list, &mut tree, &renderer,
+            &layout::Limits::new(Size::ZERO, size));
+        Widget::draw(&list, &tree, &mut renderer, &iced_core::Theme::Dark,
+            &renderer::Style::default(), Layout::new(&node), mouse::Cursor::Unavailable,
+            &Rectangle::with_size(size));
+        assert_eq!(renderer.text_layers.len(), 2, "both actual labels draw");
+        for (index, layers) in renderer.text_layers.iter().enumerate() {
+            let clip = layers.last().expect("fixed rows require a renderer layer");
+            assert_eq!(clip.y, index as f32 * ROW);
+            assert_eq!(clip.height, ROW);
+            assert!(clip.x >= 0.0 && clip.x + clip.width <= size.width);
+        }
+        assert!(renderer.paragraphs.iter().any(|bounds| bounds.height > ROW),
+            "exercise real wrapped text taller than its fixed row");
     }
 
     #[test]

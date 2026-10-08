@@ -405,18 +405,20 @@ where
                 style_sheet.background,
             );
 
-            self.list_container().draw(
-                &state.children[0],
-                renderer,
-                theme,
-                style,
-                layout
-                    .children()
-                    .next()
-                    .expect("Scrollable Child Missing in Selection List"),
-                cursor,
-                &clipped_viewport,
-            );
+            renderer.with_layer(clipped_viewport, |renderer| {
+                self.list_container().draw(
+                    &state.children[0],
+                    renderer,
+                    theme,
+                    style,
+                    layout
+                        .children()
+                        .next()
+                        .expect("Scrollable Child Missing in Selection List"),
+                    cursor,
+                    &clipped_viewport,
+                );
+            });
         }
     }
 
@@ -511,5 +513,22 @@ mod tests {
         let list: SelectionList<'_, String, Vec<String>, String, iced_core::Theme, LayoutRenderer> =
             SelectionList::new(build(), |_, value| value);
         assert_eq!(list.options.len(), 2);
+    }
+
+    #[test]
+    fn compact_labels_draw_inside_the_list_viewport_without_scrollbars() {
+        let options = vec!["Calendar · calendar · disabled · right".to_owned()];
+        let mut list = TestList::new(&options, |_, value| value);
+        let mut tree = Tree::new(&list as &dyn Widget<_, _, _>);
+        let mut renderer = LayoutRenderer::new();
+        let size = Size::new(120.0, 100.0);
+        let node = Widget::layout(&mut list, &mut tree, &renderer, &Limits::new(Size::ZERO, size));
+        let viewport = Rectangle { x: 5.0, y: 0.0, width: 110.0, height: 100.0 };
+        Widget::draw(&list, &tree, &mut renderer, &iced_core::Theme::Dark,
+            &renderer::Style::default(), Layout::new(&node), Cursor::Unavailable, &viewport);
+        assert!(!renderer.text_layers.is_empty(), "the actual label must draw");
+        for layers in &renderer.text_layers {
+            assert!(layers.contains(&viewport), "long labels need a real renderer clip even without active scrollbars: {layers:?}");
+        }
     }
 }

@@ -12,6 +12,8 @@ pub(crate) struct LayoutRenderer {
     pub(crate) paragraph_colours: Vec<Color>,
     pub(crate) quads: Vec<(Rectangle, Background)>,
     pub(crate) layers: Vec<Rectangle>,
+    pub(crate) text_layers: Vec<Vec<Rectangle>>,
+    active_layers: Vec<Rectangle>,
 }
 
 impl LayoutRenderer {
@@ -31,6 +33,8 @@ impl LayoutRenderer {
             paragraph_colours: Vec::new(),
             quads: Vec::new(),
             layers: Vec::new(),
+            text_layers: Vec::new(),
+            active_layers: Vec::new(),
         }
     }
 }
@@ -38,8 +42,11 @@ impl LayoutRenderer {
 impl iced_core::Renderer for LayoutRenderer {
     fn start_layer(&mut self, bounds: Rectangle) {
         self.layers.push(bounds);
+        self.active_layers.push(bounds);
     }
-    fn end_layer(&mut self) {}
+    fn end_layer(&mut self) {
+        self.active_layers.pop().expect("balanced renderer layers");
+    }
     fn start_transformation(&mut self, _transformation: Transformation) {}
     fn end_transformation(&mut self) {}
     fn fill_quad(&mut self, quad: renderer::Quad, background: impl Into<Background>) {
@@ -95,6 +102,7 @@ impl text::Renderer for LayoutRenderer {
         self.paragraphs
             .push(Rectangle::new(position, paragraph.min_bounds()));
         self.paragraph_colours.push(color);
+        self.text_layers.push(self.active_layers.clone());
     }
 
     fn fill_editor(
@@ -113,6 +121,7 @@ impl text::Renderer for LayoutRenderer {
         _color: Color,
         _clip_bounds: Rectangle,
     ) {
+        self.text_layers.push(self.active_layers.clone());
     }
 }
 
