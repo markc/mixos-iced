@@ -745,7 +745,7 @@ mod tests {
             refusals
                 .try_reply(
                     client.clone(),
-                    command,
+                    *command,
                     10,
                     "{\"refused\":true}".into(),
                     std::time::Instant::now() + Duration::from_secs(2)

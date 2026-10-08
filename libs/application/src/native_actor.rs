@@ -305,15 +305,15 @@ impl Refusals {
         rc: u8,
         body: String,
         deadline: Instant,
-    ) -> Result<(), IncomingCommand> {
+    ) -> Result<(), Box<IncomingCommand>> {
         if command.id.is_none() {
             return Ok(());
         }
         if self.tasks.is_full() {
-            return Err(command);
+            return Err(Box::new(command));
         }
         let Some(permit) = self.admission.try_acquire() else {
-            return Err(command);
+            return Err(Box::new(command));
         };
         let reply =
             Accepted::new(client, command, permit, Instant::now()).reply(rc, body, deadline);
@@ -326,7 +326,7 @@ impl Refusals {
                     command, permit, ..
                 } = *reply.accepted;
                 permit.finish();
-                Err(command)
+                Err(Box::new(command))
             }
         }
     }
