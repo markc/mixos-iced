@@ -66,7 +66,9 @@ use wayland_protocols::wp::presentation_time::client::{wp_presentation, wp_prese
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
 };
-use wayland_protocols::xdg::shell::client::{xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{
+    xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
+};
 
 /// The program name: the window title, the memfd name and the `--version`
 /// line.
@@ -624,7 +626,9 @@ fn run() -> Result<(), String> {
             surface.commit();
             if options.popup && popup.is_none() {
                 // Process the parent's initial buffer before the popup commit.
-                queue.roundtrip(&mut probe).map_err(|error| error.to_string())?;
+                queue
+                    .roundtrip(&mut probe)
+                    .map_err(|error| error.to_string())?;
                 let popup_surface = compositor.create_surface(&qh, ());
                 let popup_xdg = wm_base.get_xdg_surface(&popup_surface, &qh, true);
                 let positioner = wm_base.create_positioner(&qh, ());
@@ -633,9 +637,13 @@ fn run() -> Result<(), String> {
                 let role = popup_xdg.get_popup(Some(&xdg), &positioner, &qh, ());
                 positioner.destroy();
                 popup_surface.commit();
-                queue.roundtrip(&mut probe).map_err(|error| error.to_string())?;
+                queue
+                    .roundtrip(&mut probe)
+                    .map_err(|error| error.to_string())?;
                 let backing = self::canvas(&shm, &qh, 20, 20, false)?;
-                backing.backing.write_all_at(&options.pixel(frame).repeat(400), 0)
+                backing
+                    .backing
+                    .write_all_at(&options.pixel(frame).repeat(400), 0)
                     .map_err(|error| error.to_string())?;
                 popup_surface.attach(Some(&backing.buffer), 0, 0);
                 popup_surface.damage_buffer(0, 0, 20, 20);

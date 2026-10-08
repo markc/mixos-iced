@@ -26,26 +26,48 @@ pub fn list(lp: &Loop) -> ControlReply {
         json!({"id":id,"name":native.name,"active":id == lp.inner.worlds.active_id(),
             "spawn_target":id == lp.inner.worlds.spawn_target(),"windows":windows})
     }).collect();
-    ControlReply::Body(json!({"active":lp.inner.worlds.active_id(),"spawn_target":lp.inner.worlds.spawn_target(),
-        "limit":world::world::manager::manager::MAX_DESKTOP_WORLDS,"worlds":worlds}))
+    ControlReply::Body(
+        json!({"active":lp.inner.worlds.active_id(),"spawn_target":lp.inner.worlds.spawn_target(),
+        "limit":world::world::manager::manager::MAX_DESKTOP_WORLDS,"worlds":worlds}),
+    )
 }
 
 pub fn create(lp: &mut Loop) -> ControlReply {
     let Some(id) = lp.inner.create_desktop_world() else {
-        return ControlReply::refused("world_capacity", json!({"limit":world::world::manager::manager::MAX_DESKTOP_WORLDS}));
+        return ControlReply::refused(
+            "world_capacity",
+            json!({"limit":world::world::manager::manager::MAX_DESKTOP_WORLDS}),
+        );
     };
     lp.inner.comp.settings_changed("windows", "world.create");
     ControlReply::Body(json!({"id":id,"created":true,"active":false,"spawn_target":false}))
 }
 
 pub fn activate(lp: &mut Loop, id: uuid::Uuid) -> ControlReply {
-    if !lp.inner.worlds.contains(id) { return ControlReply::refused("unknown_world", json!({"id":id})); }
-    if lp.inner.worlds.get(id).storage().try_get(&world::host::space::base::SPACE).is_none() {
+    if !lp.inner.worlds.contains(id) {
+        return ControlReply::refused("unknown_world", json!({"id":id}));
+    }
+    if lp
+        .inner
+        .worlds
+        .get(id)
+        .storage()
+        .try_get(&world::host::space::base::SPACE)
+        .is_none()
+    {
         return ControlReply::refused("unsupported_state", json!({"id":id,"reason":"not_spatial"}));
     }
-    if crate::input::exclusive_layer(lp) || crate::input::human_keyboard_owned(&lp.state.seat.seat)
-        || lp.inner.comp.interactive.is_some() || lp.inner.comp.region.run.is_some()
-        || lp.state.seat.seat.get_pointer().is_some_and(|pointer| pointer.is_grabbed()) {
+    if crate::input::exclusive_layer(lp)
+        || crate::input::human_keyboard_owned(&lp.state.seat.seat)
+        || lp.inner.comp.interactive.is_some()
+        || lp.inner.comp.region.run.is_some()
+        || lp
+            .state
+            .seat
+            .seat
+            .get_pointer()
+            .is_some_and(|pointer| pointer.is_grabbed())
+    {
         return ControlReply::refused("busy", json!({"id":id,"reason":"seat_owned"}));
     }
     let changed = lp.inner.worlds.active_id() != id || lp.inner.worlds.spawn_target() != id;
@@ -55,5 +77,7 @@ pub fn activate(lp: &mut Loop, id: uuid::Uuid) -> ControlReply {
         crate::control::refresh_usable(lp);
         lp.state.schedule_redraw(RedrawReason::WindowState);
     }
-    ControlReply::Body(json!({"id":id,"changed":changed,"active":lp.inner.worlds.active_id(),"spawn_target":lp.inner.worlds.spawn_target()}))
+    ControlReply::Body(
+        json!({"id":id,"changed":changed,"active":lp.inner.worlds.active_id(),"spawn_target":lp.inner.worlds.spawn_target()}),
+    )
 }

@@ -17,7 +17,9 @@ pub fn fullscreen_set(_loop: &mut Loop, window: Window, fullscreen: bool) {
     if fullscreen && window.is_fullscreen() {
         return;
     }
-    let Some(owner) = _loop.inner.world_of_window(&window) else { return; };
+    let Some(owner) = _loop.inner.world_of_window(&window) else {
+        return;
+    };
     let returning = if !fullscreen {
         let (comp, space) = _loop.inner.comp_world_space_mut(owner);
         dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(&window)

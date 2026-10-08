@@ -59,7 +59,9 @@ pub enum StatsTarget {
 pub enum WindowOp {
     WorldList,
     WorldCreate,
-    WorldActivate { id: uuid::Uuid },
+    WorldActivate {
+        id: uuid::Uuid,
+    },
     Tile {
         id: u64,
         generation: u64,
@@ -760,13 +762,27 @@ pub fn parse_window_verb(verb: &str, args: &Value) -> Result<WindowVerb, Control
     match verb {
         "comp.world.list" | "comp.world.create" => {
             args_object(args, &empty, &[])?;
-            Ok(WindowVerb::Op(if verb == "comp.world.list" { WindowOp::WorldList } else { WindowOp::WorldCreate }))
+            Ok(WindowVerb::Op(if verb == "comp.world.list" {
+                WindowOp::WorldList
+            } else {
+                WindowOp::WorldCreate
+            }))
         }
         "comp.world.activate" => {
             let object = args_object(args, &empty, &["id"])?;
-            let raw = present(object, "id").and_then(Value::as_str).ok_or_else(|| invalid_argument("id", "UUID string", "required"))?;
-            let id = uuid::Uuid::parse_str(raw).map_err(|_| invalid_argument("id", "UUID string", "canonical hyphenated UUID required"))?;
-            if raw != id.to_string() { return Err(invalid_argument("id", "UUID string", "canonical hyphenated UUID required")); }
+            let raw = present(object, "id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_argument("id", "UUID string", "required"))?;
+            let id = uuid::Uuid::parse_str(raw).map_err(|_| {
+                invalid_argument("id", "UUID string", "canonical hyphenated UUID required")
+            })?;
+            if raw != id.to_string() {
+                return Err(invalid_argument(
+                    "id",
+                    "UUID string",
+                    "canonical hyphenated UUID required",
+                ));
+            }
             Ok(WindowVerb::Op(WindowOp::WorldActivate { id }))
         }
         "comp.window.tile" | "comp.window.untile" => {

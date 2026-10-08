@@ -483,7 +483,8 @@ fn refresh_tiles(
     for member in comp.tiles.members() {
         if member.group.workspace == comp.current_workspace()
             && windows.iter().any(|(id, _)| *id == member.target.id)
-            && !groups.contains(&member.group) {
+            && !groups.contains(&member.group)
+        {
             groups.push(member.group.clone());
         }
     }
@@ -507,10 +508,12 @@ fn refresh_tiles(
     for group in groups {
         let plan = tile_plan(comp, space, windows, &group, None);
         let reason = match &plan {
-                Plan::Pending(error) => Some(*error),
-                Plan::Ready(_) => None,
-            };
-        for member in comp.tiles.members().iter().filter(|member| member.group == group && windows.iter().any(|(id, _)| *id == member.target.id)) {
+            Plan::Pending(error) => Some(*error),
+            Plan::Ready(_) => None,
+        };
+        for member in comp.tiles.members().iter().filter(|member| {
+            member.group == group && windows.iter().any(|(id, _)| *id == member.target.id)
+        }) {
             observation.push((member.target, reason));
         }
         let Plan::Ready(allocations) = plan else {

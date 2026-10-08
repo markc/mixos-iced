@@ -173,9 +173,29 @@ fn independent_actual_spaces_keep_member_pending_observations_and_native_slots_s
     let wa = native_window(&h, a);
     let wb = native_window(&h, b);
     let normal = request(&h, a).normal;
-    let outputs: Vec<_> = h.wire.inner.space.state.outputs().map(|output| (output.clone(), h.wire.inner.space.state.output_geometry(output).unwrap().loc)).collect();
+    let outputs: Vec<_> = h
+        .wire
+        .inner
+        .space
+        .state
+        .outputs()
+        .map(|output| {
+            (
+                output.clone(),
+                h.wire
+                    .inner
+                    .space
+                    .state
+                    .output_geometry(output)
+                    .unwrap()
+                    .loc,
+            )
+        })
+        .collect();
     let mut other = smithay::desktop::Space::default();
-    for (output, location) in outputs { other.map_output(&output, location); }
+    for (output, location) in outputs {
+        other.map_output(&output, location);
+    }
     let home = h.wire.inner.space.state.element_location(&wb).unwrap();
     h.wire.inner.space.state.unmap_elem(&wb);
     other.map_element(wb.clone(), home, false);
@@ -184,7 +204,10 @@ fn independent_actual_spaces_keep_member_pending_observations_and_native_slots_s
     world::comp::geometry::set_tiled(&mut host.comp, &mut other, b, &wb, true, None).unwrap();
     let a_slot = slot::decided_size(&wa);
     let b_slot = slot::decided_size(&wb);
-    assert_eq!(a_slot, b_slot, "each real Space owns a full-width singleton despite shared output/workspace");
+    assert_eq!(
+        a_slot, b_slot,
+        "each real Space owns a full-width singleton despite shared output/workspace"
+    );
     world::comp::geometry::refresh_space(&mut host.comp, &mut host.space.state);
     world::comp::geometry::refresh_space(&mut host.comp, &mut other);
     let revision = host.comp.content_revision();
@@ -192,9 +215,17 @@ fn independent_actual_spaces_keep_member_pending_observations_and_native_slots_s
         world::comp::geometry::refresh_space(&mut host.comp, &mut host.space.state);
         world::comp::geometry::refresh_space(&mut host.comp, &mut other);
     }
-    assert_eq!(host.comp.content_revision(), revision, "world pending observations must not overwrite each other");
-    world::comp::geometry::set_tiled(&mut host.comp, &mut host.space.state, a, &wa, false, None).unwrap();
-    assert_eq!(host.space.state.element_location(&wa), Some((normal.x, normal.y).into()));
+    assert_eq!(
+        host.comp.content_revision(),
+        revision,
+        "world pending observations must not overwrite each other"
+    );
+    world::comp::geometry::set_tiled(&mut host.comp, &mut host.space.state, a, &wa, false, None)
+        .unwrap();
+    assert_eq!(
+        host.space.state.element_location(&wa),
+        Some((normal.x, normal.y).into())
+    );
     assert_eq!(slot::decided_size(&wb), b_slot);
     assert!(host.space.state.element_location(&wb).is_none());
     assert!(other.element_location(&wa).is_none());

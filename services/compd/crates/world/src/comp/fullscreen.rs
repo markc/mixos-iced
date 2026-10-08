@@ -150,7 +150,9 @@ pub fn service(lp: &mut Loop) {
 /// The engine's `fullscreen_set` returns early for an already-fullscreen window, so
 /// the move is made here.
 pub fn retarget(lp: &mut Loop, window: &Window) {
-    let Some(owner) = lp.inner.world_of_window(window) else { return; };
+    let Some(owner) = lp.inner.world_of_window(window) else {
+        return;
+    };
     let Some(geometry) = target_geometry(&lp.inner.comp, &lp.inner.space_of(owner).state, window)
     else {
         return;

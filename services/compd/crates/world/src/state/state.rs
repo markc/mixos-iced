@@ -518,21 +518,42 @@ impl Orchestrator {
 
     /// Runtime worlds share the boot builder and real output/renderer owners.
     pub fn create_desktop_world(&mut self) -> Option<uuid::Uuid> {
-        if !self.worlds.can_add_desktop() { return None; }
-        let outputs: Vec<_> = self.space_state().state.outputs().filter_map(|output| {
-            self.space_state().state.output_geometry(output).map(|geometry| (output.clone(), geometry.loc))
-        }).collect();
+        if !self.worlds.can_add_desktop() {
+            return None;
+        }
+        let outputs: Vec<_> = self
+            .space_state()
+            .state
+            .outputs()
+            .filter_map(|output| {
+                self.space_state()
+                    .state
+                    .output_geometry(output)
+                    .map(|geometry| (output.clone(), geometry.loc))
+            })
+            .collect();
         let id = uuid::Uuid::now_v7();
         let mut world = crate::kind::build::base::desktop(id, "desktop", &self.kernel);
         crate::surface::system::base::ensure_registry(world.storage_mut(), &self.kernel);
-        let space = &mut world.storage_mut().get_mut(&crate::host::space::base::SPACE_MUT).inner.state;
-        for (output, location) in outputs { space.map_output(&output, location); }
+        let space = &mut world
+            .storage_mut()
+            .get_mut(&crate::host::space::base::SPACE_MUT)
+            .inner
+            .state;
+        for (output, location) in outputs {
+            space.map_output(&output, location);
+        }
         self.worlds.add(world);
         Some(id)
     }
 
     pub fn space_of(&self, world: uuid::Uuid) -> &protocols::space::state::SpaceState {
-        &self.worlds.get(world).storage().get(&crate::host::space::base::SPACE).inner
+        &self
+            .worlds
+            .get(world)
+            .storage()
+            .get(&crate::host::space::base::SPACE)
+            .inner
     }
 
     /// Map `output` into EVERY world's Space, not just the hosted one.
