@@ -215,7 +215,10 @@ fn run(node: &str, directory: &Path) -> Result<()> {
     // SAFETY: this fixture owns the render fd/GBM display for its entire
     // renderer lifetime; all GL/wgpu operations stay on this one thread.
     let display = unsafe { EGLDisplay::new(gbm)? };
-    fresh(&directory.join("display.txt"), format!("platform=GBM\nnode={}\n", path.display()).as_bytes())?;
+    fresh(
+        &directory.join("display.txt"),
+        format!("platform=GBM\nnode={}\n", path.display()).as_bytes(),
+    )?;
     let mut gles = render_gles::context::egl::egl::create(&display)?;
     let ctx = create_wgpu_gl_context(&Registrar::new(), &mut gles)?;
     let adapter = ctx.adapter.get_info();

@@ -7439,11 +7439,14 @@ name = "testkit"
 version = "0.1.1"
 dependencies = [
  "dispatcher",
+ "graphics",
+ "iced_core",
  "libc",
  "model",
  "policy",
  "policy-host",
  "protocols",
+ "render-gles",
  "screencopy",
  "smithay",
  "surfaces",
@@ -7451,6 +7454,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-wlr",
+ "wgpu",
  "world",
 ]
 
