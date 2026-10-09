@@ -212,8 +212,8 @@ try
     $variant=call("apps","apps.icon",json_encode({name:"dev.mixos.term-symbolic",size:32}))
     check($variant.rc == 0 and contains($variant.result.path,"/icons/"+$theme+"/"),"default icon requests follow selected weight")
     $weight_paths[$theme]=$variant.result.path
-    $brand=call("apps","apps.icon",json_encode({name:"dev.mixos-symbolic",size:28}))
-    check($brand.rc == 0 and contains($brand.result.path,"/icons/mixos/"),"all weights inherit the same M")
+    $brand=call("apps","apps.icon",json_encode({name:"dev.mixos",size:28}))
+    check($brand.rc == 0 and contains($brand.result.path,"/icons/mixos/"),"all weights inherit the same cyclops")
   end
   check(hash_file($weight_paths.mixos,"sha256") != hash_file($weight_paths["mixos-300"],"sha256"),"selected weights contain different SVG geometry")
   check(hash_file($weight_paths["mixos-300"],"sha256") != hash_file($weight_paths["mixos-200"],"sha256"),"200 and 300 contain different SVG geometry")

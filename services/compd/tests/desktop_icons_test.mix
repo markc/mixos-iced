@@ -24,10 +24,10 @@ try
   check(trim(run_argv_must([$mix,$probe],{env:{HOME:$tmp}})) == "user-theme","explicit existing theme preference is preserved")
   $ctx={icon_dirs:[$share+"/icons"],pixmaps:$tmp+"/pixmaps",cache:{}}
   for each $size in [20,28,32,48,128]
-    for each $name in ["dev.mixos-symbolic","notification-active-symbolic","notification-inactive-symbolic","audio-volume-muted-symbolic","audio-volume-high-symbolic","audio-volume-medium-symbolic","audio-volume-low-symbolic","network-wireless-signal-excellent-symbolic","network-wired-activated-symbolic","network-offline-symbolic","user-desktop-symbolic"]
+    for each $name in ["dev.mixos","notification-active-symbolic","notification-inactive-symbolic","audio-volume-muted-symbolic","audio-volume-high-symbolic","audio-volume-medium-symbolic","audio-volume-low-symbolic","network-wireless-signal-excellent-symbolic","network-wired-activated-symbolic","network-offline-symbolic","user-desktop-symbolic"]
       $hit=$apps.resolve_icon($ctx,$name,$size,1,"mixos")
       $ctx=$hit.ctx
-      check($hit.hit != nil and ends_with($hit.hit.path,$name+".svg"),"real symbolic lookup at "+to_string($size)+": "+$name)
+      check($hit.hit != nil and ends_with($hit.hit.path,$name+".svg"),"real icon lookup at "+to_string($size)+": "+$name)
       check(contains(read_file($hit.hit.path),"<svg"),"lookup supplies SVG bytes")
     end
   end
@@ -58,25 +58,26 @@ try
       end
     end
   end
-  $mark=$apps.resolve_icon($ctx,"dev.mixos-symbolic",28,1,"mixos").hit.path
+  $mark=$apps.resolve_icon($ctx,"dev.mixos",28,1,"mixos").hit.path
   for each $theme in ["mixos-300","mixos-200"]
-    check($apps.resolve_icon($ctx,"dev.mixos-symbolic",28,1,$theme).hit.path == $mark,"all weights share the unchanged M logo")
+    check($apps.resolve_icon($ctx,"dev.mixos",28,1,$theme).hit.path == $mark,"all weights share the unchanged cyclops")
   end
-  check(hash_file($mark,"sha256") == hash_file($repo+"/share/brand/logos/mixos-black-transparent.svg","sha256"),"launcher is the canonical M vector")
-  $model=$models.panel({windows:[],ws_count:1,ws_current:1},{themed:{"dev.mixos-symbolic":$mark,"start-here-kde":"/old-kde.svg"}},0)
-  check($model.launcher.has_icon and $model.launcher.icon == $mark,"M takes precedence over an existing KDE launcher")
+  check(hash_file($mark,"sha256") == hash_file($repo+"/share/brand/cyclops/cyclops.svg","sha256"),"launcher is the canonical cyclops vector")
+  check(not ends_with(basename($mark),"-symbolic.svg"),"the cyclops is full colour, never a tinted symbolic")
+  $model=$models.panel({windows:[],ws_count:1,ws_current:1},{themed:{"dev.mixos":$mark,"start-here-kde":"/old-kde.svg"}},0)
+  check($model.launcher.has_icon and $model.launcher.icon == $mark,"the cyclops takes precedence over an existing KDE launcher")
   $old_index="[Icon Theme]\nName=Existing\nDirectories=48x48/apps\n\n[48x48/apps]\nSize=48\nType=Fixed\nContext=Applications\n"
   write_file($share+"/icons/hicolor/index.theme",$old_index)
   print(run_argv_must([$mix,$repo+"/share/brand/install.mix","--root",$share]))
   check(read_file($share+"/icons/hicolor/index.theme") == $old_index,"existing hicolor metadata is preserved")
   $uncached={icon_dirs:[$share+"/icons"],pixmaps:$tmp+"/pixmaps",cache:{}}
-  check($apps.resolve_icon($uncached,"dev.mixos-symbolic",28,1,"mixos").hit.path == $share+"/icons/mixos/symbolic/apps/dev.mixos-symbolic.svg","M resolves even when existing hicolor omits symbolic/apps")
+  check($apps.resolve_icon($uncached,"dev.mixos",28,1,"mixos").hit.path == $share+"/icons/mixos/symbolic/apps/dev.mixos.svg","the cyclops resolves even when existing hicolor omits symbolic/apps")
   -- Verify failure before publishing anything from a corrupted source bundle.
   print(run_argv_must(["cp","-a",$repo+"/share/icons",$tmp+"/corrupt"]))
   append_file($tmp+"/corrupt/material/volume_up.svg"," ")
   $bad=run_argv([$mix,$tmp+"/corrupt/install.mix","--root",$tmp+"/bad"],{stderr:"stdout"})
   check(not $bad.ok and contains($bad.stdout,"ICON_HASH") and not is_dir($tmp+"/bad/icons"),"corrupted bundle fails before installation")
-  print("PASS offline Material/M installers, scaled lookup, app entries, brand precedence and corruption refusal")
+  print("PASS offline Material/cyclops installers, scaled lookup, app entries, brand precedence and corruption refusal")
 finally
   remove_dir($tmp)
 end

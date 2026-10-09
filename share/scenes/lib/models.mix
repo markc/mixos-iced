@@ -97,7 +97,7 @@ fn panel($snap, $icons, $now)
   $open = $snap.open ?? {}
   $ws_current = $snap.ws_current ?? 1
 
-  $launcher = icon_choice($themed, "dev.mixos-symbolic", nil)
+  $launcher = icon_choice($themed, "dev.mixos", nil)
   if not $launcher.has_icon then $launcher = icon_choice($themed, "start-here-kde", "start-here") end
   $launcher.background = ($open.launcher ?? false) ? $C.accent_bg : nil
 

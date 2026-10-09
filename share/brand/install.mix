@@ -1,11 +1,14 @@
 #!/opt/mixos/bin/mix
--- version: 0.1.1
+-- version: 0.2.0
 -- Install the MixOS brand icons into the shared icon tree.
 -- Default root: $MIXOS_SHARE, otherwise /opt/mixos/share. --root for a sandbox.
 --
---   icons/hicolor/symbolic/apps/dev.mixos-symbolic.svg
---     The transparent mark. A *-symbolic icon is drawn in the theme's ink,
---     so the panel launcher follows light and dark mode from this one file.
+--   icons/{hicolor,mixos}/symbolic/apps/dev.mixos.svg
+--     The panel launcher mark: the cyclops (cyclops/cyclops.svg), a white
+--     ring with a red eye for the dark panel. A full-colour icon, so it is
+--     NOT named *-symbolic (those are redrawn in the theme's ink and would
+--     lose the eye). It sits in the existing symbolic/apps directory, which
+--     both indexes already declare; scene-host never tints a path under apps/.
 --
 -- The session must have the root in XDG_DATA_DIRS for icon lookup to find it.
 
@@ -35,8 +38,8 @@ if not is_file($native_theme .. "/index.theme") then
   write_atomic($native_theme .. "/index.theme",read_file($brand .. "/../icons/index.theme"),{mode:0o644})
 end
 $icons = {
-  "icons/hicolor/symbolic/apps/dev.mixos-symbolic.svg": "logos/mixos-black-transparent.svg",
-  "icons/mixos/symbolic/apps/dev.mixos-symbolic.svg": "logos/mixos-black-transparent.svg"
+  "icons/hicolor/symbolic/apps/dev.mixos.svg": "cyclops/cyclops.svg",
+  "icons/mixos/symbolic/apps/dev.mixos.svg": "cyclops/cyclops.svg"
 }
 for each $dest in sort(keys($icons))
   $src = $brand .. "/" .. $icons[$dest]

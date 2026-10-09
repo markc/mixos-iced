@@ -38,12 +38,17 @@ and vector/raster consistency, but not on physical Apple devices.
 
 ## Using it on the desktop
 
-`mix share/brand/install.mix --root /opt/mixos/share` installs the transparent
-M as `dev.mixos-symbolic` in MixOS and hicolor. A fresh image gets the small theme
-indexes needed for lookup; an existing hicolor index is preserved. MixOS resolves
-the M directly even when that existing index omits symbolic apps. Include the share root in
-`XDG_DATA_DIRS`. Scene-host tints the symbolic SVG with the foreground colour,
-and the panel prefers it over legacy launcher icons.
+The panel launcher shows the **cyclops** (`cyclops/`): a rounded "C" with its
+gap facing down and a red eye, white on transparent for the dark panel. The M
+above remains the site and favicon mark; it is no longer the launcher icon.
+
+`mix share/brand/install.mix --root /opt/mixos/share` installs the cyclops as
+`dev.mixos` in MixOS and hicolor. It is full colour, so it is deliberately not a
+`-symbolic` icon: scene-host redraws symbolic SVGs in the foreground colour, which
+would lose the red eye. A fresh image gets the small theme indexes needed for
+lookup; an existing hicolor index is preserved, and MixOS resolves the cyclops
+directly even when that index omits symbolic apps. Include the share root in
+`XDG_DATA_DIRS`. The panel prefers it over legacy launcher icons.
 
 Install [`share/icons`](../icons/README.md) alongside it for the bundled
 Material Symbols used by panel controls and core application entries.

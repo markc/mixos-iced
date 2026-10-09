@@ -263,8 +263,8 @@ end
 
 fn resolve_icons()
   if length(keys($state.icons.windows)) + length(keys($state.icons.plain)) >= 512 then $state.icons = empty_icons() end
-  if not has_key($state.icons.themed,"dev.mixos-symbolic") then
-    $state.icons.themed["dev.mixos-symbolic"] = apps_icon("dev.mixos-symbolic",48,$ICON_THEME)
+  if not has_key($state.icons.themed,"dev.mixos") then
+    $state.icons.themed["dev.mixos"] = apps_icon("dev.mixos",48,$ICON_THEME)
   end
   for each $name in $m.PANEL_THEMED_ICONS
     if not has_key($state.icons.themed, $name) then
