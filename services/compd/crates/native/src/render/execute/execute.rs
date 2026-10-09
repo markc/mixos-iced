@@ -320,7 +320,6 @@ pub fn execute(
     if let StatusSession::Paused = state.inner.status_session {
         let _skip = ledger::frame_trace::span("kms_skip_paused", 0);
         capture_offscreen(&ctx_rc, state);
-        frames::draw::present::parked::parked::arm(state, frames_parked);
         return FrameOutcome::Idle;
     }
     // DPMS-off gate: a page-flip would re-power the blanked connector, so skip
@@ -328,7 +327,6 @@ pub fn execute(
     if *state.inner.kernel.get(&drivers::lid::base::DISPLAY_OFF) {
         let _skip = ledger::frame_trace::span("kms_skip_dpms_off", 0);
         capture_offscreen(&ctx_rc, state);
-        frames::draw::present::parked::parked::arm(state, frames_parked);
         return FrameOutcome::Idle;
     }
 
@@ -351,7 +349,6 @@ pub fn execute(
         NO_OUTPUT_PARKED.store(true, std::sync::atomic::Ordering::Relaxed);
         drop(ctx);
         capture_offscreen(&ctx_rc, state);
-        frames::draw::present::parked::parked::arm(state, frames_parked);
         return FrameOutcome::Idle;
     }
     NO_OUTPUT_PARKED.store(false, std::sync::atomic::Ordering::Relaxed);

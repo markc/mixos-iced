@@ -10,11 +10,13 @@
 //!
 //! A parked desktop is treated as fully occluded: every surface still waiting on
 //! a callback gets one at most every [`PARKED_TRICKLE`], the rate the occluded
-//! trickle gives a covered window. The timer is armed by the skipped frame a
-//! client commit causes, fires once, and re-arms only while something still
-//! waits. It never schedules a redraw, so an idle parked desktop costs nothing.
+//! trickle gives a covered window. The timer is armed from the main loop pass
+//! that every client request wakes (not from the skipped frame: a VT switch
+//! that leaves pipes in flight swallows the redraw pings that would reach it),
+//! fires once, and re-arms only while something still waits. It never
+//! schedules a redraw, so an idle parked desktop costs nothing.
 
-use crate::draw::present::callbacks::callbacks::{surface_awaits_frame, OCCLUDED_TRICKLE};
+use crate::draw::present::callbacks::callbacks::{surface_awaits_frame, tree_awaits_frame, OCCLUDED_TRICKLE};
 use smithay::desktop::layer_map_for_output;
 use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::output::Output;
@@ -67,11 +69,11 @@ fn waiting(state: &Loop) -> bool {
         return false;
     }
     let space = &state.inner.space_state().state;
-    space.elements().any(|w| w.wl_surface().is_some_and(|s| surface_awaits_frame(&s)))
+    space.elements().any(|w| w.wl_surface().is_some_and(|s| tree_awaits_frame(&s)))
         || space.outputs().any(|o| {
-            layer_map_for_output(o).layers().any(|l| {
-                !world::comp::panels::concealed(l.wl_surface()) && surface_awaits_frame(l.wl_surface())
-            })
+            layer_map_for_output(o)
+                .layers()
+                .any(|l| !world::comp::panels::concealed(l.wl_surface()) && tree_awaits_frame(l.wl_surface()))
         })
 }
 
@@ -102,7 +104,7 @@ fn send(state: &Loop) {
 }
 
 /// Arm the parked trickle if frames are parked and some surface waits on a
-/// callback. Called from each skipped frame. `parked` is the backend's own
+/// callback. Called on every main-loop pass while parked. `parked` is the backend's own
 /// answer (`native.render.execute.frames_parked`), read again when the timer
 /// fires: once presentation resumes, the flip answers callbacks and the timer
 /// drops without sending.

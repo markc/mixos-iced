@@ -685,6 +685,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let parked = native::render::execute::execute::frames_parked(state);
         #[cfg(not(feature = "backend-native"))]
         let parked = false;
+        // Parked frames still owe clients their callbacks. Armed here, on
+        // every loop pass, rather than from the skipped frame: a commit only
+        // reaches `execute` through a redraw ping, and a VT switch that left
+        // the pipes in flight swallows those pings (their vblank never
+        // comes). Every client request wakes this pass, so it stays
+        // event-driven; the timer itself re-arms only while something waits.
+        #[cfg(feature = "backend-native")]
+        if parked {
+            frames::draw::present::parked::parked::arm(state, native::render::execute::execute::frames_parked);
+        }
         // A delivered release lands in the ACTIVE world's registry, presses and
         // frames use the spawn target's (`surface()`, scene.rs). They are one
         // world because `switch_to_world` moves both; nothing else enforces it.

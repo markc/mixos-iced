@@ -86,11 +86,20 @@ thread_local! {
     static TRICKLE_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Whether any surface in `window`'s tree holds a frame callback the client is
-/// waiting on.
+/// Whether any surface in `window`'s tree, or its popups' trees, holds a frame
+/// callback the client is waiting on.
 fn awaits_frame(window: &Window) -> bool {
     use smithay::wayland::seat::WaylandFocus;
-    window.wl_surface().is_some_and(|surface| surface_awaits_frame(&surface))
+    window.wl_surface().is_some_and(|surface| tree_awaits_frame(&surface))
+}
+
+/// [`surface_awaits_frame`] for `surface` and each of its popups: the trees
+/// `Window::send_frame` and `LayerSurface::send_frame` answer. A popup is its
+/// own tree, so a popup-only wait is invisible to the root check alone.
+pub fn tree_awaits_frame(surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) -> bool {
+    surface_awaits_frame(surface)
+        || smithay::desktop::PopupManager::popups_for_surface(surface)
+            .any(|(popup, _)| surface_awaits_frame(popup.wl_surface()))
 }
 
 /// Whether any surface in `surface`'s tree holds a frame callback the client is
