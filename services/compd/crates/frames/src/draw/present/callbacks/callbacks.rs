@@ -89,13 +89,18 @@ thread_local! {
 /// Whether any surface in `window`'s tree holds a frame callback the client is
 /// waiting on.
 fn awaits_frame(window: &Window) -> bool {
-    use smithay::wayland::compositor::{SurfaceAttributes, TraversalAction, with_surface_tree_downward};
     use smithay::wayland::seat::WaylandFocus;
-    let Some(surface) = window.wl_surface() else { return false };
+    window.wl_surface().is_some_and(|surface| surface_awaits_frame(&surface))
+}
+
+/// Whether any surface in `surface`'s tree holds a frame callback the client is
+/// waiting on.
+pub fn surface_awaits_frame(surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) -> bool {
+    use smithay::wayland::compositor::{SurfaceAttributes, TraversalAction, with_surface_tree_downward};
     // A Cell: the visit closure sets it and the continue predicate reads it.
     let pending = std::cell::Cell::new(false);
     with_surface_tree_downward(
-        &surface,
+        surface,
         (),
         |_, _, _| TraversalAction::DoChildren(()),
         |_, states, _| {
