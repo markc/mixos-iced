@@ -6,6 +6,7 @@
 --   icons/hicolor/symbolic/apps/dev.mixos-symbolic.svg
 --     The transparent mark. A *-symbolic icon is drawn in the theme's ink,
 --     so the panel launcher follows light and dark mode from this one file.
+--   icons/hicolor/index.theme (hicolor-index.theme), when none exists
 --
 -- The session must have the root in XDG_DATA_DIRS for icon lookup to find it.
 
@@ -23,11 +24,18 @@ if not starts_with($root, "/") or $root == "/" then
 end
 $brand = dirname(realpath($0))
 $theme=$root .. "/icons/hicolor"
--- A self-contained image need not have a distro-owned hicolor index.
--- Keep existing theme metadata when installing beside another desktop.
-if not is_file($theme .. "/index.theme") then
+-- A self-contained image need not have a distro-owned hicolor index, so
+-- write one that declares the standard application directories: icon lookup
+-- reads the first hicolor index.theme it finds, so an index that omits
+-- 48x48/apps or scalable/apps hides every third-party app icon installed there.
+-- Keep existing theme metadata when installing beside another desktop, but
+-- upgrade the symbolic-only index earlier versions of this script wrote.
+$old_hicolor = "[Icon Theme]\nName=Hicolor\nDirectories=symbolic/apps\n\n[symbolic/apps]\nSize=48\nType=Scalable\nMinSize=1\nMaxSize=512\nContext=Applications\n"
+$hicolor_index = $theme .. "/index.theme"
+if not is_file($hicolor_index) or read_file($hicolor_index) == $old_hicolor then
   mkdir($theme,{parents:true})
-  write_atomic($theme .. "/index.theme","[Icon Theme]\nName=Hicolor\nDirectories=symbolic/apps\n\n[symbolic/apps]\nSize=48\nType=Scalable\nMinSize=1\nMaxSize=512\nContext=Applications\n",{mode:0o644})
+  write_atomic($hicolor_index,read_file($brand .. "/hicolor-index.theme"),{mode:0o644})
+  print("installed " .. $hicolor_index)
 end
 $native_theme=$root .. "/icons/mixos"
 if not is_file($native_theme .. "/index.theme") then

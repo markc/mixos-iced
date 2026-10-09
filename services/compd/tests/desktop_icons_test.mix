@@ -65,6 +65,22 @@ try
   check(hash_file($mark,"sha256") == hash_file($repo+"/share/brand/logos/mixos-black-transparent.svg","sha256"),"launcher is the canonical M vector")
   $model=$models.panel({windows:[],ws_count:1,ws_current:1},{themed:{"dev.mixos-symbolic":$mark,"start-here-kde":"/old-kde.svg"}},0)
   check($model.launcher.has_icon and $model.launcher.icon == $mark,"M takes precedence over an existing KDE launcher")
+  -- A third-party app installs plain hicolor icons into the user data dir,
+  -- which has no index.theme of its own: the shipped index must declare them.
+  $user_icons=$tmp+"/data/icons"
+  mkdir($user_icons+"/hicolor/48x48/apps",{parents:true})
+  mkdir($user_icons+"/hicolor/scalable/apps",{parents:true})
+  write_file($user_icons+"/hicolor/48x48/apps/org.example.app.png","png")
+  write_file($user_icons+"/hicolor/scalable/apps/org.example.vector.svg","<svg/>")
+  $third={icon_dirs:[$user_icons,$share+"/icons"],pixmaps:$tmp+"/pixmaps",cache:{}}
+  $hit=$apps.resolve_icon($third,"org.example.app",48,1,"mixos")
+  check($hit.hit != nil and $hit.hit.path == $user_icons+"/hicolor/48x48/apps/org.example.app.png","third-party fixed-size hicolor icon resolves")
+  $hit=$apps.resolve_icon($hit.ctx,"org.example.vector",32,1,"mixos")
+  check($hit.hit != nil and $hit.hit.path == $user_icons+"/hicolor/scalable/apps/org.example.vector.svg","third-party scalable hicolor icon resolves")
+  -- The symbolic-only index earlier installers wrote is upgraded in place.
+  write_file($share+"/icons/hicolor/index.theme","[Icon Theme]\nName=Hicolor\nDirectories=symbolic/apps\n\n[symbolic/apps]\nSize=48\nType=Scalable\nMinSize=1\nMaxSize=512\nContext=Applications\n")
+  print(run_argv_must([$mix,$repo+"/share/brand/install.mix","--root",$share]))
+  check(read_file($share+"/icons/hicolor/index.theme") == read_file($repo+"/share/brand/hicolor-index.theme"),"old symbolic-only hicolor index is upgraded")
   $old_index="[Icon Theme]\nName=Existing\nDirectories=48x48/apps\n\n[48x48/apps]\nSize=48\nType=Fixed\nContext=Applications\n"
   write_file($share+"/icons/hicolor/index.theme",$old_index)
   print(run_argv_must([$mix,$repo+"/share/brand/install.mix","--root",$share]))
