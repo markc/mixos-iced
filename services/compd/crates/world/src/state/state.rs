@@ -786,6 +786,17 @@ impl Orchestrator {
         &mut smithay::desktop::Space<Window>,
     ) {
         let target = self.worlds.spawn_target();
+        self.comp_space_of_mut(target)
+    }
+
+    /// Disjoint policy and Space borrow for a window's already resolved owner.
+    pub fn comp_space_of_mut(
+        &mut self,
+        target: uuid::Uuid,
+    ) -> (
+        &mut crate::comp::CompState,
+        &mut smithay::desktop::Space<Window>,
+    ) {
         let space = &mut self
             .worlds
             .get_mut(target)
@@ -1198,10 +1209,36 @@ impl Orchestrator {
         &mut self,
     ) -> &mut crate::window::lifecycle::state::lifecycle::WindowLifecycle {
         let target = self.worlds.spawn_target();
+        self.window_lifecycle_of_mut(target)
+    }
+
+    /// Address a lifecycle queue by its owner, independently of activation's
+    /// changes to the spawn target during a drain.
+    pub fn window_lifecycle_of_mut(
+        &mut self,
+        world: uuid::Uuid,
+    ) -> &mut crate::window::lifecycle::state::lifecycle::WindowLifecycle {
         self.worlds
-            .get_mut(target)
+            .get_mut(world)
             .storage_mut()
             .get_mut(&crate::window::system::base::WINDOW_LIFECYCLE_MUT)
+    }
+
+    /// Keep every request behind this window's pending work, including a tail
+    /// retained on a parked world. With no tail, use the hosted dispatch queue so
+    /// cross-world activation can still run without waiting for a world switch.
+    pub fn enqueue_window_lifecycle(
+        &mut self,
+        event: crate::window::lifecycle::event::event::WindowLifecycleEvent,
+    ) {
+        let owner = event
+            .pending_queue(self.worlds.ids().into_iter().filter_map(|id| {
+                let lifecycle = self.worlds.get(id).storage()
+                    .try_get(&crate::window::system::base::WINDOW_LIFECYCLE)?;
+                Some((id, lifecycle.incoming.as_slice()))
+            }))
+            .unwrap_or_else(|| self.worlds.spawn_target());
+        self.window_lifecycle_of_mut(owner).incoming.push(event);
     }
 
     /// Register a drawable at the top of the draw-order authority. Agnostic:
@@ -1225,6 +1262,11 @@ impl Orchestrator {
     /// registers if absent.
     pub fn raise_drawable(&mut self, uuid: uuid::Uuid) {
         let target = self.worlds.spawn_target();
+        self.raise_drawable_of(target, uuid);
+    }
+
+    /// Raise in the owning world's stack without switching the hosted world.
+    pub fn raise_drawable_of(&mut self, target: uuid::Uuid, uuid: uuid::Uuid) {
         self.worlds
             .get_mut(target)
             .storage_mut()
@@ -1270,12 +1312,14 @@ impl Orchestrator {
     /// so the order never retains a dead component. Foreign/absent ids are a
     /// no-op (`DrawOrder::remove` retains-by-id).
     pub fn remove_drawable(&mut self, uuid: uuid::Uuid) {
-        let target = self.worlds.spawn_target();
-        self.worlds
-            .get_mut(target)
-            .storage_mut()
-            .get_mut(&crate::order::track::base::DRAW_ORDER_MUT)
-            .remove(crate::order::track::base::ComponentId(uuid));
+        // Space membership may already be gone at teardown. The draw-order
+        // entry is the remaining owner; search every stack, including parked
+        // worlds, rather than removing from whichever world activation left up.
+        crate::order::track::base::DrawOrder::remove_from_all(
+            crate::order::track::base::ComponentId(uuid),
+            self.worlds.iter_mut().filter_map(|world| world.storage_mut()
+                .try_get_mut(&crate::order::track::base::DRAW_ORDER_MUT)),
+        );
     }
 
     /// Drawable ids in draw order, TOPMOST-FIRST (matches smithay's

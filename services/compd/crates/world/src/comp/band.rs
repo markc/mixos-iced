@@ -9,6 +9,8 @@
 //! `raise` keeps a drawable in its own tier.
 
 use surfaces::{StackBand, SurfaceId};
+use dispatcher::wire::trait_::surface_event::SurfaceHandle;
+use dispatcher::wire::trait_::wire_trait::WireTrait;
 
 use crate::order::track::base::{ComponentId, DRAW_ORDER_MUT, DrawLayer};
 use crate::state::Loop;
@@ -47,13 +49,15 @@ pub fn apply(lp: &mut Loop, id: SurfaceId, band: StackBand, cause: &'static str)
     }
     if let Some(uuid) = comp.registry.uuid_for(id) {
         let tier = if band == StackBand::Bottom { BOTTOM } else { DrawLayer::CONTENT };
-        let target = lp.inner.worlds.spawn_target();
-        lp.inner
-            .worlds
-            .get_mut(target)
-            .storage_mut()
-            .get_mut(&DRAW_ORDER_MUT)
-            .insert_top(ComponentId(uuid), tier);
+        let handle = lp.inner.comp.registry.get(id).map(|record| record.handle().clone());
+        let owner = lp.inner.all_world_spaces().into_iter()
+            .flat_map(|space| space.state.elements())
+            .find(|window| SurfaceHandle::of_window(window) == handle)
+            .and_then(|window| lp.inner.world_of_window(window));
+        if let Some(target) = owner {
+            lp.inner.worlds.get_mut(target).storage_mut()
+                .get_mut(&DRAW_ORDER_MUT).insert_top(ComponentId(uuid), tier);
+        }
     }
     // `windows.*.band` and `stack` moved.
     lp.inner.comp.settings_changed("stack", cause);

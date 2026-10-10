@@ -633,6 +633,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The pointer starts at the first output's centre (a warp, not input;
         // once only), so it never rests in a hot corner at startup.
         world::camera::pin::centre_pointer_once(state);
+        #[cfg(feature = "backend-native")]
+        if native::render::execute::execute::frames_parked(state) {
+            comp::refresh_placement_geometry(state);
+            frames::hook::window::interface::drain_lifecycle(state);
+        }
         // The key bindings with or without a Bus port: this backend's table,
         // then the chords the keyboard queued this dispatch.
         state.inner.comp.bindings.ensure(if nested { "nested" } else { "kms-live" });
@@ -648,6 +653,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         world::comp::fullscreen::service(state);
         // The comp policy's hidden decision, stamped for the hit driver, with or without a Bus port.
         world::comp::visibility::sync_hidden(state);
+        // Lifecycle focus and lock/latch arbitration queue protocol events.
+        // One pending-gated pass publishes their final decision before Bus
+        // reads; do not spin to empty or run another lifecycle pass here.
+        if state.state.protocol_pending {
+            state.drain_protocol();
+        }
         // Then the Bus, so a read never sees state the drain has not applied.
         // A no-op unless the port's wake source fired.
         if let Some(bus) = bus_port.as_mut() {

@@ -40,6 +40,77 @@ fn window(xid: u32) -> X11Surface {
     )
 }
 
+/// Unmap and Map in one off-world protocol drain must clean the old stack
+/// synchronously. Lifecycle service must never remove the readmitted entry.
+#[test]
+fn off_world_unmap_remap_keeps_the_readmitted_draw_order_entry() {
+    use dispatcher::state::deferred::deferred::{Deferred, Mapped};
+    use dispatcher::wire::trait_::surface_event::{SurfaceEvent, SurfaceHandle};
+    use dispatcher::wire::trait_::wire_trait::WireTrait;
+    use smithay::desktop::Window;
+    use surfaces::SurfaceRole;
+    use world::order::track::base::{ComponentId, DrawLayer};
+    use world::window::interface::record::window::LoopWindow;
+
+    let mut h = testkit::Harness::new();
+    let mut windows = Vec::new();
+    for (xid, at) in [(0x600001, (17, 23)), (0x600002, (41, 59))] {
+        let surface = window(xid);
+        let candidate = Window::new_x11_window(surface.clone());
+        let handle = SurfaceHandle::x11(&surface);
+        let host = &mut h.wire.inner;
+        host.surface_event(SurfaceEvent::RoleTaken {
+            handle: handle.clone(),
+            role: SurfaceRole::X11 { override_redirect: false },
+            parent: None,
+        });
+        host.initialize_surface_data(candidate.clone());
+        host.space.state.map_element(candidate.clone(), at, false);
+        host.surface_event(SurfaceEvent::Placed(handle));
+        host.draw_orders[0].insert_top(ComponentId(candidate.uuid().unwrap()), DrawLayer::CONTENT);
+        windows.push((surface, candidate));
+    }
+    let (surface, a) = &windows[0];
+    let a_id = ComponentId(a.uuid().unwrap());
+    let peer_id = ComponentId(windows[1].1.uuid().unwrap());
+    let old_key = h.wire.inner.draw_orders[0].key(a_id).unwrap();
+    let peer_key = h.wire.inner.draw_orders[0].key(peer_id).unwrap();
+    assert!(old_key < peer_key);
+    h.wire.inner.switch_world();
+    let (_, _, _) = h.mapped_toplevel(80, 60);
+    let b = h.wire.inner.space.state.elements().next().unwrap().clone();
+    let b_id = ComponentId(b.uuid().unwrap());
+    let b_key = h.wire.inner.draw_orders[1].key(b_id);
+    assert!(b_key.is_some());
+
+    // The actual production protocol drain, without lifecycle service between
+    // these two events. No Xwayland server is needed for identity/stacking.
+    h.wire.state.deferred.push(Deferred::WindowWithdrawn(surface.clone()));
+    h.wire.state.deferred.push(Deferred::WindowMapped(Mapped::X11(surface.clone())));
+    h.wire.drain_protocol();
+    assert_eq!(h.wire.inner.active_world, 1, "readmission must not switch worlds");
+    assert_eq!(h.wire.inner.other_space.state.element_location(a), Some((17, 23).into()));
+    let readmitted_key = h.wire.inner.draw_orders[0].key(a_id).expect("readmission registers A");
+    assert!(readmitted_key > peer_key, "a returning window is raised above its peer");
+    assert_eq!(h.wire.inner.draw_orders[0].key(peer_id), Some(peer_key));
+    assert_eq!(h.wire.inner.draw_orders[1].key(b_id), b_key);
+    assert!(h.wire.inner.lifecycle.iter().all(Vec::is_empty), "no delayed Withdrawn or InitialMap");
+    let handle = SurfaceHandle::x11(surface);
+    assert!(h.record(&handle).unwrap().mapped());
+    assert_eq!(h.record(&handle).unwrap().uuid(), Some(a_id.0));
+    assert_eq!(h.service_lifecycle(), 0);
+    assert_eq!(h.wire.inner.draw_orders[0].key(a_id), Some(readmitted_key));
+
+    h.wire.inner.switch_world();
+    assert_eq!(h.tick_frame(), 0);
+    assert_eq!(h.wire.inner.draw_orders[0].key(a_id), Some(readmitted_key));
+    let front_to_back: Vec<_> = h.wire.inner.draw_orders[0].ordered()
+        .into_iter().rev().map(|(id, _)| id).collect();
+    assert_eq!(front_to_back, [a_id, peer_id], "the surviving entry stays on top on return");
+    assert!(h.wire.inner.space.state.element_location(a).is_some());
+    assert_eq!(h.wire.inner.draw_orders[1].key(b_id), b_key);
+}
+
 /// `_NET_WM_DESKTOP`: the write fails with no server, and the mirror holds
 /// the value anyway, so compd's compare-before-write skips a repeat.
 #[test]

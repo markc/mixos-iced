@@ -1,5 +1,6 @@
 use smithay::desktop::Window;
 use dispatcher::state::state::RedrawReason;
+use dispatcher::wire::trait_::wire_trait::WireTrait;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::utils::{Logical, Point, Size};
 use crate::camera::transform::translate::slot;
@@ -24,24 +25,47 @@ use protocols::window::shell::shell;
 /// and captures input within its bounds. Pre-fullscreen geometry is stored so
 /// it can be restored on un-fullscreen.
 pub fn fullscreen_set(_loop: &mut Loop, window: Window, fullscreen: bool) {
+    if crate::comp::live_window_space(
+        &_loop.inner.comp, _loop.inner.all_world_spaces(), &window,
+    ).is_none() || window.is_fullscreen() == fullscreen { return }
+    let owner_world = _loop.inner.world_of_window(&window)
+        .expect("a live window has an owning world");
+    let activate = owner_world == _loop.inner.worlds.spawn_target();
+    let target = fullscreen.then(|| crate::comp::fullscreen::target(_loop, &window)).flatten();
+    if !fullscreen_set_in_space(
+        &mut _loop.inner.space_of_mut(owner_world).state, &window, fullscreen, target, activate,
+    ) {
+        return;
+    }
+    if fullscreen && let Some(uuid) = window.uuid() {
+        _loop.inner.raise_drawable_of(owner_world, uuid);
+    }
+    _loop.schedule_redraw(RedrawReason::WindowState);
+}
+
+/// Renderer-free fullscreen geometry and protocol state, on the resolved owner.
+/// Shared with testkit so off-world regressions assert the real restore path.
+/// A parked owner's geometry request must not take activation from the current world.
+pub fn fullscreen_set_in_space(
+    space: &mut smithay::desktop::Space<Window>,
+    window: &Window,
+    fullscreen: bool,
+    target: Option<(Point<i32, Logical>, Size<i32, Logical>)>,
+    activate: bool,
+) -> bool {
+    let Some(current_loc) = space.element_location(window) else { return false };
     if fullscreen {
         if window.is_fullscreen() {
-            return;
+            return false;
         }
-
-        let current_loc = _loop
-            .inner.space_state()
-            .state
-            .element_location(&window)
-            .unwrap_or_default();
         // The window's PRE-fullscreen slot (what it's rendered at + what the group bbox uses).
-        let current_size = slot::expected_size(&window)
+        let current_size = slot::expected_size(window)
             .filter(|s| s.w > 0 && s.h > 0)
             .unwrap_or_else(|| window.geometry().size);
 
         // Fullscreen covers an output's whole geometry, since world
         // coordinates are output-logical.
-        let (target_loc, target_size) = crate::comp::fullscreen::target(_loop, &window)
+        let (target_loc, target_size) = target
             .unwrap_or((current_loc, current_size));
 
         window.set_fullscreen(Some(WindowFullscreen {
@@ -50,26 +74,20 @@ pub fn fullscreen_set(_loop: &mut Loop, window: Window, fullscreen: bool) {
         }));
 
         // Move into place and raise above peers (exclusive within its bounds).
-        _loop
-            .inner.space_state_mut()
-            .state
-            .map_element(window.clone(), target_loc, true);
-        _loop.inner.space_state_mut().state.raise_element(&window, true);
-        if let Some(uuid) = window.uuid() {
-            _loop.inner.raise_drawable(uuid);
-        }
+        space.map_element(window.clone(), target_loc, activate);
+        space.raise_element(window, activate);
 
         // The compositor-decided slot IS the fullscreen size — without this the render keeps
         // fitting the stale (pre-fullscreen) slot and the window never grows. The group bbox uses
         // the restore rect (above), so it doesn't feed back off this new slot.
-        slot::set_expected_size(&window, target_size);
+        slot::set_expected_size(window, target_size);
 
-        shell::set_fullscreen(&window, true);
-        shell::stage(&window, target_size, false);
-        shell::send(&window);
+        shell::set_fullscreen(window, true);
+        shell::stage(window, target_size, false);
+        shell::send(window);
     } else {
         let Some(restore) = window.fullscreen() else {
-            return;
+            return false;
         };
         window.set_fullscreen(None);
 
@@ -77,19 +95,16 @@ pub fn fullscreen_set(_loop: &mut Loop, window: Window, fullscreen: bool) {
         // to the rectangle it had before it.
         let (loc, size) = (restore.restore_loc, restore.restore_size);
 
-        _loop
-            .inner.space_state_mut()
-            .state
-            .map_element(window.clone(), loc, false);
+        space.map_element(window.clone(), loc, false);
 
-        slot::set_expected_size(&window, size);
+        slot::set_expected_size(window, size);
 
-        shell::set_fullscreen(&window, false);
-        shell::stage(&window, size, false);
-        shell::send(&window);
+        shell::set_fullscreen(window, false);
+        shell::stage(window, size, false);
+        shell::send(window);
     }
 
-    _loop.schedule_redraw(RedrawReason::WindowState);
+    true
 }
 
 /// F11: clear fullscreen on the keyboard-focused window, but only if it is

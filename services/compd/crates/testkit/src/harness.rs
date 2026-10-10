@@ -1,4 +1,4 @@
-//! [`Harness`]: one compd engine, one client, pumped in one thread.
+//! [`Harness`]: one compd engine and its clients, pumped in one thread.
 
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Once};
@@ -32,6 +32,8 @@ pub struct Harness {
     /// The client as the server sees it.
     server_client: Client,
     pub client: TestClient,
+    pub extra_clients: Vec<TestClient>,
+    extra_server_clients: Vec<Client>,
 }
 
 impl Harness {
@@ -65,6 +67,8 @@ impl Harness {
             wire,
             server_client,
             client,
+            extra_clients: Vec::new(),
+            extra_server_clients: Vec::new(),
         };
         harness.roundtrip();
         harness.client.bind_globals();
@@ -77,6 +81,9 @@ impl Harness {
     /// the client reads them.
     pub fn pump(&mut self) {
         self.client.flush();
+        for client in &mut self.extra_clients {
+            client.flush();
+        }
         self.event_loop
             .dispatch(Some(Duration::ZERO), &mut self.wire)
             .expect("calloop dispatch");
@@ -88,6 +95,43 @@ impl Harness {
             .flush_clients()
             .expect("flush to the test client");
         self.client.read();
+        for client in &mut self.extra_clients {
+            client.read();
+        }
+    }
+
+    /// Connect another independent Wayland client and bind its globals.
+    pub fn add_client(&mut self) -> usize {
+        let (server_end, client_end) = UnixStream::pair().expect("socketpair");
+        let server = self
+            .display
+            .handle()
+            .insert_client(
+                server_end,
+                Arc::new(WaylandClientSession {
+                    compositor_state: CompositorClientState::default(),
+                    proprietary: false,
+                }),
+            )
+            .expect("insert another test client");
+        let index = self.extra_clients.len();
+        self.extra_clients.push(TestClient::new(client_end));
+        self.extra_server_clients.push(server);
+        self.roundtrip_client(index);
+        self.extra_clients[index].bind_globals();
+        self.roundtrip_client(index);
+        index
+    }
+
+    pub fn roundtrip_client(&mut self, index: usize) {
+        let target = self.extra_clients[index].sync();
+        for _ in 0..ROUNDTRIP_PUMPS {
+            self.pump();
+            if self.extra_clients[index].state.syncs >= target {
+                return;
+            }
+        }
+        panic!("client {index} roundtrip did not complete in {ROUNDTRIP_PUMPS} pumps");
     }
 
     /// Pump until everything the client sent so far has been handled and
@@ -234,7 +278,17 @@ impl Harness {
         panic!("roundtrip did not complete in {ROUNDTRIP_PUMPS} pumps");
     }
 
-    /// The frame step: place what the drain queued (see [`TestHost::tick_frame`]).
+    /// Renderer-free lifecycle service after protocol draining, as on a parked VT.
+    /// The host simulates placement; no rendering or frame callback is involved.
+    pub fn service_lifecycle(&mut self) -> usize {
+        let placed = self.wire.inner.service_lifecycle();
+        if self.wire.state.protocol_pending {
+            self.wire.drain_protocol();
+        }
+        placed
+    }
+
+    /// The active frame step services the same simulated lifecycle queue.
     pub fn tick_frame(&mut self) -> usize {
         self.wire.inner.tick_frame()
     }
@@ -250,6 +304,13 @@ impl Harness {
             .server_client
             .object_from_protocol_id(&self.display.handle(), protocol_id(surface))
             .expect("the server knows this surface");
+        SurfaceHandle::wl(&server)
+    }
+
+    pub fn handle_of_client(&self, index: usize, surface: &WlSurface) -> SurfaceHandle {
+        let server: ServerSurface = self.extra_server_clients[index]
+            .object_from_protocol_id(&self.display.handle(), protocol_id(surface))
+            .expect("the server knows this client's surface");
         SurfaceHandle::wl(&server)
     }
 

@@ -56,6 +56,11 @@ fn candidate(lp: &Loop) -> Option<WlSurface> {
     None
 }
 
+/// Live exclusive ownership, including a layer mapped before `service` runs.
+pub fn blocks_window_focus(lp: &Loop) -> bool {
+    candidate(lp).is_some()
+}
+
 /// The highest visible managed window on the current workspace (draw
 /// order), for the keyboard when the latch lets go.
 fn fallback(lp: &Loop) -> Option<WlSurface> {

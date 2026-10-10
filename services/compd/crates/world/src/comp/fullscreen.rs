@@ -69,7 +69,9 @@ impl FullscreenOutputs {
 /// The output window `window` goes fullscreen on: the selected one, else the
 /// one it overlaps, else the first.
 fn output_for(lp: &Loop, window: &Window) -> Option<Output> {
-    let space = &lp.inner.host_space().state;
+    let space = &crate::comp::live_window_space(
+        &lp.inner.comp, lp.inner.all_world_spaces(), window,
+    )?.state;
     let selected = SurfaceHandle::of_window(window)
         .and_then(|handle| lp.inner.comp.registry.id_for_handle(&handle))
         .and_then(|id| lp.inner.comp.fullscreen.selected(id).map(str::to_string));
@@ -86,7 +88,7 @@ fn output_for(lp: &Loop, window: &Window) -> Option<Output> {
 }
 
 /// The engine's `fullscreen_set` entering: the rectangle the fullscreen `window`
-/// takes (host Space, logical; its output's whole geometry, `None` with no
+/// takes (owning Space, logical; its output's whole geometry, `None` with no
 /// output). A window in a non-normal band is lifted to the normal one for
 /// the duration (a bottom-band video must not stay behind other windows).
 pub fn target(lp: &mut Loop, window: &Window) -> Option<(Point<i32, Logical>, Size<i32, Logical>)> {
@@ -102,7 +104,9 @@ pub fn target(lp: &mut Loop, window: &Window) -> Option<(Point<i32, Logical>, Si
         }
     }
     let output = output_for(lp, window)?;
-    let geometry = lp.inner.host_space().state.output_geometry(&output)?;
+    let geometry = crate::comp::live_window_space(
+        &lp.inner.comp, lp.inner.all_world_spaces(), window,
+    )?.state.output_geometry(&output)?;
     Some((geometry.loc, geometry.size))
 }
 
@@ -138,11 +142,16 @@ pub fn service(lp: &mut Loop) {
 /// the move is made here.
 pub fn retarget(lp: &mut Loop, window: &Window) {
     let Some(output) = output_for(lp, window) else { return };
-    let Some(geometry) = lp.inner.host_space().state.output_geometry(&output) else { return };
+    let Some(owner) = crate::comp::live_window_space(
+        &lp.inner.comp, lp.inner.all_world_spaces(), window,
+    ) else { return };
+    let Some(geometry) = owner.state.output_geometry(&output) else { return };
+    let Some(owner_world) = lp.inner.world_of_window(window) else { return };
+    let activate = owner_world == lp.inner.worlds.spawn_target();
     lp.inner
-        .space_state_mut()
+        .space_of_mut(owner_world)
         .state
-        .map_element(window.clone(), geometry.loc, true);
+        .map_element(window.clone(), geometry.loc, activate);
     crate::camera::transform::translate::slot::set_expected_size(window, geometry.size);
     protocols::window::shell::shell::stage(window, geometry.size, false);
     protocols::window::shell::shell::send(window);

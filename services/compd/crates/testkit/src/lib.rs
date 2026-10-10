@@ -7,11 +7,13 @@
 //!   iteration), and the comp registry, `world::comp::CompState`, fed by
 //!   the same `WireTrait::surface_event` calls the `Orchestrator` makes.
 //! - **Stand-in:** [`TestHost`] takes the `Orchestrator`'s seat behind
-//!   `WireTrait`: one window `Space` with one fake 1920x1080 output, no worlds,
-//!   no camera, no renderer. Its one piece of policy is the frame step: a window
+//!   `WireTrait`: two window `Space`s sharing one fake 1920x1080 output, with
+//!   a simulated world switch, no camera and no renderer. A window
 //!   the drain hands to `place_window` waits until [`Harness::tick_frame`] maps it
 //!   and reports `SurfaceEvent::Placed`, which is what frames's window hook
-//!   does with the `InitialMap` it drains inside the render loop.
+//!   does with the `InitialMap` it drains inside the render loop. Deferred
+//!   lifecycle events use production buffer-deferral and liveness checks;
+//!   activation and teardown are observable without rendering.
 //!
 //! Clients are real `wayland-client` connections over a `socketpair`, in the
 //! same thread: [`Harness::roundtrip`] pumps both ends until the client's

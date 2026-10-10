@@ -82,6 +82,11 @@ impl WorldManager {
     /// Every world id (insertion order); the loader prewarms each at startup.
     pub fn ids(&self) -> Vec<Uuid> { self.worlds.iter().map(|w| w.id).collect() }
 
+    /// Every world's storage, including parked worlds, for owner-independent GC.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut World> {
+        self.worlds.iter_mut()
+    }
+
     pub fn active(&self) -> &World {
         &self.worlds[self.idx(self.active)]
     }

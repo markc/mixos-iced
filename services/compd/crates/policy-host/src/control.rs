@@ -652,7 +652,9 @@ fn place(lp: &mut Loop, spec: &comp_model::request::PlaceSpec) -> ControlReply {
     let window = window_of(lp, id);
     let hints = window.as_ref().map(size_hints).unwrap_or_default();
     let window_output = window.as_ref().and_then(|window| {
-        let space = &lp.inner.host_space().state;
+        let space = &world::comp::live_window_space(
+            &lp.inner.comp, lp.inner.all_world_spaces(), window,
+        )?.state;
         space
             .outputs_for_element(window)
             .first()
@@ -680,7 +682,9 @@ fn place(lp: &mut Loop, spec: &comp_model::request::PlaceSpec) -> ControlReply {
     };
     execute(lp, std::mem::take(&mut placement.effects));
     let placed = window_of(lp, id)
-        .and_then(|window| lp.inner.host_space().state.element_location(&window))
+        .and_then(|window| world::comp::live_window_space(
+            &lp.inner.comp, lp.inner.all_world_spaces(), &window,
+        )?.state.element_location(&window))
         .map_or(facts.window_origin, |origin| {
             (origin.x as f32, origin.y as f32)
         });
@@ -698,13 +702,14 @@ fn place_window(
     let Some(window) = window_of(lp, id) else {
         return;
     };
+    let Some(owner) = lp.inner.world_of_window(&window) else { return };
     if let Some(size) = size {
         shell::stage(&window, size, false);
         shell::send(&window);
         slot::set_expected_size(&window, size);
     }
     lp.inner
-        .host_space_mut()
+        .space_of_mut(owner)
         .state
         .map_element(window, location, false);
 }
@@ -720,12 +725,13 @@ pub fn apply_interactive(lp: &mut Loop) {
     let Some(window) = window_of(lp, grab.id) else {
         return;
     };
+    let Some(owner) = lp.inner.world_of_window(&window) else { return };
     let (origin, size) = match grab.start {
         Some(start) => start,
         None => {
             let origin = lp
                 .inner
-                .host_space()
+                .space_of_mut(owner)
                 .state
                 .element_location(&window)
                 .unwrap_or_default();
@@ -738,7 +744,7 @@ pub fn apply_interactive(lp: &mut Loop) {
         grab.updated = false;
         let (dx, dy) = (grab.delta.0.round() as i32, grab.delta.1.round() as i32);
         if grab.edges == 0 {
-            lp.inner.host_space_mut().state.map_element(
+            lp.inner.space_of_mut(owner).state.map_element(
                 window.clone(),
                 Point::from((origin.x + dx, origin.y + dy)),
                 false,
@@ -786,7 +792,7 @@ pub fn apply_interactive(lp: &mut Loop) {
             shell::send(&window);
             slot::set_expected_size(&window, new_size);
             lp.inner
-                .host_space_mut()
+                .space_of_mut(owner)
                 .state
                 .map_element(window.clone(), location, false);
             grab.last_size = Some(new_size);
@@ -811,12 +817,9 @@ pub fn window_facts(lp: &Loop, id: SurfaceId) -> WindowFacts {
     let requested_maximized = lp.inner.comp.maximize_restore(id).is_some();
     let committed_maximized = committed_maximized(&window);
     let (min_size, max_size) = size_hints(&window);
-    let origin = lp
-        .inner
-        .host_space()
-        .state
-        .element_location(&window)
-        .unwrap_or_default();
+    let origin = world::comp::live_window_space(
+        &lp.inner.comp, lp.inner.all_world_spaces(), &window,
+    ).and_then(|space| space.state.element_location(&window)).unwrap_or_default();
     let fullscreen = protocols::window::ident::ident::states(&window).fullscreen;
     let geometry = window.geometry();
     WindowFacts {
@@ -1333,23 +1336,25 @@ pub(crate) fn window_of(lp: &Loop, id: SurfaceId) -> Option<Window> {
     let handle = lp.inner.comp.registry.get(id)?.handle().clone();
     lp.inner
         .all_world_spaces()
-        .iter()
-        .flat_map(|space| space.state.elements())
-        .find(|window| SurfaceHandle::of_window(window).as_ref() == Some(&handle))
-        .cloned()
+        .into_iter()
+        .find_map(|space| {
+            let window = space.state.elements()
+                .find(|window| SurfaceHandle::of_window(window).as_ref() == Some(&handle))?;
+            world::comp::window_is_live(&lp.inner.comp, &space.state, window)
+                .then(|| window.clone())
+        })
 }
 
 /// Raise `id` now: the draw order (hit-testing follows it), the Space, and
 /// an X11 window's X stack.
 fn raise_now(lp: &mut Loop, id: SurfaceId) {
-    if let Some(uuid) = lp.inner.comp.registry.uuid_for(id) {
-        lp.inner.raise_drawable(uuid);
-    }
     if let Some(window) = window_of(lp, id) {
-        lp.inner
-            .host_space_mut()
-            .state
-            .raise_element(&window, false);
+        if let Some(owner) = lp.inner.world_of_window(&window) {
+            if let Some(uuid) = lp.inner.comp.registry.uuid_for(id) {
+                lp.inner.raise_drawable_of(owner, uuid);
+            }
+            lp.inner.space_of_mut(owner).state.raise_element(&window, false);
+        }
     }
     crate::x11::sync_stacking(lp);
     lp.state.schedule_redraw(RedrawReason::WindowState);
@@ -1403,7 +1408,8 @@ pub fn maximize(lp: &mut Loop, id: SurfaceId, enabled: bool) {
     let Some(window) = window_of(lp, id) else {
         return;
     };
-    let (comp, space) = lp.inner.comp_space_mut();
+    let Some(owner) = lp.inner.world_of_window(&window) else { return };
+    let (comp, space) = lp.inner.comp_space_of_mut(owner);
     if crate::geometry::set_maximized(comp, space, id, &window, enabled).windows {
         lp.state.schedule_redraw(RedrawReason::WindowState);
         crate::input::retarget_pointer(lp);

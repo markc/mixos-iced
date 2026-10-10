@@ -51,6 +51,60 @@ use surfaces::{Registry, SurfaceId, SurfaceRole};
 /// 4). Live code reads [`CompState::current_workspace`].
 pub const CURRENT_WORKSPACE: u32 = 1;
 
+/// Deferred lifecycle work must not revive a withdrawn, dead or re-roled window.
+pub fn window_is_live(
+    comp: &CompState,
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    window: &smithay::desktop::Window,
+) -> bool {
+    use smithay::utils::IsAlive;
+    if !window.alive() || space.element_location(window).is_none() {
+        return false;
+    }
+    let Some(handle) = SurfaceHandle::of_window(window) else {
+        return false;
+    };
+    let Some(record) = comp.registry.id_for_handle(&handle).and_then(|id| comp.registry.get(id))
+    else {
+        return false;
+    };
+    if let Some(x11) = window.x11_surface() {
+        return record.role() == SurfaceRole::X11 {
+            override_redirect: x11.is_override_redirect(),
+        };
+    }
+    record.role() == SurfaceRole::Toplevel && window.toplevel().is_some()
+}
+
+/// Resolve the owning Space before checking lifecycle or geometry liveness.
+/// Membership in the current spawn-target Space is never a liveness test.
+pub fn live_window_space<'a>(
+    comp: &CompState,
+    spaces: impl IntoIterator<Item = &'a protocols::space::state::SpaceState>,
+    window: &smithay::desktop::Window,
+) -> Option<&'a protocols::space::state::SpaceState> {
+    let owner = spaces
+        .into_iter()
+        .find(|space| space.state.element_location(window).is_some())?;
+    window_is_live(comp, &owner.state, window).then_some(owner)
+}
+
+/// Renderer surface state is committed protocol state; this imports no pixels.
+/// An X11 map can precede association with a Wayland buffer.
+pub fn initial_map_is_live(
+    comp: &CompState,
+    space: &smithay::desktop::Space<smithay::desktop::Window>,
+    window: &smithay::desktop::Window,
+) -> bool {
+    window_is_live(comp, space, window)
+        && (window.x11_surface().is_some()
+            || window.toplevel().is_some_and(|toplevel| {
+                smithay::backend::renderer::utils::with_renderer_surface_state(
+                    toplevel.wl_surface(), |state| state.buffer().is_some(),
+                ).unwrap_or(false)
+            }))
+}
+
 /// Where a maximised window goes back to (its pre-maximise location and window
 /// geometry size, in the host Space).
 #[derive(Clone, Debug, PartialEq)]

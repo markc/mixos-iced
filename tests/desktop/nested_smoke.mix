@@ -2156,6 +2156,38 @@ if $bus then
     finish(false, "compd.truth session_lock " .. json_encode($tl), [$lk, $ed, $kp, $cp, $wp])
   end
   print("bus: session locked (generation " .. to_string($tl.generation) .. ", lock surface s" .. to_string($tl.surfaces[0]) .. ")")
+  -- A fresh client must get its initial configure without ever entering the
+  -- keyboard while locked, even transiently before the policy pass restores it.
+  $focus_probe = dirname($bin) .. "/testkit-input-probe"
+  if not is_file($focus_probe) then
+    $focus_probe = which("testkit-input-probe")
+  end
+  if $focus_probe == nil then
+    finish(false, "14j/14k need testkit-input-probe beside compd or on PATH", [$lk, $ed, $kp, $cp, $wp])
+  end
+  $new_lock_log = $logs .. "/new-window-locked.log"
+  $new_lock = spawn([$focus_probe, "--app-id", "smoke.new-locked"], {env: $kenv, stdout: {file: $new_lock_log}, stderr: "stdout", detach: true})
+  $n = 0
+  while not contains(read_file($new_lock_log), "PROBE configure ") and $n < 40
+    sleep(0.25)
+    $n = $n + 1
+  end
+  sleep(0.25)
+  $new_focus = get_once($SVC, "focus").reply
+  if not contains(read_file($new_lock_log), "PROBE configure ") or contains(read_file($new_lock_log), "PROBE keyboard_enter") or $new_focus.keyboard != $tl.surfaces[0] or $new_focus.session_lock != "locked" then
+    finish(false, "a new window during lock took keyboard focus or missed configure: " .. json_encode($new_focus) .. "; " .. read_file($new_lock_log), [$new_lock, $lk, $ed, $kp, $cp, $wp])
+  end
+  -- Destroy it before unlock so it cannot change the existing restore checks.
+  $new_lock_killed = kill($new_lock, 15)
+  $n = 0
+  while alive($new_lock) and $n < 20
+    sleep(0.25)
+    $n = $n + 1
+  end
+  if alive($new_lock) then
+    finish(false, "new locked client did not exit", [$new_lock, $lk, $ed, $kp, $cp, $wp])
+  end
+  print("bus: fresh window configured during lock; no keyboard enter")
   -- Redacted: no windows.* rows; the window rows are invisible and nameless.
   $wr = get_once($SVC, "windows")
   $sr = get_once($SVC, "surfaces.s" .. to_string($erow.id))
@@ -2282,6 +2314,45 @@ if $bus then
     finish(false, "comp.window.focus under the latch: rc " .. to_string($rc) .. " " .. json_encode($reply), [$ll, $ed, $kp, $cp, $wp])
   end
   print("bus: exclusive layer s" .. to_string($lf.exclusive_latch) .. " latched at map (keyboard on it, no key sent); comp.window.focus refused exclusive_layer")
+  $new_latch_log = $logs .. "/new-window-latched.log"
+  $new_latch = spawn([$focus_probe, "--app-id", "smoke.new-latched"], {env: $kenv, stdout: {file: $new_latch_log}, stderr: "stdout", detach: true})
+  $new_row = nil
+  $n = 0
+  while $new_row == nil and $n < 40
+    for each $r in window_rows($SVC) ?? []
+      if $r.app_id == "smoke.new-latched" then
+        $new_row = $r
+      end
+    end
+    if $new_row == nil then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  sleep(0.25)
+  $new_focus = get_once($SVC, "focus").reply
+  if $new_row == nil or $new_focus.keyboard != $lf.exclusive_latch or $new_focus.exclusive_latch != $lf.exclusive_latch or contains(read_file($new_latch_log), "PROBE keyboard_enter") then
+    finish(false, "a new window during latch did not map or entered the keyboard: " .. json_encode($new_focus) .. "; " .. read_file($new_latch_log), [$new_latch, $ll, $ed, $kp, $cp, $wp])
+  end
+  $new_latch_killed = kill($new_latch, 15)
+  $new_row_live = true
+  $n = 0
+  while $new_row_live and $n < 40
+    $new_row_live = false
+    for each $r in window_rows($SVC) ?? []
+      if $r.id == $new_row.id then
+        $new_row_live = true
+      end
+    end
+    if $new_row_live then
+      sleep(0.25)
+      $n = $n + 1
+    end
+  end
+  if $new_row_live then
+    finish(false, "new latched window did not retire", [$new_latch, $ll, $ed, $kp, $cp, $wp])
+  end
+  print("bus: fresh window mapped during latch; no keyboard enter")
   $lk_ = kill($ll, 15)
   $back = nil
   $n = 0

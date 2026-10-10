@@ -54,6 +54,13 @@ impl DrawOrder {
         self.entries.retain(|(c, _, _)| *c != id);
     }
 
+    /// Teardown after Space unmap must resolve ownership from every stack.
+    pub fn remove_from_all<'a>(id: ComponentId, orders: impl IntoIterator<Item = &'a mut Self>) {
+        for order in orders {
+            order.remove(id);
+        }
+    }
+
     /// Hand an existing entry's slot (tier + `OrderKey`) to a successor, keeping
     /// its z-position — a restored window appears WHERE THE PLACEHOLDER SAT,
     /// not popped to the top. Drops stale `new` first; `false` if `old` is absent.

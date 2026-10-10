@@ -109,8 +109,7 @@ fn refresh_scene_reserved(lp: &mut Loop) {
 /// port. Scene activation runs after the port; do not leave windows using the
 /// previous reservation until another dispatch happens to arrive.
 pub(crate) fn reconcile_scene_geometry(lp: &mut Loop) {
-    refresh_scene_reserved(lp);
-    policy_host::control::refresh_usable(lp);
+    refresh_placement_geometry(lp);
     #[cfg(feature = "backend-native")]
     let parked = native::render::execute::execute::frames_parked(lp);
     #[cfg(not(feature = "backend-native"))]
@@ -125,6 +124,12 @@ pub(crate) fn reconcile_scene_geometry(lp: &mut Loop) {
             lp.inner.comp.clear_input_geometry_dirty();
         }
     }
+}
+
+/// Renderer-free placement prerequisites, also needed before parked lifecycle work.
+pub(crate) fn refresh_placement_geometry(lp: &mut Loop) {
+    refresh_scene_reserved(lp);
+    policy_host::control::refresh_usable(lp);
 }
 
 /// The scene host's surfaces and keyboard focus as comp.props rows: they stand

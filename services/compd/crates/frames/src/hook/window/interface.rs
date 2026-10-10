@@ -1,5 +1,5 @@
-use smithay::backend::renderer::gles::GlesRenderer;
 use dispatcher::state::state::RedrawReason;
+use dispatcher::wire::trait_::wire_trait::WireTrait;
 use smithay::desktop::Window;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -11,8 +11,7 @@ use smithay::wayland::shell::xdg::{
 };
 use uuid::Uuid;
 use world::camera::transform::translate::slot;
-use world::state::state::CoordinateTrait;
-use world::state::{Loop, Transform};
+use world::state::Loop;
 use world::window::interface::record::window::LoopWindow;
 use world::window::lifecycle::event::event::WindowLifecycleEvent;
 use protocols::window::find::find;
@@ -27,6 +26,14 @@ fn activate_window(_loop: &mut Loop, window: Window) {
     // xdg-activation cannot reach one through the registry; this is the
     // engine-side backstop).
     if window.x11_surface().is_some_and(|x11| x11.is_override_redirect()) {
+        return;
+    }
+    // Placement may run before this pass's lock/latch arbitration. Consult
+    // live policy, including a layer mapped in the same protocol batch, so
+    // activation cannot switch worlds or deliver a keyboard enter while held.
+    if world::comp::session_lock::active(_loop)
+        || world::comp::latch::blocks_window_focus(_loop)
+    {
         return;
     }
     // Cross-world activation: if the window lives on another world, switch to it FIRST.
@@ -78,11 +85,31 @@ fn activate_window(_loop: &mut Loop, window: Window) {
 
 /// Generally all hooks are temporary - they indicate something immediate is being deferred(due to complex ownership.)
 /// This hook is temporary because it wires the WireTrait impl and WireObject state.
-pub fn hook(_loop: &mut Loop, renderer: &mut GlesRenderer) {
+pub fn hook(_loop: &mut Loop) {
     _apply_toplevel_drag_moves(_loop);
+    drain_lifecycle(_loop);
+}
 
+/// Ordered model/protocol lifecycle work, shared by frames and parked passes.
+/// Drag motion stays in the frame wrapper above.
+pub fn drain_lifecycle(_loop: &mut Loop) {
+    if _loop.inner.window_lifecycle_mut().incoming.is_empty() {
+        return;
+    }
+    // Losing presentation authority keeps output metadata. Losing the output
+    // or viewport does not: defer the WHOLE queue, rather than reorder maps
+    // against activation, fullscreen or teardown. Output recovery retries it.
+    if _loop.inner.space_state().state.outputs().next().is_none()
+        || _loop.inner.output_views().map.is_empty()
+        || _loop.inner.active_output().current_mode().is_none()
+        || _loop.inner.space_state().state.output_geometry(_loop.inner.active_output()).is_none()
+    {
+        return;
+    }
+
+    let queue_world = _loop.inner.worlds.spawn_target();
     let process = std::mem::take(
-        &mut _loop.inner.window_lifecycle_mut()
+        &mut _loop.inner.window_lifecycle_of_mut(queue_world)
             .incoming,
     );
     // generally no-op. _state.inner.window.incoming becomes Vec::default().
@@ -92,29 +119,53 @@ pub fn hook(_loop: &mut Loop, renderer: &mut GlesRenderer) {
         return;
     }
 
+    let mut waiting = Vec::new();
+    let mut processed = false;
     for item in process {
+        if item.defer_for_placement(
+            &_loop.inner.comp,
+            _loop.inner.all_world_spaces(),
+            _loop.inner.space_state(),
+            &waiting,
+        ) {
+            // A missing buffer or a switch away from the owning world cannot
+            // consume its only candidate: WindowPlacedMarker still prevents a
+            // second one. Keep its per-window tail; unrelated work proceeds.
+            waiting.push(item);
+            continue;
+        }
+        processed = true;
         match item {
             world::window::lifecycle::event::event::WindowLifecycleEvent::InitialMap(
                 window,
             ) => {
                 _initial_mapped(_loop, window);
             }
-            WindowLifecycleEvent::Withdrawn(uuid, discard_placeholder) => {
-                _withdraw(_loop, uuid, renderer, discard_placeholder);
-            }
             WindowLifecycleEvent::Fullscreen(window, fullscreen) => {
-                world::window::interface::draw::fullscreen::fullscreen_set(
-                    _loop, window, fullscreen,
-                );
+                if world::comp::live_window_space(
+                    &_loop.inner.comp, _loop.inner.all_world_spaces(), &window,
+                ).is_some() {
+                    world::window::interface::draw::fullscreen::fullscreen_set(
+                        _loop, window, fullscreen,
+                    );
+                }
             }
             WindowLifecycleEvent::Activate(window, _origin) => {
-                activate_window(_loop, window);
+                if world::comp::live_window_space(
+                    &_loop.inner.comp,
+                    _loop.inner.all_world_spaces(),
+                    &window,
+                )
+                .is_some()
+                {
+                    activate_window(_loop, window);
+                }
             }
             // A settled toplevel drag needs nothing: the window is already where
             // the drag moves put it.
             WindowLifecycleEvent::DragSettled(_surface) => {}
             WindowLifecycleEvent::Destroyed(uuid, activation, discard_placeholder) => {
-                _destroy(_loop, uuid, renderer, discard_placeholder);
+                _destroy(_loop, uuid, discard_placeholder);
 
                 // CHECK: Token is cleared on surface deletion. if a splash screen uses this token, it will be removed and no longer valid.
                 //
@@ -131,6 +182,26 @@ pub fn hook(_loop: &mut Loop, renderer: &mut GlesRenderer) {
                 }
             }
         }
+    }
+
+    // Retry retained work on its actual owner, including a window moved since
+    // enqueue. Activation may have changed the hosted world during this pass.
+    let mut retained = std::collections::BTreeMap::<Uuid, Vec<WindowLifecycleEvent>>::new();
+    for item in waiting {
+        let owner = item.owning_space(_loop.inner.all_world_spaces())
+            .and_then(|space| space.state.elements().find(|window| item.targets(window)))
+            .and_then(|window| _loop.inner.world_of_window(window))
+            .unwrap_or(queue_world);
+        retained.entry(owner).or_default().push(item);
+    }
+    for (owner, mut events) in retained {
+        let incoming = &mut _loop.inner.window_lifecycle_of_mut(owner).incoming;
+        events.append(incoming);
+        *incoming = events;
+    }
+
+    if !processed {
+        return;
     }
 
     // Map/unmap/destroy/fullscreen may have changed the captured window set.
@@ -163,6 +234,9 @@ fn _apply_toplevel_drag_moves(state: &mut Loop) {
         let Some((world, window)) = state.inner.window_of_surface(&surface) else {
             continue;
         };
+        if world::comp::live_window_space(
+            &state.inner.comp, state.inner.all_world_spaces(), &window,
+        ).is_none() { continue }
         state
             .inner.space_of_mut(world)
             .state
@@ -179,12 +253,27 @@ fn _initial_mapped(state: &mut Loop, window: Window) {
     // Space immediately; this event's tail would put it straight back, and nothing would
     // remove it again, since the matching `Destroyed` only tears down the placeholder.
     //
-    // Tested by presence in the Space: the drain maps the window before queueing this, so
-    // "still an element" is exactly "not torn down since".
-    if state.inner.space_state().state.element_location(&window).is_none() {
-        warn!("initial map for a window no longer in the Space; dropping it");
+    // Space GC may not have run yet. The role, resource and committed buffer
+    // must still be live too; membership alone cannot establish that.
+    let Some(owner) = world::comp::live_window_space(
+        &state.inner.comp,
+        state.inner.all_world_spaces(),
+        &window,
+    ) else {
+        warn!("initial map for a window no longer live; dropping it");
+        return;
+    };
+    if !world::comp::initial_map_is_live(&state.inner.comp, &owner.state, &window) {
+        warn!("initial map for a window no longer live or buffered; dropping it");
         return;
     }
+    let owner_world = state
+        .inner
+        .world_of_window(&window)
+        .expect("a live window has an owning world");
+    // The shared deferral check retains off-world candidates. Camera, usable
+    // area and draw-order policy below require this owner to be current.
+    debug_assert_eq!(owner_world, state.inner.worlds.spawn_target());
     // Clients ask for tearing through wp_tearing_control_v1; nothing is
     // inferred from the window's process.
     // A toplevel that maps while an `xdg_toplevel_drag_v1` is ALREADY carrying it
@@ -246,10 +335,7 @@ fn _initial_mapped(state: &mut Loop, window: Window) {
         space.element_location(&parent).map(|at| at + offset)
     }).flatten();
 
-    // ONE position, resolved before the `Transform` is built: the map location and the
-    // placeholder record below must not be derived separately, or a parented window opens
-    // in one place and its placeholder stands in another. Storage coordinates are what
-    // `Transform::pos` holds, so a parented point converts exactly.
+    // Resolve one storage position for placement, rounded without a render context.
     //
     // The unparented case centres on the ACTIVE monitor's camera (the output under the
     // cursor), NOT `camera_mut()`. This hook drains the InitialMap queue from inside the
@@ -283,12 +369,14 @@ fn _initial_mapped(state: &mut Loop, window: Window) {
     } else {
         (x, y)
     };
-    let t: Transform = ((x, y), state.size_ctx_all()).into();
-    let at = t.into_storage_point();
+    let at = Point::<f64, Logical>::from((x, y)).to_i32_round();
 
-    state.inner.space_state_mut().state.map_element(window.clone(), at, false);
-    // The comp registry's map edge for a window: placed, here, at frame time
-    // (the lifecycle stage is not moved).
+    state
+        .inner
+        .space_of_mut(owner_world)
+        .state
+        .map_element(window.clone(), at, false);
+    // The comp registry's map edge: placement has completed, with or without a frame.
     if let Some(handle) = dispatcher::wire::trait_::surface_event::SurfaceHandle::of_window(&window) {
         dispatcher::wire::trait_::wire_trait::WireTrait::surface_event(
             &mut state.inner,
@@ -335,21 +423,7 @@ fn _initial_mapped(state: &mut Loop, window: Window) {
     }
 }
 
-/// A window withdrew: it is out of the Space, so it stops being drawn and selectable —
-/// but it is NOT gone.
-///
-/// Deliberately less than [`_destroy`]. The group membership and the introspection
-/// registration are kept, because the process is still running and the window may map
-/// again; only the two things that are meaningless for something not on the canvas are
-/// dropped. The draw-order slot comes back on the remap (`readmit_x11` re-registers it),
-/// which is also how the placeholder hands it over in the meantime.
-// The only bookkeeping for a withdrawn or destroyed window is the draw-order
-// slot.
-fn _withdraw(state: &mut Loop, uuid: Uuid, _renderer: &mut GlesRenderer, _discard_placeholder: bool) {
-    state.inner.remove_drawable(uuid);
-}
-
-fn _destroy(state: &mut Loop, uuid: Uuid, _renderer: &mut GlesRenderer, _discard_placeholder: bool) {
+fn _destroy(state: &mut Loop, uuid: Uuid, _discard_placeholder: bool) {
     // DrawOrder GC: drop the window from the draw-order authority.
     state.inner.remove_drawable(uuid);
 }
@@ -388,9 +462,13 @@ pub fn reform_force(state: &mut Loop, window: Window, transform_update: Transfor
 // on without a cycle via the orchestration focus accessors).
 
 fn _reform(state: &mut Loop, window: Window, transform_update: TransformUpdate, force: bool) {
+    if world::comp::live_window_space(
+        &state.inner.comp, state.inner.all_world_spaces(), &window,
+    ).is_none() { return }
+    let Some(owner) = state.inner.world_of_window(&window) else { return };
     if let Some(position) = transform_update.position {
         state
-            .inner.space_state_mut()
+            .inner.space_of_mut(owner)
             .state
             .map_element(window.clone(), position, false);
     }

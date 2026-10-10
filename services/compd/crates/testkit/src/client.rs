@@ -26,6 +26,10 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1, zwlr_layer_shell_v1::ZwlrLayerShellV1, zwlr_layer_surface_v1,
     zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
 };
+use wayland_protocols_wlr::foreign_toplevel::v1::client::{
+    zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
+    zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
+};
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1, zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
     zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
@@ -55,6 +59,8 @@ pub struct ClientState {
     pub buttons: Vec<(u32, u32, bool, usize)>,
     /// Every screencopy frame's events, by the index [`TestClient::capture`] returned.
     pub frames: Vec<FrameEvents>,
+    /// Dock-facing handles and their advertised app IDs.
+    pub foreign_toplevels: Vec<(ZwlrForeignToplevelHandleV1, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -205,6 +211,23 @@ impl TestClient {
     /// The bound seat with this index (see [`ClientState::buttons`]).
     pub fn seat(&self, index: usize) -> &WlSeat {
         &self.seats[index].0
+    }
+
+    /// Bind the dock protocol on demand; ordinary fixtures need no mirror.
+    pub fn bind_foreign_toplevels(&mut self) {
+        let (name, version) = find_in(&self.state.globals, "zwlr_foreign_toplevel_manager_v1");
+        let _: ZwlrForeignToplevelManagerV1 =
+            self.registry.bind(name, version.min(3), &self.qh, ());
+    }
+
+    pub fn activate_foreign(&self, app_id: &str) {
+        let (handle, _) = self
+            .state
+            .foreign_toplevels
+            .iter()
+            .find(|(_, id)| id == app_id)
+            .expect("the dock knows the target toplevel");
+        handle.activate(self.seat(0));
     }
 
     pub fn create_surface(&mut self) -> WlSurface {
@@ -437,6 +460,54 @@ impl Dispatch<WlRegistry, ()> for ClientState {
         } = event
         {
             state.globals.push((name, interface, version));
+        }
+    }
+}
+
+impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for ClientState {
+    wayland_client::event_created_child!(ClientState, ZwlrForeignToplevelManagerV1, [
+        0 => (ZwlrForeignToplevelHandleV1, ())
+    ]);
+
+    fn event(
+        state: &mut Self,
+        _manager: &ZwlrForeignToplevelManagerV1,
+        event: zwlr_foreign_toplevel_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let zwlr_foreign_toplevel_manager_v1::Event::Toplevel { toplevel } = event {
+            state.foreign_toplevels.push((toplevel, String::new()));
+        }
+    }
+}
+
+impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        handle: &ZwlrForeignToplevelHandleV1,
+        event: zwlr_foreign_toplevel_handle_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
+                state
+                    .foreign_toplevels
+                    .iter_mut()
+                    .find(|(candidate, _)| candidate == handle)
+                    .expect("the manager announced this handle")
+                    .1 = app_id;
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::Closed => {
+                state
+                    .foreign_toplevels
+                    .retain(|(candidate, _)| candidate != handle);
+                handle.destroy();
+            }
+            _ => {}
         }
     }
 }

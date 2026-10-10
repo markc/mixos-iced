@@ -31,7 +31,7 @@ pub fn register_frame_hook(hook: FrameHook) {
 
 /// The main scene's per-frame rim hooks, then the active world's systems tick.
 pub fn hooks(state: &mut Loop, renderer: &mut GlesRenderer, size: Size<i32, Physical>) -> Ticked {
-    crate::hook::window::interface::hook(state, renderer);
+    crate::hook::window::interface::hook(state);
     crate::hook::surface::wgpu::hook(state, renderer, size);
     recorder::interface::interface::per_frame(state, renderer, size);
     // Debug FPS overlay (top-right): measures the composited-frame rate.

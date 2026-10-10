@@ -202,7 +202,7 @@ impl WireTrait for Orchestrator {
             dispatcher::wayland::xdg::activation::dispatch::wire::activations(surface.wl_surface());
 
         info!("destroy_surface_data...");
-        with_states(surface.wl_surface(), |states| {
+        let event = with_states(surface.wl_surface(), |states| {
             let data = states
                 .data_map
                 .get::<Mutex<WindowData>>()
@@ -225,14 +225,11 @@ impl WireTrait for Orchestrator {
             let discard_placeholder = drag_discard
                 || states.data_map.get::<DiscardPlaceholder>().is_some()
                 || protocols::ephemeral::mark::mark::is_marked(states);
-            self.window_lifecycle_mut()
-                .incoming
-                .push(WindowLifecycleEvent::Destroyed(
-                    data,
-                    activation_details,
-                    discard_placeholder,
-                ));
+            WindowLifecycleEvent::Destroyed(data, activation_details, discard_placeholder)
         });
+        // Routing may inspect a queued DragSettled's surface data. Release this
+        // surface's state lock before that identity lookup.
+        self.enqueue_window_lifecycle(event);
     }
 
     // Every world, not `host_space`: an X11 window unmaps and dies in the world it
@@ -279,13 +276,11 @@ impl WireTrait for Orchestrator {
         // window would leave a placeholder, and Shift-close would never discard one.
         let discard_placeholder = window.user_data().get::<DiscardPlaceholder>().is_some()
             || protocols::ephemeral::mark::mark::is_window_marked(&window);
-        self.window_lifecycle_mut()
-            .incoming
-            .push(WindowLifecycleEvent::Destroyed(
-                uuid,
-                Vec::new(),
-                discard_placeholder,
-            ));
+        self.enqueue_window_lifecycle(WindowLifecycleEvent::Destroyed(
+            uuid,
+            Vec::new(),
+            discard_placeholder,
+        ));
     }
 
     fn withdraw_x11(&mut self, world: uuid::Uuid, window: Window) {
@@ -305,19 +300,10 @@ impl WireTrait for Orchestrator {
         // Out of the Space only NOW: the location above had to be read while it was still
         // an element, and `element_location` answers from the Space.
         self.space_of_mut(world).state.unmap_elem(&window);
-        // Then the WITHDRAW teardown, which is not the destroy one. Both leave a
-        // placeholder — X11 cannot tell a hide from a close, so both must — but a destroy
-        // moves the window's record into the placeholder while a withdrawal copies it and
-        // leaves the original in place. That is what keeps the invariant a remap depends
-        // on: the window still has its own record when it comes back.
-        //
-        // The verdicts are read off the WINDOW, as at destroy: smithay clears the surface
-        // association inside `unmapped_window`, so a mark read from there is gone by now.
-        let discard = window.user_data().get::<DiscardPlaceholder>().is_some()
-            || protocols::ephemeral::mark::mark::is_window_marked(&window);
-        self.window_lifecycle_mut()
-            .incoming
-            .push(WindowLifecycleEvent::Withdrawn(uuid, discard));
+        // Stack cleanup belongs to this unmap, before a later Map in the same
+        // protocol drain can readmit and raise the window. A queued teardown
+        // would remove that new live entry when lifecycle service finally runs.
+        self.remove_drawable(uuid);
     }
 
     fn readmit_x11(&mut self, window: Window) {
@@ -351,10 +337,10 @@ impl WireTrait for Orchestrator {
         if let Some(names) = names {
             self.comp.apply(names);
         }
-        // The draw-order slot, which `_withdraw` dropped: the window was not drawn while
+        // The draw-order slot, which `withdraw_x11` dropped: the window was not drawn while
         // hidden, and `raise_drawable` both re-registers an unknown id and puts it back on
         // top, which is what a window reappearing should do.
-        self.raise_drawable(uuid);
+        self.raise_drawable_of(world, uuid);
         // The placeholder the withdrawal left is KEPT — it is a placeholder in its own
         // right, with its own uuid, standing for a close that X11 could not distinguish
         // from a hide. The window's OWN record never moved, so the invariant every
@@ -404,27 +390,19 @@ impl WireTrait for Orchestrator {
     fn place_window(&mut self, window: Window, geometry: Rectangle<i32, Logical>) {
         // Side effect- because of the dispatcher wiring problem, the place_window returns a location rather than calling map_element.
         // However this function should be treated as if it called the initial space map_element call.
-        self.window_lifecycle_mut()
-            .incoming
-            .push(WindowLifecycleEvent::InitialMap(window));
+        self.enqueue_window_lifecycle(WindowLifecycleEvent::InitialMap(window));
     }
 
     fn fullscreen_request(&mut self, window: Window, fullscreen: bool) {
-        self.window_lifecycle_mut()
-            .incoming
-            .push(WindowLifecycleEvent::Fullscreen(window, fullscreen));
+        self.enqueue_window_lifecycle(WindowLifecycleEvent::Fullscreen(window, fullscreen));
     }
 
     fn request_activation(&mut self, window: Window, origin: ActivationOrigin) {
-        self.window_lifecycle_mut()
-            .incoming
-            .push(WindowLifecycleEvent::Activate(window, origin));
+        self.enqueue_window_lifecycle(WindowLifecycleEvent::Activate(window, origin));
     }
 
     fn settle_toplevel_drag(&mut self, surface: WlSurface) {
-        self.window_lifecycle_mut()
-            .incoming
-            .push(WindowLifecycleEvent::DragSettled(surface));
+        self.enqueue_window_lifecycle(WindowLifecycleEvent::DragSettled(surface));
     }
 
     fn surface_point_to_world(
